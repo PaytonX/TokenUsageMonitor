@@ -196,6 +196,7 @@
   let pillFadeTimer: ReturnType<typeof setTimeout> | null = null;
   let pillDragStart: { x: number; y: number } | null = null;
   let pillDidDrag = false;
+  let pillFadeGen = 0;
 
   function clearPillFadeTimer() {
     if (pillFadeTimer !== null) {
@@ -222,18 +223,26 @@
   }
 
   async function refreshPillFade() {
+    // Superseded calls must not assign stale timers.
+    const gen = ++pillFadeGen;
     clearPillFadeTimer();
-    if (mode !== "compact" || pillHovered) {
-      pillFaded = false;
-      return;
+    try {
+      if (mode !== "compact" || pillHovered) {
+        pillFaded = false;
+        return;
+      }
+      if (!(await pillNearEdge())) {
+        if (gen !== pillFadeGen) return;
+        pillFaded = false;
+        return;
+      }
+      if (gen !== pillFadeGen) return;
+      pillFadeTimer = setTimeout(() => {
+        pillFaded = !pillHovered;
+      }, PILL_FADE_DELAY_MS);
+    } catch {
+      // IPC failed (e.g. window closing) — keep current fade state.
     }
-    if (!(await pillNearEdge())) {
-      pillFaded = false;
-      return;
-    }
-    pillFadeTimer = setTimeout(() => {
-      pillFaded = !pillHovered;
-    }, PILL_FADE_DELAY_MS);
   }
 
   function onPillPointerDown(event: PointerEvent) {
@@ -255,7 +264,8 @@
     }
   }
 
-  function onPillPointerUp() {
+  function onPillPointerUp(event: PointerEvent) {
+    if (!pillDragStart || event.button !== 0) return;
     const didDrag = pillDidDrag;
     pillDragStart = null;
     pillDidDrag = false;
