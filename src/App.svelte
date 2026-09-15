@@ -121,7 +121,7 @@
   );
   let ringLabel = $derived(
     focusedSnapshot
-      ? `${Math.round(remainingPercent(focusedSnapshot) * 100)}%`
+      ? `${Math.round(ringPercent * 100)}%`
       : aggregateLabel,
   );
 
