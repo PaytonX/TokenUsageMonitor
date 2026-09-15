@@ -22,7 +22,7 @@ use crate::providers::{
 };
 use crate::signing;
 use async_trait::async_trait;
-use chrono::{FixedOffset, NaiveDate, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
@@ -188,16 +188,17 @@ struct DetailRaw {
 }
 
 /// Aggregate raw detail rows into one heatmap cell per Beijing-calendar day.
-/// Only token-billed rows are counted (image rows have a different unit and
-/// must not be mixed into the token heatmap).
+/// Prefers token-billed rows; when the window has no token rows at all
+/// (e.g. AgentPlan windows billed in AFP points), the dominant non-token
+/// unit group is used instead of returning an empty heatmap.
 fn aggregate_daily(details: Vec<DetailRaw>, beijing: FixedOffset) -> Vec<HeatmapCell> {
-    let mut per_day: BTreeMap<NaiveDate, f64> = BTreeMap::new();
+    let mut groups: BTreeMap<String, BTreeMap<NaiveDate, f64>> = BTreeMap::new();
     for d in details {
-        if let Some(unit) = d.unit.as_deref() {
-            if !unit.eq_ignore_ascii_case("tokens") {
-                continue;
-            }
-        }
+        let key = d
+            .unit
+            .as_deref()
+            .map(|u| u.trim().to_ascii_lowercase())
+            .unwrap_or_else(|| "tokens".to_string());
         let Some(ts) = d.time else { continue };
         let Some(usage) = d.usage.as_ref().and_then(FlexibleNum::value) else {
             continue;
@@ -206,18 +207,71 @@ fn aggregate_daily(details: Vec<DetailRaw>, beijing: FixedOffset) -> Vec<Heatmap
             continue;
         };
         let date = dt.with_timezone(&beijing).date_naive();
-        *per_day.entry(date).or_default() += usage;
+        *groups.entry(key).or_default().entry(date).or_default() += usage;
     }
-    per_day
-        .into_iter()
+    let chosen = groups
+        .iter()
+        .find(|(key, _)| key.as_str() == "tokens")
+        .or_else(|| {
+            groups
+                .iter()
+                .max_by(|(_, a), (_, b)| {
+                    a.values()
+                        .sum::<f64>()
+                        .partial_cmp(&b.values().sum::<f64>())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        });
+    let Some((key, days)) = chosen else {
+        return Vec::new();
+    };
+    let unit = unit_from_key(key);
+    days.iter()
         .map(|(date, value)| HeatmapCell {
-            date,
-            value,
-            unit: UsageUnit::Tokens,
+            date: *date,
+            value: *value,
+            unit,
         })
         .collect()
 }
 
+fn unit_from_key(key: &str) -> UsageUnit {
+    match key {
+        "afp" => UsageUnit::Afp,
+        "cny" => UsageUnit::Cny,
+        "credits" | "images" => UsageUnit::Credits,
+        _ => UsageUnit::Tokens,
+    }
+}
+
+/// Parse a GetUsageDetails body into heatmap cells. Any failure (bad JSON or
+/// nothing aggregatable) yields None instead of aborting the whole snapshot,
+/// so the AFP windows above stay intact.
+fn parse_heatmap(text: &str, beijing: FixedOffset) -> Option<Vec<HeatmapCell>> {
+    let parsed: UsageDetailsResponse = match serde_json::from_str(text) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, body_chars = text.len(), "GetUsageDetails: parse failed");
+            return None;
+        }
+    };
+    let cells = aggregate_daily(parsed.result.map(|b| b.details).unwrap_or_default(), beijing);
+    if cells.is_empty() {
+        None
+    } else {
+        tracing::debug!(cells = cells.len(), "GetUsageDetails: heatmap cells built");
+        Some(cells)
+    }
+}
+
+/// Date range for the GetUsageDetails Filter, as Beijing calendar days.
+/// The API rejects spans longer than 31 days (HTTP 400
+/// InvalidParameter.StartTime/EndTime), so we clamp to a 30-day span
+/// (31 calendar days inclusive).
+fn details_window(now: DateTime<Utc>, beijing: FixedOffset) -> (NaiveDate, NaiveDate) {
+    let today_bj = now.with_timezone(&beijing).date_naive();
+    (today_bj - chrono::Duration::days(30), today_bj)
+}
 pub struct VolcengineProvider {
     http: Client,
 }
@@ -313,10 +367,9 @@ impl Provider for VolcengineProvider {
         // heatmap bucketing (the account is billed on Beijing time).
         let beijing = FixedOffset::east_opt(8 * 3600).expect("UTC+8 is a valid offset");
         let now = Utc::now();
-        let today_bj = now.with_timezone(&beijing);
-        let start_bj = today_bj - chrono::Duration::days(90);
-        let start_str = start_bj.format("%Y-%m-%d").to_string();
-        let end_str = today_bj.format("%Y-%m-%d").to_string();
+        let (start_date, end_date) = details_window(now, beijing);
+        let start_str = start_date.format("%Y-%m-%d").to_string();
+        let end_str = end_date.format("%Y-%m-%d").to_string();
 
         // 1. AFP usage (4 windows + plan tier).
         let afp_text = self
@@ -334,7 +387,7 @@ impl Provider for VolcengineProvider {
             balance: None,
         };
 
-        // 2. Usage details for the last 90 days, daily granularity. The
+        // 2. Usage details for the last 31 days, daily granularity. The
         // heatmap is best-effort: a details failure must not drop the AFP
         // windows above.
         let body = json!({
@@ -354,16 +407,11 @@ impl Provider for VolcengineProvider {
             .await;
 
         let heatmap: Option<Vec<HeatmapCell>> = match details_resp {
-            Ok(text) => {
-                let parsed: UsageDetailsResponse = serde_json::from_str(&text)?;
-                let cells = aggregate_daily(parsed.result.map(|b| b.details).unwrap_or_default(), beijing);
-                if cells.is_empty() {
-                    None
-                } else {
-                    Some(cells)
-                }
+            Ok(text) => parse_heatmap(&text, beijing),
+            Err(e) => {
+                tracing::warn!(error = %e, "GetUsageDetails: request failed, skipping heatmap");
+                None
             }
-            Err(_) => None,
         };
 
         Ok(UsageSnapshot {
@@ -374,5 +422,136 @@ impl Provider for VolcengineProvider {
             windows,
             heatmap,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_heatmap_returns_none_on_garbage() {
+        assert!(parse_heatmap("not json", beijing()).is_none());
+    }
+
+    #[test]
+    fn parse_heatmap_routes_rows_through_aggregate_daily() {
+        let body = r#"{"result":{"details":[{"time":1789313400000,"usage":2.5,"unit":"Tokens"}]}}"#;
+        let cells = parse_heatmap(body, beijing()).expect("cells");
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].value, 2.5);
+        assert_eq!(cells[0].unit, UsageUnit::Tokens);
+    }
+
+    #[test]
+    fn details_window_spans_at_most_31_days() {
+        let now = Utc::now();
+        let (start, end) = details_window(now, beijing());
+        assert_eq!(end, now.with_timezone(&beijing()).date_naive());
+        let span = (end - start).num_days();
+        assert!(span <= 30, "span {} days exceeds the 31-day API limit", span);
+    }
+    const SEP13_BJ_2330_MS: i64 = 1_789_313_400_000;
+    const SEP14_BJ_1200_MS: i64 = 1_789_358_400_000;
+
+    fn row(ts_ms: i64, usage: FlexibleNum, unit: Option<&str>) -> DetailRaw {
+        DetailRaw {
+            time: Some(ts_ms),
+            usage: Some(usage),
+            unit: unit.map(str::to_string),
+            billing_type: None,
+        }
+    }
+
+    fn num(v: f64) -> FlexibleNum {
+        FlexibleNum::Number(v)
+    }
+
+    fn beijing() -> FixedOffset {
+        FixedOffset::east_opt(8 * 3600).unwrap()
+    }
+
+    #[test]
+    fn token_rows_aggregate_per_beijing_day() {
+        let cells = aggregate_daily(
+            vec![
+                row(SEP13_BJ_2330_MS, num(3.0), Some("Tokens")),
+                row(
+                    SEP13_BJ_2330_MS,
+                    FlexibleNum::Text("2.0".to_string()),
+                    Some("tokens"),
+                ),
+                row(SEP14_BJ_1200_MS, num(7.0), Some("Tokens")),
+            ],
+            beijing(),
+        );
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0].date.to_string(), "2026-09-13");
+        assert_eq!(cells[0].value, 5.0);
+        assert_eq!(cells[0].unit, UsageUnit::Tokens);
+        assert_eq!(cells[1].date.to_string(), "2026-09-14");
+        assert_eq!(cells[1].value, 7.0);
+    }
+
+    #[test]
+    fn rows_without_unit_count_as_tokens() {
+        let cells = aggregate_daily(vec![row(SEP14_BJ_1200_MS, num(4.0), None)], beijing());
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].value, 4.0);
+        assert_eq!(cells[0].unit, UsageUnit::Tokens);
+    }
+
+    #[test]
+    fn rows_missing_time_or_usage_are_skipped() {
+        let mut no_time = row(SEP14_BJ_1200_MS, num(1.0), Some("Tokens"));
+        no_time.time = None;
+        let mut no_usage = row(SEP14_BJ_1200_MS, num(1.0), Some("Tokens"));
+        no_usage.usage = None;
+        let cells = aggregate_daily(vec![no_time, no_usage], beijing());
+        assert!(cells.is_empty());
+    }
+
+    #[test]
+    fn non_token_rows_fall_back_instead_of_empty() {
+        let cells = aggregate_daily(
+            vec![
+                row(SEP13_BJ_2330_MS, num(8.0), Some("AFP")),
+                row(SEP14_BJ_1200_MS, num(2.0), Some("AFP")),
+            ],
+            beijing(),
+        );
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0].date.to_string(), "2026-09-13");
+        assert_eq!(cells[0].value, 8.0);
+        assert_eq!(cells[0].unit, UsageUnit::Afp);
+        assert_eq!(cells[1].value, 2.0);
+    }
+
+    #[test]
+    fn dominant_non_token_group_is_chosen() {
+        let cells = aggregate_daily(
+            vec![
+                row(SEP13_BJ_2330_MS, num(3.0), Some("AFP")),
+                row(SEP14_BJ_1200_MS, num(100.0), Some("Images")),
+            ],
+            beijing(),
+        );
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].date.to_string(), "2026-09-14");
+        assert_eq!(cells[0].value, 100.0);
+    }
+
+    #[test]
+    fn token_rows_take_priority_over_other_units() {
+        let cells = aggregate_daily(
+            vec![
+                row(SEP14_BJ_1200_MS, num(5.0), Some("Tokens")),
+                row(SEP14_BJ_1200_MS, num(999.0), Some("Images")),
+            ],
+            beijing(),
+        );
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].value, 5.0);
+        assert_eq!(cells[0].unit, UsageUnit::Tokens);
     }
 }
