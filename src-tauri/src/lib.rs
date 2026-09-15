@@ -147,6 +147,12 @@ pub fn run() {
                 }
             });
 
+            // Windows 11: kill the DWM rounded-corner mask + 1px window
+            // border so the four corners of the transparent window stay
+            // fully invisible behind the rounded UI content.
+            #[cfg(windows)]
+            dwm_corner::disable_corner_artifacts(&dash);
+
             // Spawn the periodic scheduler. It will only poll providers that
             // appear in `Settings::enabled_providers`; unconfigured providers
             // emit `NotConfigured` and keep waiting for credentials.
@@ -173,4 +179,78 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Windows 11 rounds the corners of top-level windows and draws a 1px
+/// border around the window rect. On this transparent, undecorated
+/// widget window both render as four faintly visible corners around the
+/// rounded content. Disable both via DWM window attributes.
+///
+/// Raw FFI on purpose: pulling in the `windows` crate just for two
+/// attribute calls would recompile half the dependency tree, and this
+/// project's windows-gnu toolchain rebuilds are expensive (dlltool/as).
+/// dwmapi.dll is resolved at runtime so no import library is needed.
+#[cfg(windows)]
+mod dwm_corner {
+    use std::ffi::c_void;
+    use std::sync::OnceLock;
+
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWCP_DONOTROUND: u32 = 1;
+    const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+    }
+
+    type DwmSetWindowAttributeFn =
+        unsafe extern "system" fn(isize, u32, *const c_void, u32) -> i32;
+
+    fn dwm_set_window_attribute() -> Option<DwmSetWindowAttributeFn> {
+        static DWM_FN: OnceLock<Option<DwmSetWindowAttributeFn>> = OnceLock::new();
+        *DWM_FN.get_or_init(|| unsafe {
+            let module_name: Vec<u16> = "dwmapi.dll\0".encode_utf16().collect();
+            let module = LoadLibraryW(module_name.as_ptr());
+            if module.is_null() {
+                return None;
+            }
+            let proc_name = b"DwmSetWindowAttribute\0";
+            let proc = GetProcAddress(module, proc_name.as_ptr());
+            if proc.is_null() {
+                return None;
+            }
+            Some(std::mem::transmute::<*mut c_void, DwmSetWindowAttributeFn>(proc))
+        })
+    }
+
+    /// Best-effort: failures are ignored (unsupported/older DWM simply
+    /// keeps the default appearance).
+    pub fn disable_corner_artifacts(window: &tauri::WebviewWindow) {
+        let Some(dwm_set_window_attribute) = dwm_set_window_attribute() else {
+            return;
+        };
+        let Ok(hwnd) = window.hwnd() else {
+            return;
+        };
+        let hwnd = hwnd.0 as isize;
+        unsafe {
+            let preference = DWMWCP_DONOTROUND;
+            dwm_set_window_attribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &preference as *const u32 as *const c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+            let border = DWMWA_COLOR_NONE;
+            dwm_set_window_attribute(
+                hwnd,
+                DWMWA_BORDER_COLOR,
+                &border as *const u32 as *const c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
+    }
 }
