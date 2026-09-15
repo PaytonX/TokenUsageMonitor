@@ -471,7 +471,7 @@
         {#if activeSnapshot && activeSnapshot.heatmap}
           <HeatmapGrid cells={activeSnapshot.heatmap} unit={heatmapUnit} />
         {:else if focus !== "all"}
-          <div class="heatmap__empty">该来源暂无热力图数据</div>
+          <div class="heatmap__empty">{activeSnapshot?.provider_id === "deepseek" ? "DeepSeek 依据余额下降累计消耗，启用后需积累数日才有数据" : "该来源暂无热力图数据"}</div>
         {/if}
       </section>
     {/if}
