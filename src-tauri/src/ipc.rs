@@ -8,7 +8,7 @@ use crate::providers::{
 use crate::settings::Settings;
 use crate::AppState;
 use std::collections::HashMap;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewWindow, WebviewWindowBuilder};
 
 /// Lightweight provider metadata for the Settings UI.
 #[derive(serde::Serialize)]
@@ -163,13 +163,42 @@ fn clamp_rect(
     (x.clamp(area_x + margin, max_x), y.clamp(area_y + margin, max_y))
 }
 
+pub fn clamp_window_to_work_area(window: &WebviewWindow, margin_logical: f64) -> bool {
+    let Ok(pos) = window.outer_position() else { return false; };
+    let Ok(size) = window.outer_size() else { return false; };
+    let Ok(Some(monitor)) = window.current_monitor() else { return false; };
+    let area = monitor.work_area();
+    let margin = margin_logical * f64::from(monitor.scale_factor());
+    let (nx, ny) = clamp_rect(
+        f64::from(pos.x),
+        f64::from(pos.y),
+        f64::from(size.width),
+        f64::from(size.height),
+        f64::from(area.position.x),
+        f64::from(area.position.y),
+        f64::from(area.size.width),
+        f64::from(area.size.height),
+        margin,
+    );
+    let changed = nx != f64::from(pos.x) || ny != f64::from(pos.y);
+    if changed {
+        let _ = window.set_position(PhysicalPosition::new(
+            nx.round() as i32,
+            ny.round() as i32,
+        ));
+    }
+    changed
+}
+
 /// Switch the dashboard window between full and compact modes.
 #[tauri::command]
 pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String> {
     use tauri::LogicalSize;
+
     let window = app
         .get_webview_window("dashboard")
         .ok_or_else(|| "dashboard window not found".to_string())?;
+
     match mode.as_str() {
         "dashboard" => {
             window
@@ -177,17 +206,15 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
                 .map_err(|e| e.to_string())?;
         }
         "compact" => {
-            // Compact widget exact budget:
-            // padding(6*2) + ring(56) + gap(10) + btn(22) + gap(4) + btn(22)
-            // = 126px content height. 136 leaves 5px slack top/bottom so
-            // nothing is clipped (the ring arc and the close button).
-            // Width: btn(80) + padding(6*2) = 92 <= 96.
+            // Mini pill: single row 150x44 (ring + name + divider + dot + close).
             window
-                .set_size(LogicalSize::new(96u32, 136u32))
+                .set_size(LogicalSize::new(150u32, 44u32))
                 .map_err(|e| e.to_string())?;
         }
         other => return Err(format!("unknown window mode: {other}")),
     }
+
+    clamp_window_to_work_area(&window, 8.0);
     Ok(())
 }
 
