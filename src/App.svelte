@@ -26,7 +26,7 @@
   let snapshots = $state<UsageSnapshot[]>([]);
   let errors = $state<Record<string, string>>({});
   let mode = $state<Mode>("dashboard");
-  let activeProviderId = $state<string | null>(null);
+  let heatmapTabId = $state<string | null>(null);
   const PROVIDER_COLORS: Record<string, string> = {
     minimax: "#ff5c5c",
     deepseek: "#4d6bfe",
@@ -54,8 +54,8 @@
     settings = await getSettings();
     lastRefreshAt = Date.now();
 
-    if (snapshots.length > 0 && !activeProviderId) {
-      activeProviderId = snapshots[0].provider_id;
+    if (snapshots.length > 0 && !heatmapTabId) {
+      heatmapTabId = snapshots[0].provider_id;
     }
 
     // Live updates.
@@ -65,7 +65,7 @@
           .filter((s) => s.provider_id !== snap.provider_id)
           .concat(snap)
           .sort((a, b) => a.provider_id.localeCompare(b.provider_id));
-        if (!activeProviderId) activeProviderId = snap.provider_id;
+        if (!heatmapTabId) heatmapTabId = snap.provider_id;
         errors = { ...errors, [snap.provider_id]: "" };
         lastRefreshAt = Date.now();
       }),
@@ -110,9 +110,27 @@
       : `${Math.round(aggregateRemaining * 100)}%`,
   );
 
+  // Snapshot behind the global focus ("all" → aggregate; one provider → it).
+  let focusedSnapshot = $derived(
+    focus === "all"
+      ? null
+      : (snapshots.find((s) => s.provider_id === focus) ?? null),
+  );
+  let ringPercent = $derived(
+    focusedSnapshot ? remainingPercent(focusedSnapshot) : aggregateRemaining,
+  );
+  let ringLabel = $derived(
+    focusedSnapshot
+      ? `${Math.round(remainingPercent(focusedSnapshot) * 100)}%`
+      : aggregateLabel,
+  );
+
   // The active snapshot whose heatmap is shown in the bottom panel.
   let activeSnapshot = $derived(
-    snapshots.find((s) => s.provider_id === activeProviderId) ?? snapshots[0] ?? null,
+    focusedSnapshot ??
+    snapshots.find((s) => s.provider_id === heatmapTabId) ??
+    snapshots[0] ??
+    null,
   );
 
   // Snapshots that actually carry heatmap data — drives the tab list.
@@ -133,13 +151,13 @@
     "tokens"
   );
 
-  // Ensure activeProviderId always points at a snapshot that exists &
+  // Ensure heatmapTabId always points at a snapshot that exists &
   // (preferably) has heatmap data, so the heatmap tab is never orphaned.
   $effect(() => {
     if (snapshots.length === 0) return;
-    const stillExists = snapshots.some((s) => s.provider_id === activeProviderId);
+    const stillExists = snapshots.some((s) => s.provider_id === heatmapTabId);
     if (!stillExists) {
-      activeProviderId = snapshotsWithHeatmap[0]?.provider_id ?? snapshots[0].provider_id;
+      heatmapTabId = snapshotsWithHeatmap[0]?.provider_id ?? snapshots[0].provider_id;
     }
   });
 
@@ -221,7 +239,7 @@
 <main class="shell" class:shell--compact={mode === "compact"} data-tauri-drag-region oncontextmenu={(e) => e.preventDefault()}>
   {#if mode === "compact"}
     <div class="compact" data-tauri-drag-region>
-      <ProgressRing value={aggregateRemaining} label={aggregateLabel} size={56} stroke={4} />
+      <ProgressRing value={ringPercent} label={ringLabel} size={56} stroke={4} />
       <div class="compact__actions" data-tauri-drag-region={false}>
         <button class="compact__btn" onclick={toggleMode} title="展开到完整界面">展开 ⤢</button>
         <button class="compact__btn compact__btn--close" onclick={closeApp} title="关闭应用">关闭</button>
@@ -234,7 +252,7 @@
         <span class="shell__title">TokenUsageMonitor</span>
       </div>
       <div class="shell__actions" data-tauri-drag-region={false}>
-        <ProgressRing value={aggregateRemaining} label={aggregateLabel} size={28} stroke={3} />
+        <ProgressRing value={ringPercent} label={ringLabel} size={28} stroke={3} />
         <button class="shell__btn" onclick={refresh} title="立即刷新">↻</button>
         <button class="shell__btn" onclick={() => openSettings()} title="设置">⚙</button>
         <button class="shell__btn" onclick={toggleMode} title="折叠到迷你态">⤢</button>
@@ -281,22 +299,26 @@
       {/if}
     </section>
 
-    {#if snapshots.length > 0 && hasHeatmap}
+    {#if snapshots.length > 0 && (hasHeatmap || focus !== "all")}
       <section class="shell__heatmap" data-tauri-drag-region={false}>
         <div class="heatmap__head">
           <span class="heatmap__title">日历热力图</span>
-          <div class="heatmap__tabs">
-            {#each snapshotsWithHeatmap as snap (snap.provider_id)}
-              <button
-                class="heatmap__tab {snap.provider_id === activeProviderId ? 'heatmap__tab--active' : ''}"
-                onclick={() => (activeProviderId = snap.provider_id)}
-                title={snap.provider_display_name}
-              >{snap.provider_display_name}</button>
-            {/each}
-          </div>
+          {#if focus === "all"}
+            <div class="heatmap__tabs">
+              {#each snapshotsWithHeatmap as snap (snap.provider_id)}
+                <button
+                  class="heatmap__tab {snap.provider_id === heatmapTabId ? 'heatmap__tab--active' : ''}"
+                  onclick={() => (heatmapTabId = snap.provider_id)}
+                  title={snap.provider_display_name}
+                >{snap.provider_display_name}</button>
+              {/each}
+            </div>
+          {/if}
         </div>
         {#if activeSnapshot && activeSnapshot.heatmap}
           <HeatmapGrid cells={activeSnapshot.heatmap} unit={heatmapUnit} />
+        {:else if focus !== "all"}
+          <div class="heatmap__empty">该来源暂无热力图数据</div>
         {/if}
       </section>
     {/if}
@@ -517,6 +539,15 @@
     border-radius: 50%;
     display: inline-block;
     flex-shrink: 0;
+  }
+
+  .heatmap__empty {
+    padding: var(--tum-space-4) 0;
+    text-align: center;
+    font-size: var(--tum-font-size-xs);
+    color: var(--tum-text-muted);
+    font-family: var(--tum-font-mono);
+    letter-spacing: 0.5px;
   }
 
   .shell__footer {
