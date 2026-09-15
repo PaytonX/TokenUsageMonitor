@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
   import {
     getUsage,
     getProviderStates,
@@ -38,6 +38,9 @@
   // Global focus: "all" (aggregate min) or one provider_id. Drives the
   // header ring, the chips row and the heatmap panel.
   let focus = $state(localStorage.getItem(FOCUS_KEY) ?? "all");
+  const PILL_DRAG_THRESHOLD_PX = 4;
+  const PILL_FADE_DELAY_MS = 2500;
+  const PILL_EDGE_THRESHOLD_PX = 24;
   let settings = $state<Settings | null>(null);
 
   let now = $state(new Date());
@@ -175,6 +178,113 @@
     }
   });
 
+  // Mini pill (compact mode) — focused provider color/name.
+  const focusedColor = $derived(
+    focusedSnapshot
+      ? (PROVIDER_COLORS[focusedSnapshot.provider_id] ?? FOCUS_FALLBACK_COLOR)
+      : FOCUS_FALLBACK_COLOR,
+  );
+  const focusedName = $derived(
+    focusedSnapshot ? focusedSnapshot.provider_display_name : "全部",
+  );
+
+  // Pill fade machine (spec §3.4): fade to 22% after 2.5s while parked near
+  // a screen edge in compact mode; pointer enter / leaving the edge /
+  // dashboard mode restores full opacity.
+  let pillHovered = $state(false);
+  let pillFaded = $state(false);
+  let pillFadeTimer: ReturnType<typeof setTimeout> | null = null;
+  let pillDragStart: { x: number; y: number } | null = null;
+  let pillDidDrag = false;
+
+  function clearPillFadeTimer() {
+    if (pillFadeTimer !== null) {
+      clearTimeout(pillFadeTimer);
+      pillFadeTimer = null;
+    }
+  }
+
+  async function pillNearEdge(): Promise<boolean> {
+    const win = getCurrentWindow();
+    const [pos, size, monitor] = await Promise.all([
+      win.outerPosition(),
+      win.outerSize(),
+      currentMonitor(),
+    ]);
+    if (!monitor) return false;
+    const threshold = PILL_EDGE_THRESHOLD_PX * monitor.scaleFactor;
+    const area = monitor.workArea ?? { position: monitor.position, size: monitor.size };
+    const left = pos.x - area.position.x;
+    const top = pos.y - area.position.y;
+    const right = area.position.x + area.size.width - (pos.x + size.width);
+    const bottom = area.position.y + area.size.height - (pos.y + size.height);
+    return Math.min(left, top, right, bottom) < threshold;
+  }
+
+  async function refreshPillFade() {
+    clearPillFadeTimer();
+    if (mode !== "compact" || pillHovered) {
+      pillFaded = false;
+      return;
+    }
+    if (!(await pillNearEdge())) {
+      pillFaded = false;
+      return;
+    }
+    pillFadeTimer = setTimeout(() => {
+      pillFaded = !pillHovered;
+    }, PILL_FADE_DELAY_MS);
+  }
+
+  function onPillPointerDown(event: PointerEvent) {
+    if (event.button !== 0) return;
+    pillDragStart = { x: event.clientX, y: event.clientY };
+    pillDidDrag = false;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }
+
+  function onPillPointerMove(event: PointerEvent) {
+    if (!pillDragStart) return;
+    const dx = event.clientX - pillDragStart.x;
+    const dy = event.clientY - pillDragStart.y;
+    if (!pillDidDrag && Math.hypot(dx, dy) > PILL_DRAG_THRESHOLD_PX) {
+      pillDidDrag = true;
+      clearPillFadeTimer();
+      pillFaded = false;
+      void getCurrentWindow().startDragging();
+    }
+  }
+
+  function onPillPointerUp() {
+    const didDrag = pillDidDrag;
+    pillDragStart = null;
+    pillDidDrag = false;
+    if (!didDrag) {
+      void toggleMode();
+    } else {
+      void refreshPillFade();
+    }
+  }
+
+  // Window moved (OS drag or external) → re-evaluate the pill fade state.
+  $effect(() => {
+    const win = getCurrentWindow();
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void win
+      .onMoved(() => {
+        void refreshPillFade();
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      });
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  });
+
   let timeLabel = $derived(
     now.toLocaleTimeString("zh-CN", {
       hour: "2-digit",
@@ -205,6 +315,12 @@
     const next: Mode = mode === "dashboard" ? "compact" : "dashboard";
     await setWindowMode(next);
     mode = next;
+    pillHovered = false;
+    pillFaded = false;
+    clearPillFadeTimer();
+    if (next === "compact") {
+      void refreshPillFade();
+    }
   }
 
   async function refresh() {
@@ -238,12 +354,39 @@
 
 <main class="shell" class:shell--compact={mode === "compact"} data-tauri-drag-region oncontextmenu={(e) => e.preventDefault()}>
   {#if mode === "compact"}
-    <div class="compact" data-tauri-drag-region>
-      <ProgressRing value={ringPercent} label={ringLabel} size={56} stroke={4} />
-      <div class="compact__actions" data-tauri-drag-region={false}>
-        <button class="compact__btn" onclick={toggleMode} title="展开到完整界面">展开 ⤢</button>
-        <button class="compact__btn compact__btn--close" onclick={closeApp} title="关闭应用">关闭</button>
+    <div
+      class="pill"
+      class:is-faded={pillFaded}
+      onpointerenter={() => {
+        pillHovered = true;
+        clearPillFadeTimer();
+        pillFaded = false;
+      }}
+      onpointerleave={() => {
+        pillHovered = false;
+        void refreshPillFade();
+      }}
+      onpointerdown={onPillPointerDown}
+      onpointermove={onPillPointerMove}
+      onpointerup={onPillPointerUp}
+      oncontextmenu={(e) => e.preventDefault()}
+    >
+      <div class="pill__ring">
+        <ProgressRing value={ringPercent} label="" size={24} stroke={3} />
+        <span class="pill__percent">{ringLabel}</span>
       </div>
+      <span class="pill__divider"></span>
+      <span class="pill__dot" style:background={focusedColor}></span>
+      <span class="pill__name">{focusedName}</span>
+      <button
+        class="pill__close"
+        title="关闭应用"
+        onpointerdown={(e) => e.stopPropagation()}
+        onclick={(e) => {
+          e.stopPropagation();
+          void closeApp();
+        }}
+      >✕</button>
     </div>
   {:else}
     <header class="shell__header" data-tauri-drag-region>
@@ -352,8 +495,8 @@
     cursor: grab;
   }
 
-  /* In compact mode, remove the shell's padding and gap so the compact
-     widget gets the full window area to render its ring + actions. */
+  /* In compact mode, remove the shell's padding and gap so the mini pill
+     gets the full window area (150x44). */
   .shell--compact {
     padding: 0;
     gap: 0;
@@ -586,60 +729,86 @@
     letter-spacing: 0.4px;
   }
 
-  /* Compact mode — small floating widget showing just the ring + 2 buttons.
-     Window is 96x136 (see ipc::set_window_mode "compact").
-     Background is transparent so only the ring + buttons are visible. */
-  .compact {
+  /* Mini pill (compact) — single row 150x44 (see ipc::set_window_mode
+     "compact"). Background matches the old compact__btn fill. */
+  .pill {
     height: 100%;
     display: flex;
-    flex-direction: column;
     align-items: center;
-    justify-content: center;
-    gap: 10px;
-    padding: 6px;
-    background: transparent;
-    border-radius: 0;
-    border: none;
-    cursor: grab;
-  }
-
-  .compact__actions {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    width: 100%;
-    align-items: center;
-  }
-
-  .compact__btn {
-    /* Text-label buttons so the user can clearly see what each does. */
-    width: 80px;
-    height: 22px;
-    border: 1px solid var(--tum-border-strong);
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 22px;
     background: rgba(10, 14, 26, 0.9);
-    color: var(--tum-text-secondary);
-    border-radius: var(--tum-radius-sm);
-    cursor: pointer;
-    font-size: 11px;
-    line-height: 1;
-    display: inline-flex;
+    border: 1px solid var(--tum-border);
+    transition: opacity 0.35s ease, transform 0.35s ease;
+    cursor: default;
+    overflow: hidden;
+  }
+
+  .pill.is-faded {
+    opacity: 0.22;
+    transform: scale(0.9);
+  }
+
+  .pill__ring {
+    display: flex;
     align-items: center;
-    justify-content: center;
     gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .pill__percent {
+    font-size: var(--tum-font-size-xs);
     font-family: var(--tum-font-mono);
+    color: var(--tum-text-primary);
     letter-spacing: 0.3px;
-    transition: all 0.15s ease;
   }
 
-  .compact__btn:hover {
-    color: var(--tum-accent);
-    border-color: var(--tum-accent-stroke);
-    background: rgba(251, 191, 36, 0.15);
+  .pill__divider {
+    width: 1px;
+    height: 20px;
+    background: var(--tum-border-strong);
+    flex-shrink: 0;
   }
 
-  .compact__btn--close:hover {
-    color: var(--tum-danger);
-    border-color: var(--tum-danger);
+  .pill__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .pill__name {
+    font-size: var(--tum-font-size-xs);
+    font-family: var(--tum-font);
+    color: var(--tum-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  .pill__close {
+    width: 18px;
+    height: 18px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--tum-text-muted);
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    flex-shrink: 0;
+    transition: opacity 0.2s ease, background 0.2s ease, color 0.2s ease;
+  }
+
+  .pill:hover .pill__close {
+    opacity: 1;
+  }
+
+  .pill__close:hover {
     background: var(--tum-danger-fill);
+    color: var(--tum-danger);
   }
 </style>
