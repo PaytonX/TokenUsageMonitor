@@ -364,4 +364,10 @@ mod clamp_tests {
         let (x, y) = clamp_rect(-1920.0, -50.0, 360.0, 600.0, -1920.0, 0.0, 1920.0, 1040.0, 8.0);
         assert_eq!((x, y), (-1912.0, 8.0));
     }
+
+    #[test]
+    fn pins_when_window_taller_than_work_area() {
+        let (x, y) = clamp_rect(0.0, 500.0, 360.0, 1200.0, 0.0, 0.0, 1920.0, 1040.0, 8.0);
+        assert_eq!((x, y), (8.0, 8.0));
+    }
 }
