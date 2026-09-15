@@ -514,6 +514,7 @@
     border-radius: 0;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+    background: transparent;
   }
 
   .shell:active {
