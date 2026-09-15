@@ -1,0 +1,23 @@
+# Build configuration for the GNU toolchain on Windows.
+#
+# The Rust GNU toolchain ships a self-contained set of MinGW libraries
+# (libgcc.a, libgcc_eh.a, kernel32.a, etc.) and a copy of `dlltool` /
+# `ld`. The self-contained `dlltool` works, but it shells out to `as`
+# (the GNU assembler) which is NOT bundled — so a plain `cargo build`
+# fails with "dlltool: CreateProcess".
+#
+# Fix: install LLVM-MinGW (user-scope winget) and put its `bin` directory
+# on PATH. We then create a hardlink `as.exe` → `x86_64-w64-mingw32-as.exe`
+# inside that bin dir so `dlltool` can find the assembler.
+#
+# We use `rust-lld` (Rust's bundled LLD) as the linker and `-L self-contained`
+# so LLD can find the self-contained import libraries (libgcc, etc.) that
+# the Rust toolchain ships.
+#
+# Build command:
+#   $llvmBin = "<llvm-mingw-bin-dir>"
+#   $env:PATH = "$llvmBin;$env:USERPROFILE\.cargo\bin;$env:PATH"
+#   cargo build --release
+[target.x86_64-pc-windows-gnu]
+linker = "rust-lld"
+rustflags = ["-L", "self-contained"]

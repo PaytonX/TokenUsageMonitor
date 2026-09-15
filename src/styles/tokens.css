@@ -1,0 +1,106 @@
+/* TokenUsageMonitor design system
+ * Aesthetic: aerospace instrument cluster
+ *   - Deep slate canvas with subtle phosphor amber accent
+ *   - Monospace numerics for that "telemetry readout" feel
+ *   - Flat color blocks (no gradients), sharp 2-4px corners
+ *   - Hard-edged geometry; no soft pastels, no purple gradients
+ */
+
+:root {
+  /* Color palette - deep slate + phosphor amber */
+  --tum-bg: rgba(10, 14, 26, 0.92);
+  --tum-bg-solid: rgb(10, 14, 26);
+  --tum-bg-elevated: rgba(17, 22, 38, 0.85);
+  --tum-surface: rgba(20, 27, 45, 0.85);
+  --tum-surface-hover: rgba(32, 41, 64, 0.9);
+  --tum-border: rgba(148, 163, 184, 0.14);
+  --tum-border-strong: rgba(148, 163, 184, 0.28);
+
+  --tum-text-primary: #f1f5f9;
+  --tum-text-secondary: #94a3b8;
+  --tum-text-muted: #475569;
+
+  /* Single primary accent: phosphor amber (no second hue, no gradient) */
+  --tum-accent: #fbbf24;
+  --tum-accent-hover: #fcd34d;
+  --tum-accent-glow: rgba(251, 191, 36, 0.35);
+  --tum-accent-fill: rgba(251, 191, 36, 0.12);
+  --tum-accent-fill-strong: rgba(251, 191, 36, 0.22);
+  --tum-accent-stroke: rgba(251, 191, 36, 0.42);
+
+  /* Status hues - kept muted so amber stays dominant */
+  --tum-success: #4ade80;
+  --tum-success-fill: rgba(74, 222, 128, 0.12);
+  --tum-warning: #fb923c;
+  --tum-danger: #f87171;
+  --tum-danger-fill: rgba(248, 113, 113, 0.10);
+
+  /* Spacing scale */
+  --tum-space-1: 4px;
+  --tum-space-2: 8px;
+  --tum-space-3: 12px;
+  --tum-space-4: 16px;
+  --tum-space-5: 24px;
+
+  /* Radius - hard geometry, very small radii */
+  --tum-radius-xs: 2px;
+  --tum-radius-sm: 3px;
+  --tum-radius-md: 4px;
+  --tum-radius-lg: 6px;
+
+  /* Typography
+   * Numerics & data: Cascadia Code (ships with Win11) - telemetry readout feel
+   * UI text: Segoe UI Variable Display (Win11) with wide tracking on labels
+   */
+  --tum-font: "Segoe UI Variable Display", "Segoe UI", -apple-system, sans-serif;
+  --tum-font-mono: "Cascadia Code", "Cascadia Mono", "JetBrains Mono", "Consolas", monospace;
+  --tum-font-size-xs: 10px;
+  --tum-font-size-sm: 11px;
+  --tum-font-size-base: 13px;
+  --tum-font-size-lg: 16px;
+  --tum-font-size-xl: 20px;
+
+  /* Subtle scanline overlay - hidden by default, opt-in via class */
+  --tum-scanline: repeating-linear-gradient(
+    0deg,
+    rgba(255, 255, 255, 0.012) 0px,
+    rgba(255, 255, 255, 0.012) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: var(--tum-font);
+  font-size: var(--tum-font-size-base);
+  color: var(--tum-text-primary);
+  user-select: none;
+  -webkit-user-select: none;
+  /* Tighten default text rendering for that instrument feel */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#app {
+  height: 100vh;
+  width: 100vw;
+}
+
+/* Numeric values - tabular figures so they don't jitter on update */
+.tum-numeric,
+input[type="number"],
+.tum-mono {
+  font-family: var(--tum-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}

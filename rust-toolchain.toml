@@ -1,0 +1,10 @@
+# Pin the GNU toolchain for this project so contributors without MSVC
+# Build Tools can compile using MinGW-w64 instead.
+#
+# If you have MSVC Build Tools installed and would rather use that, delete
+# this file or change `channel` to `stable-x86_64-pc-windows-msvc`.
+[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-gnu"]
+profile = "default"

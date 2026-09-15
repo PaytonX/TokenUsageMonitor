@@ -2,6 +2,7 @@ node_modules/
 .DS_Store
 dist/
 build/
+src-tauri/target/
 .env
 .env.local
 *.log
@@ -11,3 +12,4 @@ __pycache__/
 *.pyc
 .next/
 coverage/
+.superpowers/
