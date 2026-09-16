@@ -254,3 +254,9 @@ mod dwm_corner {
         }
     }
 }
+
+#[cfg(all(test, windows, target_env = "gnu"))]
+mod windows_test_manifest {
+    #[link(name = "cargo_test_manifest_res", kind = "static", modifiers = "+whole-archive")]
+    extern "C" {}
+}
