@@ -5,10 +5,11 @@
   interface Props {
     cells: HeatmapCell[];
     unit?: UsageUnit;
-    weeks?: number;
   }
 
-  let { cells, unit = "tokens" as UsageUnit, weeks = 14 }: Props = $props();
+  let { cells, unit = "tokens" as UsageUnit }: Props = $props();
+
+  const WEEKS = 18;
 
   // Build a grid: column = week, row = day of week (Mon..Sun, ISO).
   // Each cell: { date, value, level }.
@@ -25,9 +26,9 @@
     const today = new Date();
     const todayDay = (today.getDay() + 6) % 7; // 0=Mon, 6=Sun
     const start = new Date(today);
-    start.setDate(today.getDate() - todayDay - (weeks - 1) * 7);
+    start.setDate(today.getDate() - todayDay - (WEEKS - 1) * 7);
     const cols: Day[][] = [];
-    for (let w = 0; w < weeks; w++) {
+    for (let w = 0; w < WEEKS; w++) {
       const col: Day[] = [];
       for (let d = 0; d < 7; d++) {
         const d2 = new Date(start);
@@ -83,7 +84,7 @@
 </script>
 
 <div class="heatmap">
-  <div class="heatmap__cols" style={`--heatmap-weeks: ${weeks}`}>
+  <div class="heatmap__cols">
     {#each grid as col}
       <div class="heatmap__col">
         {#each col as day}
@@ -115,7 +116,7 @@
 
   .heatmap__cols {
     display: grid;
-    grid-template-columns: repeat(var(--heatmap-weeks, 14), 1fr);
+    grid-template-columns: repeat(18, 1fr);
     gap: 3px;
     width: 100%;
   }
