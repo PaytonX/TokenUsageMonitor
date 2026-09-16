@@ -83,7 +83,7 @@
 </script>
 
 <div class="heatmap">
-  <div class="heatmap__cols">
+  <div class="heatmap__cols" style={`--heatmap-weeks: ${weeks}`}>
     {#each grid as col}
       <div class="heatmap__col">
         {#each col as day}
@@ -99,7 +99,7 @@
   <div class="heatmap__legend">
     <span class="heatmap__legend-text">少</span>
     {#each legendColors as color}
-      <span class="heatmap__cell" style={`background:${color}`}></span>
+      <span class="heatmap__legend-cell" style={`background:${color}`}></span>
     {/each}
     <span class="heatmap__legend-text">多</span>
   </div>
@@ -107,14 +107,17 @@
 
 <style>
   .heatmap {
+    width: 100%;
     display: flex;
     flex-direction: column;
     gap: 4px;
   }
 
   .heatmap__cols {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(var(--heatmap-weeks, 14), 1fr);
     gap: 3px;
+    width: 100%;
   }
 
   .heatmap__col {
@@ -124,8 +127,8 @@
   }
 
   .heatmap__cell {
-    width: 10px;
-    height: 10px;
+    width: 100%;
+    aspect-ratio: 1;
     border-radius: var(--tum-radius-xs);
     cursor: default;
     transition: transform 0.15s ease;
@@ -141,6 +144,12 @@
     gap: 4px;
     margin-top: 4px;
     justify-content: flex-end;
+  }
+
+  .heatmap__legend-cell {
+    width: 10px;
+    height: 10px;
+    border-radius: var(--tum-radius-xs);
   }
 
   .heatmap__legend-text {
