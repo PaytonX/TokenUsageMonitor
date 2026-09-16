@@ -5,7 +5,7 @@ import { resolve } from "path";
 // Tauri expects a fixed port and exposes env vars for the frontend
 const port = process.env.TAURI_DEV_PORT
   ? Number(process.env.TAURI_DEV_PORT)
-  : 1420;
+  : 5173;
 
 // Multi-page build: dashboard (index.html) + settings window (settings.html).
 // Both share the same src/lib/ modules - only the entry Svelte component
