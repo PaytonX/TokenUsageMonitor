@@ -1,9 +1,17 @@
 //! Periodic usage fetcher.
 //!
 //! Spawns one `tokio::task` per provider. Each task ticks on its provider's
-//! configured interval and pushes updated `UsageSnapshot`s via the
-//! `usage-updated` Tauri event. Failures don't kill the task - they emit
-//! `provider-error` and the next tick tries again.
+//! effective interval (a positive global `poll_interval_seconds` in Settings
+//! overrides the per-provider default) and pushes a `UsageUpdate` payload
+//! (snapshot plus burn info) via the `usage-updated` Tauri event. Every poll
+//! also feeds the burn tracker and evaluates threshold notifications.
+//!
+//! The loop reacts live to a `settings_wake` watch (re-reads enabled state and
+//! rebuilds the interval on period change) and skips ticking while the global
+//! `pause_tx` watch is set. Failures don't kill the task - they emit
+//! `provider-error` (keeping the previous snapshot) and the next tick tries
+//! again. [`poll_one`] is shared by both the loop and the `force_refresh`
+//! command.
 
 use crate::notify::{self, NotifyAction};
 use crate::providers::{
