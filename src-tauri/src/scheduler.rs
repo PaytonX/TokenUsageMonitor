@@ -40,6 +40,13 @@ pub fn default_interval_for(provider_id: &str) -> u64 {
     }
 }
 
+/// Whether an account instance is currently enabled in `Settings::accounts`.
+fn account_enabled(s: &crate::settings::Settings, instance_id: &str) -> bool {
+    s.accounts
+        .iter()
+        .any(|a| a.instance_id == instance_id && a.enabled)
+}
+
 /// Effective polling period: a positive global override in Settings wins;
 /// 0 means "use the per-provider default".
 fn effective_interval(provider_id: &str, global_seconds: u32) -> Duration {
@@ -160,15 +167,23 @@ pub type SharedBurnTracker = Arc<Mutex<BurnTracker>>;
 /// the interval, or pausing takes effect without a restart.
 pub async fn spawn_all(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let providers = state.registry.list();
+    let providers = state.registry.read().await.list();
     for provider in providers {
-        let id = provider.id().to_string();
+        let id = provider.id();
         let app = app.clone();
         let provider = provider.clone();
         tauri::async_runtime::spawn(async move {
             poll_loop(app, provider, id).await;
         });
     }
+}
+
+/// Spawn a single polling task for a newly-added account at runtime (used by
+/// `ipc::upsert_account`). Idempotent per account id.
+pub fn spawn_one(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
+    tauri::async_runtime::spawn(async move {
+        poll_loop(app, provider, id.clone()).await;
+    });
 }
 
 /// Per-provider polling loop.
@@ -180,7 +195,7 @@ pub async fn spawn_all(app: &AppHandle) {
 async fn poll_loop(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
     let initial_period = {
         let s = app.state::<AppState>().settings.get().await;
-        effective_interval(&id, s.poll_interval_seconds)
+        effective_interval(provider.kind(), s.poll_interval_seconds)
     };
     let mut period = initial_period;
     // First tick ~1s after launch so users see data immediately.
@@ -198,13 +213,10 @@ async fn poll_loop(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
                 if *pause_rx.borrow() {
                     continue;
                 }
-                let enabled = app
-                    .state::<AppState>()
-                    .settings
-                    .get()
-                    .await
-                    .enabled_providers
-                    .contains(&id);
+                let enabled = account_enabled(
+                    &app.state::<AppState>().settings.get().await,
+                    &id,
+                );
                 if !enabled {
                     continue;
                 }
@@ -221,8 +233,8 @@ async fn poll_loop(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
                 let (enabled, new_period) = {
                     let s = app.state::<AppState>().settings.get().await;
                     (
-                        s.enabled_providers.contains(&id),
-                        effective_interval(&id, s.poll_interval_seconds),
+                        account_enabled(&s, &id),
+                        effective_interval(provider.kind(), s.poll_interval_seconds),
                     )
                 };
                 if new_period != period {
@@ -256,10 +268,10 @@ pub async fn poll_one(
     // "mock" fallback (matches the pre-refactor behavior).
     let creds = {
         let cache = state.credentials.read().await;
-        cache.get(provider.id()).cloned()
+        cache.get(&provider.id()).cloned()
     };
     let creds = creds
-        .or_else(|| state.settings.load_credentials(provider.id()))
+        .or_else(|| state.settings.load_credentials(&provider.id()))
         .unwrap_or(Credentials::BearerKey {
             api_key: "mock".to_string(),
         });

@@ -2,50 +2,56 @@
 //!
 //! Naming convention: snake_case in Rust, frontend calls via `invoke('get_usage')`.
 
+use crate::build_account_provider;
 use crate::providers::{
-    Credentials, HeatmapCell, ProviderState, UsageSnapshot,
+    AccountMeta, Credentials, HeatmapCell, PRESETS, Preset, ProviderState, UsageSnapshot,
 };
 use crate::settings::Settings;
 use crate::AppState;
 use std::collections::HashMap;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewWindow, WebviewWindowBuilder};
 
-/// Lightweight provider metadata for the Settings UI.
-#[derive(serde::Serialize)]
-pub struct ProviderInfo {
-    pub id: String,
-    pub display_name: String,
-    pub auth_kind: String,
-    /// Whether the user has saved credentials for this provider.
+/// A configured account plus its credential/registry state, for the Settings UI.
+#[derive(serde::Serialize, Clone)]
+pub struct AccountWithInfo {
+    #[serde(flatten)]
+    pub account: AccountMeta,
+    /// Whether the user has saved credentials for this account.
     pub has_credentials: bool,
-    /// Whether the user has enabled this provider in Settings.
-    pub enabled: bool,
+    /// Whether a polling task is live for this account right now.
+    pub live: bool,
 }
 
-/// Returns all available providers + their configuration state.
-/// Used by both Dashboard (to show which providers are active) and Settings
-/// (to render the credential form list).
+/// The "provider" catalogue handed to the Settings UI: the built-in presets a
+/// user can add + the accounts they've already created.
+#[derive(serde::Serialize)]
+pub struct ProviderCatalog {
+    pub presets: Vec<Preset>,
+    pub accounts: Vec<AccountWithInfo>,
+}
+
+/// Returns the provider catalogue (presets + configured accounts) for the
+/// Settings UI.
 #[tauri::command]
-pub async fn get_providers(state: State<'_, AppState>) -> Result<Vec<ProviderInfo>, String> {
-    let providers = state.registry.list();
+pub async fn get_providers(state: State<'_, AppState>) -> Result<ProviderCatalog, String> {
     let settings = state.settings.get().await;
-    Ok(providers
+    let registry = state.registry.read().await;
+    let live: std::collections::HashSet<String> =
+        registry.list().into_iter().map(|p| p.id()).collect();
+    drop(registry);
+    let accounts = settings
+        .accounts
         .iter()
-        .map(|p| {
-            let id = p.id();
-            let has_creds = state.settings.load_credentials(id).is_some();
-            ProviderInfo {
-                id: id.to_string(),
-                display_name: p.display_name().to_string(),
-                auth_kind: match p.auth_kind() {
-                    crate::providers::AuthKind::BearerKey => "bearer_key".to_string(),
-                    crate::providers::AuthKind::AccessKeySecret => "access_key_secret".to_string(),
-                },
-                has_credentials: has_creds,
-                enabled: settings.enabled_providers.iter().any(|s| s == id),
-            }
+        .map(|a| AccountWithInfo {
+            account: a.clone(),
+            has_credentials: state.settings.load_credentials(&a.instance_id).is_some(),
+            live: live.contains(&a.instance_id),
         })
-        .collect())
+        .collect();
+    Ok(ProviderCatalog {
+        presets: PRESETS.to_vec(),
+        accounts,
+    })
 }
 
 /// Returns the latest `UsageSnapshot` for every provider that has one.
@@ -103,24 +109,32 @@ pub async fn force_refresh(
     app: AppHandle,
     provider_id: Option<String>,
 ) -> Result<(), String> {
-    let settings = state.settings.get().await;
-    let enabled: std::collections::HashSet<String> =
-        settings.enabled_providers.iter().cloned().collect();
-    drop(settings);
+    let registry = state.registry.read().await;
 
     let targets: Vec<_> = match provider_id {
-        Some(ref id) => state
-            .registry
+        Some(ref id) => registry
             .get(id)
             .map(|p| vec![p])
             .ok_or_else(|| format!("unknown provider: {id}"))?,
-        None => state
-            .registry
-            .list()
-            .into_iter()
-            .filter(|p| enabled.contains(p.id()))
-            .collect(),
+        None => {
+            // Refresh only enabled accounts when no specific id is given.
+            let enabled: std::collections::HashSet<String> = state
+                .settings
+                .get()
+                .await
+                .accounts
+                .into_iter()
+                .filter(|a| a.enabled)
+                .map(|a| a.instance_id)
+                .collect();
+            registry
+                .list()
+                .into_iter()
+                .filter(|p| enabled.contains(&p.id()))
+                .collect()
+        }
     };
+    drop(registry);
 
     for provider in targets {
         // Per-provider failures are already surfaced via the provider-error
@@ -321,12 +335,43 @@ pub async fn save_settings(
     state.close_to_tray.store(new_settings.close_to_tray, std::sync::atomic::Ordering::SeqCst);
     state.edge_snap.store(new_settings.edge_snap, std::sync::atomic::Ordering::SeqCst);
 
-    // Drop snapshots for providers the user just disabled. Otherwise the
-    // dashboard keeps showing them until the next restart, which feels broken.
-    let enabled: std::collections::HashSet<String> =
-        new_settings.enabled_providers.iter().cloned().collect();
+    // Reconcile the live registry with the saved accounts: register newly added
+    // accounts (and spawn a polling task), drop stale snapshots for accounts
+    // that were removed or disabled. Enabled/interval edits are picked up by
+    // the existing poll loops via the settings_wake ping below.
+    let account_ids: std::collections::HashSet<String> =
+        new_settings.accounts.iter().map(|a| a.instance_id.clone()).collect();
+    let mut registry = state.registry.write().await;
+    for account in &new_settings.accounts {
+        if registry.get(&account.instance_id).is_none() {
+            if let Some(provider) =
+                build_account_provider(account, state.http.clone(), state.storage.clone())
+            {
+                registry.insert(provider.clone());
+                let app = app.clone();
+                let id = account.instance_id.clone();
+                crate::scheduler::spawn_one(app, provider, id);
+            }
+        }
+    }
+    for id in registry.list() {
+        if !account_ids.contains(&id.id()) {
+            registry.remove(&id.id());
+        }
+    }
+    drop(registry);
+
+    // Drop snapshots for accounts the user just removed or disabled. Otherwise
+    // the dashboard keeps showing them until the next restart, which feels
+    // broken.
+    let enabled_ids: std::collections::HashSet<String> = new_settings
+        .accounts
+        .iter()
+        .filter(|a| a.enabled)
+        .map(|a| a.instance_id.clone())
+        .collect();
     let mut guard = state.state.write().await;
-    guard.retain(|id, _| enabled.contains(id));
+    guard.retain(|id, _| enabled_ids.contains(id));
     drop(guard);
 
     // Tell every window (the dashboard listens for this) that settings
@@ -335,6 +380,79 @@ pub async fn save_settings(
     let _ = app.emit("settings-changed", &new_settings);
     // Wake polling loops immediately so interval/enable edits apply now
     // instead of after the current period.
+    let _ = state.settings_wake.send(());
+    Ok(())
+}
+
+/// Add a new account (or update an existing one by `instance_id`) to Settings
+/// and start polling it. Credentials are saved separately by
+/// [`save_credentials`] once the caller knows the `instance_id`.
+///
+/// A brand-new account is passed with an empty `instance_id`; the backend
+/// assigns one and returns it. Updating an existing account keeps its id.
+#[tauri::command]
+pub async fn upsert_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mut account: AccountMeta,
+) -> Result<String, String> {
+    // Assign an instance_id for brand-new accounts.
+    if account.instance_id.is_empty() {
+        account = AccountMeta::new(&account.provider_kind, account.label.clone());
+    }
+
+    let mut settings = state.settings.get().await;
+    if let Some(existing) = settings
+        .accounts
+        .iter_mut()
+        .find(|a| a.instance_id == account.instance_id)
+    {
+        // Preserve the instance_id; `account` carries the same one here.
+        *existing = account.clone();
+    } else {
+        settings.accounts.push(account.clone());
+    }
+    state
+        .settings
+        .save(settings)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Register a live provider instance and spawn its polling task.
+    let instance_id = account.instance_id.clone();
+    let mut registry = state.registry.write().await;
+    if registry.get(&instance_id).is_none() {
+        if let Some(provider) =
+            build_account_provider(&account, state.http.clone(), state.storage.clone())
+        {
+            registry.insert(provider.clone());
+            crate::scheduler::spawn_one(app, provider, instance_id.clone());
+        }
+    }
+    drop(registry);
+    let _ = state.settings_wake.send(());
+    Ok(instance_id)
+}
+
+/// Remove an account and its credentials. Polling for it stops.
+#[tauri::command]
+pub async fn remove_account(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<(), String> {
+    let mut settings = state.settings.get().await;
+    settings.accounts.retain(|a| a.instance_id != instance_id);
+    state
+        .settings
+        .save(settings)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Remove the live instance, its keyring credentials and its snapshot state.
+    let _ = state.settings.delete_credentials(&instance_id);
+    state.credentials.write().await.remove(&instance_id);
+    state.registry.write().await.remove(&instance_id);
+    state.state.write().await.remove(&instance_id);
     let _ = state.settings_wake.send(());
     Ok(())
 }
@@ -376,21 +494,28 @@ pub async fn delete_credentials(
     Ok(())
 }
 
-/// Tests connectivity for a provider by performing a one-shot fetch with the
-/// supplied credentials (without persisting them). Returns either
+/// Tests connectivity for a provider *kind* by performing a one-shot fetch with
+/// the supplied credentials (without persisting them). Returns either
 /// `Ok(snapshot)` for the frontend to preview, or `Err(message)`.
 ///
-/// This lets the Settings UI show a "test connection" status before saving.
+/// This lets the Settings UI show a "test connection" status before saving -
+/// it works whether or not the account is registered yet.
 #[tauri::command]
 pub async fn test_provider(
     state: State<'_, AppState>,
-    provider_id: String,
+    provider_kind: String,
     creds: Credentials,
 ) -> Result<UsageSnapshot, String> {
-    let provider = state
-        .registry
-        .get(&provider_id)
-        .ok_or_else(|| format!("unknown provider: {provider_id}"))?;
+    let account = AccountMeta {
+        instance_id: format!("test-{provider_kind}"),
+        provider_kind: provider_kind.clone(),
+        label: provider_kind.clone(),
+        accent_color: "#000000".to_string(),
+        enabled: true,
+        note: None,
+    };
+    let provider = build_account_provider(&account, state.http.clone(), state.storage.clone())
+        .ok_or_else(|| format!("unknown provider kind: {provider_kind}"))?;
     provider
         .fetch_usage(&creds)
         .await

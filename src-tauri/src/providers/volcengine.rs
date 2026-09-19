@@ -274,11 +274,17 @@ fn details_window(now: DateTime<Utc>, beijing: FixedOffset) -> (NaiveDate, Naive
 }
 pub struct VolcengineProvider {
     http: Client,
+    instance_id: String,
+    label: String,
 }
 
 impl VolcengineProvider {
-    pub fn new(http: Client) -> Self {
-        Self { http }
+    pub fn new(http: Client, instance_id: String, label: String) -> Self {
+        Self {
+            http,
+            instance_id,
+            label,
+        }
     }
 
     fn afp_query() -> String {
@@ -335,12 +341,16 @@ impl VolcengineProvider {
 
 #[async_trait]
 impl Provider for VolcengineProvider {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> String {
+        self.instance_id.clone()
+    }
+
+    fn kind(&self) -> &'static str {
         "volcengine"
     }
 
-    fn display_name(&self) -> &'static str {
-        "Volcano AgentPlan"
+    fn display_name(&self) -> String {
+        self.label.clone()
     }
 
     fn auth_kind(&self) -> AuthKind {
@@ -415,8 +425,8 @@ impl Provider for VolcengineProvider {
         };
 
         Ok(UsageSnapshot {
-            provider_id: self.id().to_string(),
-            provider_display_name: self.display_name().to_string(),
+            provider_id: self.id(),
+            provider_display_name: self.display_name(),
             plan_tier: afp.plan_type,
             timestamp: now,
             windows,

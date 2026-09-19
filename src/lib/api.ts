@@ -4,11 +4,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AccountMeta,
   BurnInfo,
   Credentials,
   HeatmapCell,
+  ProviderCatalog,
   ProviderError,
-  ProviderInfo,
   ProviderState,
   Settings,
   TestResult,
@@ -17,8 +18,22 @@ import type {
   WindowMode,
 } from "./types";
 
-export async function getProviders(): Promise<ProviderInfo[]> {
-  return invoke<ProviderInfo[]>("get_providers");
+/** Returns the provider catalogue (built-in presets + configured accounts) for
+ * the Settings UI. */
+export async function getProviders(): Promise<ProviderCatalog> {
+  return invoke<ProviderCatalog>("get_providers");
+}
+
+/** Add a new account (or update an existing one by `instance_id`). A brand-new
+ * account is passed with an empty `instance_id`; the backend assigns one and
+ * it is returned here. */
+export async function upsertAccount(account: AccountMeta): Promise<string> {
+  return invoke<string>("upsert_account", { account });
+}
+
+/** Remove an account and its credentials. Polling for it stops. */
+export async function removeAccount(instanceId: string): Promise<void> {
+  await invoke<void>("remove_account", { instanceId });
 }
 
 export async function getUsage(): Promise<UsageSnapshot[]> {
@@ -90,14 +105,15 @@ export async function deleteCredentials(
 }
 
 /** Test a provider connection without persisting credentials. Returns a
- * snapshot preview on success, or an error string on failure. */
+ * snapshot preview on success, or an error string on failure. Takes a provider
+ * *kind* (works even before the account is registered). */
 export async function testProvider(
-  providerId: string,
+  providerKind: string,
   creds: Credentials,
 ): Promise<TestResult> {
   try {
     const snapshot = await invoke<UsageSnapshot>("test_provider", {
-      providerId,
+      providerKind,
       creds,
     });
     return { ok: true, snapshot };

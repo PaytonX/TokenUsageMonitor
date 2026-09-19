@@ -25,12 +25,16 @@ impl MockProvider {
 
 #[async_trait]
 impl Provider for MockProvider {
-    fn id(&self) -> &'static str {
-        self.id
+    fn id(&self) -> String {
+        self.id.to_string()
     }
 
-    fn display_name(&self) -> &'static str {
-        self.display_name
+    fn kind(&self) -> &'static str {
+        "mock"
+    }
+
+    fn display_name(&self) -> String {
+        self.display_name.to_string()
     }
 
     fn auth_kind(&self) -> crate::providers::AuthKind {

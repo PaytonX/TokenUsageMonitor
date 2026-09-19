@@ -6,7 +6,7 @@
 //! Until step 7 is exercised in the UI, `Settings::load()` returns a default
 //! config with all providers disabled, which lets the dashboard start clean.
 
-use crate::providers::Credentials;
+use crate::providers::{preset_display_name, AccountMeta, Credentials};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -15,7 +15,13 @@ use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    /// Legacy field (pre multi-account). Kept for backward compatibility: on
+    /// startup, if `accounts` is empty this list seeds the initial accounts.
+    #[serde(default)]
     pub enabled_providers: Vec<String>,
+    /// User-configured accounts (the source of truth since multi-account).
+    #[serde(default)]
+    pub accounts: Vec<AccountMeta>,
     /// Polling interval seconds. 0 = use per-provider default.
     pub poll_interval_seconds: u32,
     /// Persisted dashboard position (last known). Restored on startup.
@@ -80,6 +86,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             enabled_providers: Vec::new(),
+            accounts: Vec::new(),
             poll_interval_seconds: 0,
             dashboard_x: None,
             dashboard_y: None,
@@ -93,6 +100,40 @@ impl Default for Settings {
             edge_snap: default_edge_snap(),
         }
     }
+}
+
+/// Backward compatibility: turn the pre-multi-account `enabled_providers` list
+/// into initial `AccountMeta` entries so existing users' configs still load.
+/// No-op when the config already has accounts.
+///
+/// Legacy credentials lived under the provider kind (e.g. "deepseek"); the
+/// migrated `instance_id` is the same value, so the existing keyring entries
+/// are picked up as-is - no credential migration needed.
+fn migrate_legacy(mut settings: Settings, config_path: &PathBuf) -> Result<Settings> {
+    if !settings.accounts.is_empty() || settings.enabled_providers.is_empty() {
+        return Ok(settings);
+    }
+    for kind in std::mem::take(&mut settings.enabled_providers) {
+        settings.accounts.push(AccountMeta {
+            instance_id: kind.clone(),
+            provider_kind: kind.clone(),
+            label: preset_display_name(&kind),
+            accent_color: crate::providers::PRESETS
+                .iter()
+                .find(|p| p.kind == kind)
+                .map(|p| p.default_accent)
+                .unwrap_or("#29b6f6")
+                .to_string(),
+            enabled: true,
+            note: None,
+        });
+    }
+    let new_settings = settings.clone();
+    let tmp = config_path.with_extension("toml.tmp");
+    let body = toml::to_string_pretty(&new_settings).with_context(|| "serializing migrated config")?;
+    std::fs::write(&tmp, body).with_context(|| "writing migrated tmp config")?;
+    std::fs::rename(&tmp, config_path).with_context(|| "renaming migrated config")?;
+    Ok(new_settings)
 }
 
 #[derive(Clone)]
@@ -115,7 +156,10 @@ impl SettingsStore {
                 .with_context(|| "reading config.toml")?;
             let parsed: Settings = toml::from_str(&raw)
                 .with_context(|| "parsing config.toml")?;
-            Arc::new(RwLock::new(parsed))
+            // Migrate legacy `enabled_providers` configs to the multi-account
+            // model, writing the upgraded config back when it changed.
+            let migrated = migrate_legacy(parsed, &config_path)?;
+            Arc::new(RwLock::new(migrated))
         } else {
             Arc::new(RwLock::new(Settings::default()))
         };
@@ -128,6 +172,13 @@ impl SettingsStore {
 
     pub async fn get(&self) -> Settings {
         self.cache.read().await.clone()
+    }
+
+    /// Synchronous read of the cached settings. Safe for one-shot startup use
+    /// before the async runtime drives concurrent accesses (a write hold here
+    /// would only come from an in-flight `save`, which hasn't happened yet).
+    pub fn read_blocking(&self) -> Settings {
+        self.cache.try_read().map(|s| s.clone()).unwrap_or_default()
     }
 
     /// Sync, non-async read of `close_to_tray`. Used by the synchronous

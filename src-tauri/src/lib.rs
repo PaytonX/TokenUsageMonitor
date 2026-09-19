@@ -18,7 +18,7 @@ pub mod signing;
 pub mod storage;
 
 use providers::{
-    Credentials, ProviderRegistry, SharedProviderState,
+    AccountMeta, Credentials, ProviderRegistry, SharedProviderState,
     deepseek::DeepSeekProvider, minimax::MiniMaxProvider,
     volcengine::VolcengineProvider,
 };
@@ -35,13 +35,14 @@ use tokio::sync::{watch, RwLock};
 
 /// Global application state shared across IPC commands and the scheduler.
 pub struct AppState {
-    /// All known providers, keyed by `Provider::id()`.
-    pub registry: ProviderRegistry,
-    /// Latest snapshot + last error per provider.
+    /// Live provider instances, keyed by `AccountMeta::instance_id`. Wrapped
+    /// in an `RwLock` so accounts can be added/removed at runtime from Settings.
+    pub registry: Arc<RwLock<ProviderRegistry>>,
+    /// Latest snapshot + last error per account instance.
     pub state: SharedProviderState,
-    /// User-configured credentials per provider id. Populated at startup
-    /// from `SettingsStore::load_credentials` and kept in sync by Settings UI
-    /// via `save_credentials` / `delete_credentials`.
+    /// User-configured credentials per account instance id. Populated at
+    /// startup from `SettingsStore::load_credentials` and kept in sync by the
+    /// Settings UI via `save_credentials` / `delete_credentials`.
     pub credentials: Arc<RwLock<HashMap<String, Credentials>>>,
     /// SQLite store for daily snapshots (heatmap data).
     pub storage: Arc<storage::Storage>,
@@ -58,6 +59,8 @@ pub struct AppState {
     /// A ping on this channel wakes every polling task so interval edits and
     /// enable/disable changes apply immediately instead of after one period.
     pub settings_wake: Arc<watch::Sender<()>>,
+    /// Shared HTTP client for building provider instances at runtime.
+    pub http: Client,
     /// Cached `Settings::close_to_tray`, mirrored so the synchronous window
     /// close interceptor can read it without an async lock. Kept in sync by
     /// `ipc::save_settings`.
@@ -71,33 +74,53 @@ pub struct AppState {
     pub _tray: TrayIcon,
 }
 
-/// The set of provider ids the app knows how to register. Anything in the
-/// user's `enabled_providers` list (or any unknown id) is ignored unless it
-/// appears here, so users can't accidentally enable a non-existent provider.
-const KNOWN_PROVIDER_IDS: &[&str] = &["minimax", "deepseek", "volcengine"];
+/// Build a live provider instance for one account. Each account gets its own
+/// instance, so multiple accounts on the same kind are fully isolated in
+/// storage (keyed by `instance_id`) and in the frontend.
+pub fn build_account_provider(
+    account: &AccountMeta,
+    http: Client,
+    storage: Arc<crate::storage::Storage>,
+) -> Option<Arc<dyn providers::Provider>> {
+    let kind = account.provider_kind.as_str();
+    let label = account.label.clone();
+    let instance_id = account.instance_id.clone();
+    let p: Arc<dyn providers::Provider> = match kind {
+        "minimax" => Arc::new(MiniMaxProvider::new(http, storage, instance_id, label)),
+        "deepseek" => Arc::new(DeepSeekProvider::new(http, storage, instance_id, label)),
+        "volcengine" => Arc::new(VolcengineProvider::new(http, instance_id, label)),
+        _ => return None,
+    };
+    Some(p)
+}
 
-/// Build the provider registry. We always register every known provider so
-/// `test_provider` and `get_providers` can list them in the Settings UI -
-/// the scheduler only polls providers whose id is in
-/// `Settings::enabled_providers`.
-fn build_registry(http: Client, storage: Arc<storage::Storage>) -> ProviderRegistry {
+/// Build the provider registry from the user's configured accounts. Only known
+/// kinds are instantiated; unknown kinds are skipped.
+fn build_registry(
+    accounts: &[AccountMeta],
+    http: Client,
+    storage: Arc<storage::Storage>,
+) -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
-    registry.register(MiniMaxProvider::new(http.clone(), storage.clone()));
-    registry.register(DeepSeekProvider::new(http.clone(), storage.clone()));
-    registry.register(VolcengineProvider::new(http));
+    for account in accounts {
+        if let Some(p) = build_account_provider(account, http.clone(), storage.clone()) {
+            registry.insert(p);
+        }
+    }
     registry
 }
 
-/// Load any saved credentials for the known providers into the in-memory
+/// Load any saved credentials for the configured accounts into the in-memory
 /// cache. Failures (no creds saved, keyring unavailable) are silently skipped
 /// - the cache just stays empty and the provider returns NotConfigured.
 fn load_credentials_into_cache(
     settings_store: &settings::SettingsStore,
+    accounts: &[AccountMeta],
 ) -> HashMap<String, Credentials> {
     let mut map = HashMap::new();
-    for id in KNOWN_PROVIDER_IDS {
-        if let Some(creds) = settings_store.load_credentials(id) {
-            map.insert((*id).to_string(), creds);
+    for account in accounts {
+        if let Some(creds) = settings_store.load_credentials(&account.instance_id) {
+            map.insert(account.instance_id.clone(), creds);
         }
     }
     map
@@ -146,8 +169,16 @@ pub fn run() {
                 .build()
                 .expect("building reqwest client");
 
-            let registry = build_registry(http, store.clone());
-            let credentials = load_credentials_into_cache(&settings_store);
+            let registry = {
+                // First-load the settings to learn the configured accounts.
+                let accounts = settings_store.read_blocking().accounts;
+                let reg = build_registry(&accounts, http.clone(), store.clone());
+                Arc::new(RwLock::new(reg))
+            };
+            let credentials = {
+                let accounts = settings_store.read_blocking().accounts;
+                load_credentials_into_cache(&settings_store, &accounts)
+            };
 
             // burn / notify shared state.
             let burn: SharedBurnTracker =
@@ -217,6 +248,7 @@ pub fn run() {
                 notify: notify_state,
                 pause_tx,
                 settings_wake,
+                http,
                 close_to_tray,
                 edge_snap,
                 _tray: tray,
@@ -297,6 +329,8 @@ pub fn run() {
             ipc::save_settings,
             ipc::save_credentials,
             ipc::delete_credentials,
+            ipc::upsert_account,
+            ipc::remove_account,
             ipc::test_provider,
         ])
         .run(tauri::generate_context!())

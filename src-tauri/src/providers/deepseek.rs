@@ -65,18 +65,30 @@ struct BalanceInfoRaw {
 pub struct DeepSeekProvider {
     http: Client,
     storage: Arc<Storage>,
+    instance_id: String,
+    label: String,
 }
 
 impl DeepSeekProvider {
-    pub fn new(http: Client, storage: Arc<Storage>) -> Self {
-        Self { http, storage }
+    pub fn new(http: Client, storage: Arc<Storage>, instance_id: String, label: String) -> Self {
+        Self {
+            http,
+            storage,
+            instance_id,
+            label,
+        }
+    }
+
+    /// Storage keyspace / account id for this instance.
+    fn self_id(&self) -> &str {
+        &self.instance_id
     }
 
     /// Account for a balance change since the previous poll.
     fn record_balance_delta(&self, current: f64) {
         let baseline = self
             .storage
-            .kv_get(self.id(), KV_LAST_BALANCE)
+            .kv_get(self.self_id(), KV_LAST_BALANCE)
             .ok()
             .flatten()
             .and_then(|s| s.trim().parse::<f64>().ok());
@@ -86,7 +98,7 @@ impl DeepSeekProvider {
                 // First observation: just establish the baseline.
                 let _ = self
                     .storage
-                    .kv_set(self.id(), KV_LAST_BALANCE, &fmt_f64(current));
+                    .kv_set(self.self_id(), KV_LAST_BALANCE, &fmt_f64(current));
             }
             Some(prev) => {
                 let delta = prev - current;
@@ -94,28 +106,28 @@ impl DeepSeekProvider {
                     // Balance dropped -> that drop is spend.
                     let _ = self
                         .storage
-                        .accumulate_daily(self.id(), delta, UsageUnit::Cny);
+                        .accumulate_daily(self.self_id(), delta, UsageUnit::Cny);
                     let _ = self
                         .storage
-                        .kv_set(self.id(), KV_LAST_BALANCE, &fmt_f64(current));
+                        .kv_set(self.self_id(), KV_LAST_BALANCE, &fmt_f64(current));
                 } else if delta < -DELTA_EPSILON {
                     // Balance rose -> top-up. Rebaseline and track the top-up
                     // for the monthly window.
                     let topup = self
                         .storage
-                        .kv_get(self.id(), KV_MONTH_TOPUP)
+                        .kv_get(self.self_id(), KV_MONTH_TOPUP)
                         .ok()
                         .flatten()
                         .and_then(|s| s.trim().parse::<f64>().ok())
                         .unwrap_or(0.0);
                     let _ = self.storage.kv_set(
-                        self.id(),
+                        self.self_id(),
                         KV_MONTH_TOPUP,
                         &fmt_f64(topup + -delta),
                     );
                     let _ = self
                         .storage
-                        .kv_set(self.id(), KV_LAST_BALANCE, &fmt_f64(current));
+                        .kv_set(self.self_id(), KV_LAST_BALANCE, &fmt_f64(current));
                 }
             }
         }
@@ -125,19 +137,19 @@ impl DeepSeekProvider {
     /// calendar-month rollover by rebasing on the current balance.
     fn month_spend_window(&self, current: f64) -> Option<WindowUsage> {
         let month_key = chrono::Local::now().format("%Y-%m").to_string();
-        let stored_month = self.storage.kv_get(self.id(), KV_MONTH_KEY).ok().flatten();
+        let stored_month = self.storage.kv_get(self.self_id(), KV_MONTH_KEY).ok().flatten();
 
         let month_start = if stored_month.as_deref() != Some(month_key.as_str()) {
             // New month: the month starts from the current balance.
-            let _ = self.storage.kv_set(self.id(), KV_MONTH_KEY, &month_key);
+            let _ = self.storage.kv_set(self.self_id(), KV_MONTH_KEY, &month_key);
             let _ = self
                 .storage
-                .kv_set(self.id(), KV_MONTH_START_BALANCE, &fmt_f64(current));
-            let _ = self.storage.kv_set(self.id(), KV_MONTH_TOPUP, "0");
+                .kv_set(self.self_id(), KV_MONTH_START_BALANCE, &fmt_f64(current));
+            let _ = self.storage.kv_set(self.self_id(), KV_MONTH_TOPUP, "0");
             current
         } else {
             self.storage
-                .kv_get(self.id(), KV_MONTH_START_BALANCE)
+                .kv_get(self.self_id(), KV_MONTH_START_BALANCE)
                 .ok()
                 .flatten()
                 .and_then(|s| s.trim().parse::<f64>().ok())
@@ -146,7 +158,7 @@ impl DeepSeekProvider {
 
         let topup = self
             .storage
-            .kv_get(self.id(), KV_MONTH_TOPUP)
+            .kv_get(self.self_id(), KV_MONTH_TOPUP)
             .ok()
             .flatten()
             .and_then(|s| s.trim().parse::<f64>().ok())
@@ -165,12 +177,16 @@ impl DeepSeekProvider {
 
 #[async_trait]
 impl Provider for DeepSeekProvider {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> String {
+        self.instance_id.clone()
+    }
+
+    fn kind(&self) -> &'static str {
         "deepseek"
     }
 
-    fn display_name(&self) -> &'static str {
-        "DeepSeek API"
+    fn display_name(&self) -> String {
+        self.label.clone()
     }
 
     fn auth_kind(&self) -> AuthKind {
@@ -227,13 +243,13 @@ impl Provider for DeepSeekProvider {
 
         let heatmap: Option<Vec<HeatmapCell>> = self
             .storage
-            .load_heatmap(self.id(), 90)
+            .load_heatmap(self.self_id(), 90)
             .ok()
             .filter(|v| !v.is_empty());
 
         Ok(UsageSnapshot {
-            provider_id: self.id().to_string(),
-            provider_display_name: self.display_name().to_string(),
+            provider_id: self.id(),
+            provider_display_name: self.display_name(),
             plan_tier: None,
             timestamp: Utc::now(),
             windows: UsageWindows {

@@ -115,11 +115,22 @@ struct ModelRemains {
 pub struct MiniMaxProvider {
     http: Client,
     storage: Arc<Storage>,
+    instance_id: String,
+    label: String,
 }
 
 impl MiniMaxProvider {
-    pub fn new(http: Client, storage: Arc<Storage>) -> Self {
-        Self { http, storage }
+    pub fn new(http: Client, storage: Arc<Storage>, instance_id: String, label: String) -> Self {
+        Self {
+            http,
+            storage,
+            instance_id,
+            label,
+        }
+    }
+
+    fn self_id(&self) -> &str {
+        &self.instance_id
     }
 }
 
@@ -163,12 +174,16 @@ fn weekly_window(row: &ModelRemains) -> WindowUsage {
 
 #[async_trait]
 impl Provider for MiniMaxProvider {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> String {
+        self.instance_id.clone()
+    }
+
+    fn kind(&self) -> &'static str {
         "minimax"
     }
 
-    fn display_name(&self) -> &'static str {
-        "MiniMax Token Plan"
+    fn display_name(&self) -> String {
+        self.label.clone()
     }
 
     fn auth_kind(&self) -> AuthKind {
@@ -229,20 +244,20 @@ impl Provider for MiniMaxProvider {
         // percent so the heatmap still shows day-to-day activity intensity.
         let daily_value = consumed_pct(general.current_interval_remaining_percent);
         let _ = self.storage.record_daily(
-            self.id(),
+            self.self_id(),
             daily_value,
             UsageUnit::Percent,
         );
 
         let heatmap: Option<Vec<HeatmapCell>> = self
             .storage
-            .load_heatmap(self.id(), 90)
+            .load_heatmap(self.self_id(), 90)
             .ok()
             .filter(|v| !v.is_empty());
 
         Ok(UsageSnapshot {
-            provider_id: self.id().to_string(),
-            provider_display_name: self.display_name().to_string(),
+            provider_id: self.id(),
+            provider_display_name: self.display_name(),
             plan_tier: None,
             timestamp: now,
             windows,

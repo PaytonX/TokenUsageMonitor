@@ -58,14 +58,42 @@ export interface UsageUpdate {
   active: boolean;
 }
 
-export interface ProviderInfo {
-  id: string;
+/** Mirrors Rust `AccountMeta` (providers/mod.rs). A user-configured account
+ * bound to one provider kind. `instance_id` is the stable key used everywhere
+ * the old `provider_id` singleton was: keyring entry, snapshot provider_id,
+ * heatmap keyspace and the frontend card key. */
+export interface AccountMeta {
+  instance_id: string;
+  provider_kind: string;
+  label: string;
+  /** Per-account accent colour, `#RRGGBB`. */
+  accent_color: string;
+  enabled: boolean;
+  note?: string;
+}
+
+/** Mirrors Rust `Preset`. A built-in provider kind the user can add accounts
+ * from. */
+export interface Preset {
+  kind: string;
   display_name: string;
   auth_kind: "bearer_key" | "access_key_secret";
-  /** True if credentials are stored in the OS credential manager. */
+  default_accent: string;
+}
+
+/** Mirrors Rust `AccountWithInfo` (ipc.rs): an account plus its credential
+ * and registry state for the Settings UI. */
+export interface AccountWithInfo extends AccountMeta {
   has_credentials: boolean;
-  /** True if the user has enabled this provider in Settings. */
-  enabled: boolean;
+  /** Whether a polling task is live for this account right now. */
+  live: boolean;
+}
+
+/** Mirrors Rust `ProviderCatalog` (ipc.rs): the built-in presets a user can
+ * add + the accounts they've already created. */
+export interface ProviderCatalog {
+  presets: Preset[];
+  accounts: AccountWithInfo[];
 }
 
 export interface ProviderState {
@@ -87,7 +115,11 @@ export type WindowMode = "dashboard" | "compact";
 
 /** User-facing settings persisted in config.toml. Mirrors Rust `Settings`. */
 export interface Settings {
+  /** Legacy enable list (pre multi-account). Seeded into `accounts` on first
+   * load; kept for backward compatibility. */
   enabled_providers: string[];
+  /** User-configured accounts (the source of truth since multi-account). */
+  accounts: AccountMeta[];
   /** Polling interval seconds. 0 = use per-provider default (5 min). */
   poll_interval_seconds: number;
   /** Persisted dashboard position. Restored on startup. */
