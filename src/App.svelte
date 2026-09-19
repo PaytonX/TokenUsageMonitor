@@ -18,7 +18,9 @@
     type Settings,
     type BurnInfo,
     ringWindowRemaining,
-    providerBrandMark,
+    providerShortName,
+    hexToRgb,
+    lightenHex,
   } from "./lib";
   import ProviderCard from "./lib/components/ProviderCard.svelte";
   import ProgressRing from "./lib/components/ProgressRing.svelte";
@@ -237,20 +239,32 @@
     }
   });
 
-  // Mini pill (compact mode) — focused provider color/brand mark.
+  // Mini pill (compact mode) — focused provider color/name.
   const focusedColor = $derived(
     focusedSnapshot ? colorOf(focusedSnapshot.provider_id) : FOCUS_FALLBACK_COLOR,
   );
-  // 胶囊品牌字标：取短名的 2-4 字符品牌缩写（如 MiniMax→“MM”、OpenAI→“OAI”），
-  // 用品牌色填充，宽度自适应，永不截断；悬停 title 显示完整账户名。
-  const focusedBrandMark = $derived(
+  const focusedName = $derived(
     focusedSnapshot
-      ? providerBrandMark(
+      ? providerShortName(
           focusedSnapshot.provider_id,
           focusedSnapshot.provider_display_name,
         )
-      : "全",
+      : "全部来源",
   );
+  // 胶囊右侧品牌色芯片：账户强调色的低饱和底 + 同色文字展示完整短名，
+  // flex:1 填满分隔线到右缘（固定布局、非自适应），消除右侧空白；
+  // 超长自定义标签以省略号兜底，悬停 title 显示完整账户名。
+  const badgeStyle = $derived.by(() => {
+    const rgb = hexToRgb(focusedColor);
+    if (!rgb) {
+      return "background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.2); color: var(--tum-text-primary);";
+    }
+    return [
+      `background: rgba(${rgb}, 0.16)`,
+      `border: 1px solid rgba(${rgb}, 0.45)`,
+      `color: ${lightenHex(focusedColor, 0.18)}`,
+    ].join("; ");
+  });
   const providerFullName = $derived(
     focusedSnapshot ? focusedSnapshot.provider_display_name : "全部来源",
   );
@@ -535,9 +549,9 @@
           <span class="pill__divider"></span>
           <span
             class="pill__badge"
-            style:background={focusedColor}
+            style={badgeStyle}
             title={providerFullName}
-          >{focusedBrandMark}</span>
+          >{focusedName}</span>
         </button>
         <button
           type="button"
@@ -933,6 +947,7 @@
      red breathe (>=95%, spec §5.2 CompactPill). */
   .pill {
     height: 100%;
+    position: relative;
     display: flex;
     flex-direction: column;
     padding: 0 8px;
@@ -1043,23 +1058,31 @@
   }
 
   .pill__badge {
-    /* 品牌彩色字标：圆角胶囊，内容自适应宽度，永不截断 */
-    min-width: 20px;
-    height: 18px;
-    padding: 0 5px;
-    border-radius: 9px;
+    /* 品牌色芯片：flex:1 填满分隔线到右缘的固定布局（非自适应宽度），
+       展示完整 Provider 短名；底色/描边/文字色由内联 style 注入。 */
+    flex: 1;
+    min-width: 0;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 10px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font-size: 10px;
-    font-weight: 700;
-    font-family: var(--tum-font-mono);
+    font-weight: 600;
+    font-family: var(--tum-font);
     letter-spacing: 0.2px;
-    color: #0b0e14;
-    flex-shrink: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-sizing: border-box;
   }
 
   .pill__close {
+    /* 关闭钮悬浮右上角（不占布局空间，悬停时淡入），为品牌芯片让出宽度 */
+    position: absolute;
+    top: 4px;
+    right: 4px;
     width: 18px;
     height: 18px;
     border: none;
@@ -1070,7 +1093,6 @@
     line-height: 1;
     cursor: pointer;
     opacity: 0;
-    flex-shrink: 0;
     transition: opacity 0.2s ease, background 0.2s ease, color 0.2s ease;
   }
 
