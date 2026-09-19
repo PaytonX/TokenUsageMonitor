@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     formatUsage,
+    percent,
     remainingPercent,
     type BurnInfo,
     type UsageSnapshot,
@@ -50,6 +51,31 @@
     usedPct >= 0.95 ? "crit" : usedPct >= 0.8 ? "warn" : "ok",
   );
 
+  // Dual-ring (feedback #8): providers with both a quota'd 5h window and a
+  // longer window show TWO windows on one ring — inner = 5h short window,
+  // outer = the long window (weekly, falling back to monthly). Providers
+  // without a 5h window keep a single ring.
+  let shortRemain = $derived(
+    w.five_hour && w.five_hour.quota > 0 ? 1 - percent(w.five_hour) : null,
+  );
+  let longWin = $derived(
+    (w.weekly && w.weekly.quota > 0
+      ? w.weekly
+      : w.monthly && w.monthly.quota > 0
+        ? w.monthly
+        : null),
+  );
+  let useDual = $derived(shortRemain !== null && longWin !== null);
+  let longRemain = $derived(longWin ? 1 - percent(longWin) : null);
+  let hasWeeklyQuota = $derived(Boolean(w.weekly && w.weekly.quota > 0));
+  let dualLegend = $derived(
+    useDual
+      ? hasWeeklyQuota
+        ? "内环：5 小时窗口 · 外环：周用量窗口"
+        : "内环：5 小时窗口 · 外环：月度窗口"
+      : "",
+  );
+
   let expanded = $state(false);
 </script>
 
@@ -92,8 +118,12 @@
       {#if balanceLabel}
         <span class="card__balance" title="账户余额">{balanceLabel}</span>
       {/if}
-      <span class="card__ring">
-        <ProgressRing value={remaining} label={ringLabel} size={36} stroke={4} />
+      <span class="card__ring" title={useDual ? dualLegend : undefined}>
+        {#if useDual}
+          <ProgressRing value={shortRemain!} outerValue={longRemain!} label={ringLabel} size={36} stroke={4} />
+        {:else}
+          <ProgressRing value={remaining} label={ringLabel} size={36} stroke={4} />
+        {/if}
       </span>
     </div>
   </header>

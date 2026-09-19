@@ -11,23 +11,48 @@
     label?: string;
     /** No data yet: neutral empty track, no progress arc, no crit glow. */
     idle?: boolean;
+    /** Optional outer ring (dual-ring mode): inner = `value`, outer = this.
+     *  Used to juxtapose a short window (inner) against a long window
+     *  (outer). When absent, a single ring is drawn. */
+    outerValue?: number;
+    /** Gap between the inner and outer rings, in px. */
+    outerGap?: number;
   }
 
-  let { value, size = 56, stroke = 4, label, idle = false }: Props = $props();
+  let {
+    value,
+    size = 56,
+    stroke = 4,
+    label,
+    idle = false,
+    outerValue,
+    outerGap = 2,
+  }: Props = $props();
 
   let gradientSeq = $state(nextSeq++);
   let gradientId = `tum-ring-grad-${gradientSeq}`;
 
   let clamped = $derived(Math.min(1, Math.max(0, value)));
-  let radius = $derived((size - stroke) / 2);
+  let hasOuter = $derived(outerValue !== undefined);
+  // Single ring uses the full radius; dual ring lays the inner ring inside
+  // the outer one (outer = `value`? no: outer = `outerValue`).
+  let outerRadius = $derived((size - stroke) / 2);
+  let radius = $derived(hasOuter ? outerRadius - stroke - outerGap : outerRadius);
   let circumference = $derived(2 * Math.PI * radius);
   let offset = $derived(circumference * (1 - clamped));
+
+  let outerClamped = $derived(Math.min(1, Math.max(0, outerValue ?? 0)));
+  let outerCircumference = $derived(2 * Math.PI * outerRadius);
+  let outerOffset = $derived(outerCircumference * (1 - outerClamped));
 
   // value = REMAINING; thresholds align with spec: used >= 95% crit, >= 80% warn
   let tone = $derived(idle ? "ok" : 1 - clamped >= 0.95 ? "crit" : 1 - clamped >= 0.8 ? "warn" : "ok");
   let isCrit = $derived(!idle && tone === "crit");
 
-  let fontSize = $derived(Math.max(9, Math.round(size * 0.34)));
+  // Dual ring leaves a smaller center hole — shrink the label to fit.
+  let fontSize = $derived(
+    Math.max(9, Math.round(size * 0.34) * (hasOuter ? 0.72 : 1)),
+  );
 </script>
 
 <svg
@@ -51,6 +76,34 @@
       {/if}
     </linearGradient>
   </defs>
+
+  {#if hasOuter}
+    <circle
+      cx={size / 2}
+      cy={size / 2}
+      r={outerRadius}
+      fill="none"
+      stroke="rgba(255,255,255,0.06)"
+      stroke-width={stroke}
+    />
+    {#if !idle}
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={outerRadius}
+        fill="none"
+        stroke={`url(#${gradientId})`}
+        stroke-width={stroke}
+        stroke-linecap="round"
+        stroke-dasharray={outerCircumference}
+        stroke-dashoffset={outerOffset}
+        opacity="0.55"
+        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        style="transition: stroke-dashoffset 0.6s ease"
+      />
+    {/if}
+  {/if}
+
   <circle
     cx={size / 2}
     cy={size / 2}
