@@ -169,7 +169,8 @@
 
   /* .card 属于 ProviderCard 的作用域，跨组件祖先选择器必须 :global */
   :global(.card:hover) .detail,
-  :global(.card:focus-within) .detail {
+  :global(.card:focus-within) .detail,
+  :global(.card--expanded) .detail {
     opacity: 1;
     pointer-events: auto;
   }

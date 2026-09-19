@@ -1,36 +1,72 @@
 <script lang="ts">
   import {
     formatUsage,
+    remainingPercent,
+    type BurnInfo,
     type UsageSnapshot,
   } from "../types";
   import UsageBar from "./UsageBar.svelte";
   import ResetCountdown from "./ResetCountdown.svelte";
+  import ProgressRing from "./ProgressRing.svelte";
+  import PulseDot from "./PulseDot.svelte";
+  import DetailCard from "./DetailCard.svelte";
 
   interface Props {
     snapshot: UsageSnapshot;
     error?: string | null;
+    burn?: BurnInfo | null;
+    active?: boolean;
+    lastRefreshAt?: number;
   }
 
-  let { snapshot, error = null }: Props = $props();
+  let {
+    snapshot,
+    error = null,
+    burn = null,
+    active = false,
+    lastRefreshAt = Date.now(),
+  }: Props = $props();
 
   let w = $derived(snapshot.windows);
   let balanceLabel = $derived.by(() => {
     if (!w.balance) return null;
     return `${formatUsage(w.balance.total, "cny")}`;
   });
+
+  // Ring shows REMAINING; tone thresholds are on used % (80 / 95).
+  let remaining = $derived(remainingPercent(snapshot));
+  let usedPct = $derived(1 - remaining);
+  let ringLabel = $derived(`${Math.round(remaining * 100)}%`);
+  let tone = $derived<"ok" | "warn" | "crit">(
+    usedPct >= 0.95 ? "crit" : usedPct >= 0.8 ? "warn" : "ok",
+  );
+
+  let expanded = $state(false);
 </script>
 
-<article class="card" data-tauri-drag-region={false}>
+<article class="card" class:card--expanded={expanded} data-tauri-drag-region={false}>
   <header class="card__head">
-    <div class="card__title">
+    <button
+      type="button"
+      class="card__titlebtn"
+      aria-expanded={expanded}
+      aria-label={`${snapshot.provider_display_name}${active ? "，正在请求" : ""}用量详情`}
+      onclick={() => (expanded = !expanded)}
+    >
+      <PulseDot {active} {tone} size={8} />
       <span class="card__name">{snapshot.provider_display_name}</span>
-      {#if snapshot.plan_tier}
-        <span class="card__tier">{snapshot.plan_tier}</span>
-      {/if}
-    </div>
-    {#if balanceLabel}
-      <span class="card__balance" title="账户余额">{balanceLabel}</span>
+    </button>
+    {#if snapshot.plan_tier}
+      <span class="card__tier">{snapshot.plan_tier}</span>
     {/if}
+    <div class="card__head-right">
+      {#if balanceLabel}
+        <span class="card__balance" title="账户余额">{balanceLabel}</span>
+      {/if}
+      <span class="card__ring">
+        <ProgressRing value={remaining} label={ringLabel} size={36} stroke={4} />
+      </span>
+    </div>
   </header>
 
   {#if error}
@@ -60,10 +96,13 @@
       {/if}
     {/if}
   </div>
+
+  <DetailCard {snapshot} {burn} {lastRefreshAt} />
 </article>
 
 <style>
   .card {
+    position: relative;
     background: var(--tum-surface);
     border: 1px solid var(--tum-border);
     border-radius: var(--tum-radius-md);
@@ -79,6 +118,10 @@
     background: var(--tum-surface-hover);
   }
 
+  .card--expanded {
+    z-index: 6;
+  }
+
   .card__head {
     display: flex;
     justify-content: space-between;
@@ -86,10 +129,25 @@
     gap: var(--tum-space-2);
   }
 
-  .card__title {
+  .card__titlebtn {
     display: flex;
     align-items: center;
     gap: var(--tum-space-2);
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: default;
+  }
+
+  .card__titlebtn:focus-visible {
+    outline: 2px solid var(--tum-accent);
+    outline-offset: 2px;
+    border-radius: var(--tum-radius-xs);
   }
 
   .card__name {
@@ -97,6 +155,9 @@
     font-weight: 600;
     color: var(--tum-text-primary);
     letter-spacing: 0.3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .card__tier {
@@ -112,12 +173,25 @@
     text-transform: uppercase;
   }
 
+  .card__head-right {
+    display: flex;
+    align-items: center;
+    gap: var(--tum-space-2);
+    flex: none;
+  }
+
   .card__balance {
     font-family: var(--tum-font-mono);
     font-size: var(--tum-font-size-sm);
     color: var(--tum-success);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.4px;
+  }
+
+  .card__ring {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .card__bars {
