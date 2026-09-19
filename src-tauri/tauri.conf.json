@@ -30,8 +30,7 @@
         "maximizable": false,
         "fullscreen": false,
         "windowEffects": {
-          "effects": ["mica"],
-          "state": "dark"
+          "effects": ["micaDark"]
         }
       }
     ],
