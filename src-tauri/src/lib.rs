@@ -26,8 +26,11 @@ use notify::SharedNotifyState;
 use reqwest::Client;
 use scheduler::SharedBurnTracker;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tokio::sync::{watch, RwLock};
 
 /// Global application state shared across IPC commands and the scheduler.
@@ -55,6 +58,17 @@ pub struct AppState {
     /// A ping on this channel wakes every polling task so interval edits and
     /// enable/disable changes apply immediately instead of after one period.
     pub settings_wake: Arc<watch::Sender<()>>,
+    /// Cached `Settings::close_to_tray`, mirrored so the synchronous window
+    /// close interceptor can read it without an async lock. Kept in sync by
+    /// `ipc::save_settings`.
+    pub close_to_tray: Arc<AtomicBool>,
+    /// Cached `Settings::edge_snap`, mirrored for the synchronous `Moved`
+    /// handler. Kept in sync by `ipc::save_settings`.
+    pub edge_snap: Arc<AtomicBool>,
+    /// Holds the tray icon alive for the app lifetime. Never referenced after
+    /// construction.
+    #[allow(dead_code)]
+    pub _tray: TrayIcon,
 }
 
 /// The set of provider ids the app knows how to register. Anything in the
@@ -151,6 +165,48 @@ pub fn run() {
             let (settings_wake, _wake_rx) = watch::channel(());
             let settings_wake = Arc::new(settings_wake);
 
+            // Mirror close-to-tray / edge-snap into atomics so the synchronous
+            // window-event handlers below can read them without an async lock.
+            // ipc::save_settings keeps them in sync when the user edits settings.
+            let close_to_tray = Arc::new(AtomicBool::new(settings_store.close_to_tray_now()));
+            let edge_snap = Arc::new(AtomicBool::new(settings_store.edge_snap_now()));
+
+            // System tray: lets the app stay resident when the dashboard window
+            // is hidden (close-to-tray) and gives a show/quit menu.
+            let tray_mgr = app.handle().clone();
+            let show_item = MenuItem::with_id(&tray_mgr, "show", "显示面板", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(&tray_mgr, "quit", "退出", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(&tray_mgr, &[&show_item, &quit_item])?;
+            let tray = TrayIconBuilder::with_id("main-tray")
+                .icon(app.default_window_icon().expect("default window icon").clone())
+                .tooltip("TokenUsageMonitor")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        if let Some(w) = tray.app_handle().get_webview_window("dashboard") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                })
+                .on_menu_event(|app_handle, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(w) = app_handle.get_webview_window("dashboard") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "quit" => app_handle.exit(0),
+                    _ => {}
+                })
+                .build(&tray_mgr)?;
+
             let state = AppState {
                 registry,
                 state: Arc::new(RwLock::new(HashMap::new())),
@@ -161,6 +217,9 @@ pub fn run() {
                 notify: notify_state,
                 pause_tx,
                 settings_wake,
+                close_to_tray,
+                edge_snap,
+                _tray: tray,
             };
 
             app.manage(state);
@@ -178,6 +237,34 @@ pub fn run() {
                     && !startup_clamped.swap(true, std::sync::atomic::Ordering::SeqCst)
                 {
                     ipc::clamp_window_to_work_area(&dash_for_clamp, 8.0);
+                }
+            });
+
+            // Close-to-tray: when the user closes the dashboard, hide it to the
+            // tray instead of quitting. The tray's "退出" item calls app.exit
+            // which bypasses this. Reads the cached flag synchronously.
+            let close_flag = dash.clone();
+            let close_flag_inner = close_flag.clone();
+            let close_to_tray_flag = app.state::<AppState>().close_to_tray.clone();
+            close_flag.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    if close_to_tray_flag.load(Ordering::SeqCst) {
+                        api.prevent_close();
+                        let _ = close_flag_inner.hide();
+                    }
+                }
+            });
+
+            // Edge snap: while the user drags the dashboard, when it comes near
+            // a screen edge snap to that edge. Reads the cached flag synchronously.
+            let snap_dash = dash.clone();
+            let snap_dash_inner = snap_dash.clone();
+            let edge_snap_flag = app.state::<AppState>().edge_snap.clone();
+            snap_dash.on_window_event(move |event| {
+                if matches!(event, tauri::WindowEvent::Moved(_))
+                    && edge_snap_flag.load(Ordering::SeqCst)
+                {
+                    ipc::snap_to_edges(&snap_dash_inner, 14.0);
                 }
             });
 

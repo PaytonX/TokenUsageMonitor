@@ -17,7 +17,7 @@
     type ProviderError,
     type Settings,
     type BurnInfo,
-    remainingPercent,
+    ringWindowRemaining,
   } from "./lib";
   import ProviderCard from "./lib/components/ProviderCard.svelte";
   import ProgressRing from "./lib/components/ProgressRing.svelte";
@@ -125,11 +125,13 @@
     unlistenFns.push(() => clearInterval(tick));
   });
 
-  // Aggregate progress ring shows the worst remaining % across all providers.
+  // Aggregate progress ring shows the worst remaining % across all providers,
+  // resolved through the user's `ring_window` setting (auto = most critical).
+  let ringWindow = $derived((settings?.ring_window ?? "auto") || "auto");
   let aggregateRemaining = $derived(
     snapshots.length === 0
       ? 0
-      : Math.min(...snapshots.map(remainingPercent)),
+      : Math.min(...snapshots.map((s) => ringWindowRemaining(s, ringWindow))),
   );
   let aggregateLabel = $derived(
     snapshots.length === 0
@@ -144,7 +146,9 @@
       : (snapshots.find((s) => s.provider_id === focus) ?? null),
   );
   let ringPercent = $derived(
-    focusedSnapshot ? remainingPercent(focusedSnapshot) : aggregateRemaining,
+    focusedSnapshot
+      ? ringWindowRemaining(focusedSnapshot, ringWindow)
+      : aggregateRemaining,
   );
   let ringLabel = $derived(
     focusedSnapshot

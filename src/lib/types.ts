@@ -100,6 +100,11 @@ export interface Settings {
   /** Notification thresholds in percent (B4 settings UI edits these). */
   notify_warn_percent: number;
   notify_crit_percent: number;
+  /** Window the ring gauges show: "auto" | "five_hour" | "daily" | "weekly" |
+   *  | "monthly". "auto" = each provider's most critical window. */
+  ring_window: string;
+  /** Snap the dashboard to screen edges when dragged near one. */
+  edge_snap: boolean;
 }
 
 /** Tagged union mirroring Rust `Credentials`. The `kind` field discriminates. */
@@ -162,6 +167,25 @@ export function remainingPercent(snap: UsageSnapshot): number {
   return Math.min(
     ...windows.map((w) => 1 - percent(w)),
   );
+}
+
+/**
+ * Resolve the ring gauge for a provider according to the user's `ring_window`
+ * setting. "auto" → the provider's most critical (highest-used) quota window,
+ * so all providers report their single most urgent number; explicit keys show
+ * that specific window. Falls back to the aggregate remaining % when the
+ * requested window has no quota.
+ */
+export function ringWindowRemaining(
+  snap: UsageSnapshot,
+  ringWindow: string,
+): number {
+  if (ringWindow === "auto") {
+    const c = mostCriticalWindow(snap);
+    return c ? 1 - percent(c.window) : remainingPercent(snap);
+  }
+  const w = snap.windows[ringWindow as WindowKey];
+  return w && w.quota > 0 ? 1 - percent(w) : remainingPercent(snap);
 }
 
 export type WindowKey = "five_hour" | "daily" | "weekly" | "monthly";

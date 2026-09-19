@@ -37,6 +37,15 @@ pub struct Settings {
     /// Notification threshold (percent used) for the critical level.
     #[serde(default = "default_notify_crit_percent")]
     pub notify_crit_percent: u8,
+    /// Which usage window the ring gauges show: "auto" (per provider's most
+    /// critical window), or an explicit "five_hour" | "daily" | "weekly" |
+    /// "monthly".
+    #[serde(default = "default_ring_window")]
+    pub ring_window: String,
+    /// Snap the dashboard to screen edges when it is dragged near one. Default
+    /// on.
+    #[serde(default = "default_edge_snap")]
+    pub edge_snap: bool,
 }
 
 fn default_close_to_tray() -> bool {
@@ -51,6 +60,14 @@ fn default_notify_crit_percent() -> u8 {
     95
 }
 
+fn default_ring_window() -> String {
+    "auto".to_string()
+}
+
+fn default_edge_snap() -> bool {
+    true
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -63,6 +80,8 @@ impl Default for Settings {
             close_to_tray: default_close_to_tray(),
             notify_warn_percent: default_notify_warn_percent(),
             notify_crit_percent: default_notify_crit_percent(),
+            ring_window: default_ring_window(),
+            edge_snap: default_edge_snap(),
         }
     }
 }
@@ -100,6 +119,19 @@ impl SettingsStore {
 
     pub async fn get(&self) -> Settings {
         self.cache.read().await.clone()
+    }
+
+    /// Sync, non-async read of `close_to_tray`. Used by the synchronous
+    /// `on_window_event` close interceptor in lib.rs. Tokio RwLock write holds
+    /// are brief (settings saves are rare), so `try_read` is reliable here.
+    pub fn close_to_tray_now(&self) -> bool {
+        self.cache.try_read().map(|s| s.close_to_tray).unwrap_or(true)
+    }
+
+    /// Sync, non-async read of `edge_snap`. Same rationale as
+    /// `close_to_tray_now`.
+    pub fn edge_snap_now(&self) -> bool {
+        self.cache.try_read().map(|s| s.edge_snap).unwrap_or(true)
     }
 
     pub async fn save(&self, new_settings: Settings) -> Result<()> {

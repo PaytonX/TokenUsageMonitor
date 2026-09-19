@@ -33,6 +33,8 @@
   let providers = $state<ProviderFormState[]>([]);
   let settings = $state<Settings | null>(null);
   let pollInterval = $state<number>(0);
+  let ringWindow = $state<string>("auto");
+  let edgeSnap = $state(true);
   let saving = $state(false);
   let savedFlash = $state(false);
 
@@ -50,6 +52,8 @@
     }));
     settings = await getSettings();
     pollInterval = settings.poll_interval_seconds ?? 0;
+    ringWindow = settings.ring_window ?? "auto";
+    edgeSnap = settings.edge_snap ?? true;
   });
 
   function isAccessKey(info: ProviderInfo): boolean {
@@ -145,6 +149,8 @@
       const next: Settings = {
         ...settings,
         poll_interval_seconds: pollInterval,
+        ring_window: ringWindow,
+        edge_snap: edgeSnap,
       };
       await saveSettings(next);
       settings = next;
@@ -198,6 +204,36 @@
       />
       <span class="interval__hint">秒 · 0 = 使用默认（5 分钟）</span>
     </label>
+  </section>
+
+  <section class="settings__section">
+    <h2 class="settings__section-title">环形用量窗口</h2>
+    <p class="settings__hint">
+      主面板与迷你胶囊的百分比圆环基于哪个窗口计算。
+    </p>
+    <label class="interval">
+      <select class="interval-select" bind:value={ringWindow}>
+        <option value="auto">自动（各来源最紧张窗口）</option>
+        <option value="five_hour">5 小时窗口</option>
+        <option value="daily">当日窗口</option>
+        <option value="weekly">周用量窗口</option>
+        <option value="monthly">月度窗口</option>
+      </select>
+    </label>
+  </section>
+
+  <section class="settings__section">
+    <h2 class="settings__section-title">行为</h2>
+    <div class="behavior-row">
+      <div class="behavior-info">
+        <span class="behavior-label">靠边吸附</span>
+        <span class="behavior-hint">拖动面板贴近屏幕边缘时自动吸附。</span>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" bind:checked={edgeSnap} />
+        <span class="toggle__track"><span class="toggle__thumb"></span></span>
+      </label>
+    </div>
   </section>
 
   <section class="settings__section">
@@ -410,6 +446,27 @@
     box-shadow: 0 0 0 2px var(--tum-accent-fill);
   }
 
+  .interval-select {
+    width: 100%;
+    max-width: 260px;
+    min-width: 160px;
+    padding: 6px 10px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid var(--tum-border);
+    border-radius: var(--tum-radius-xs);
+    color: var(--tum-text-primary);
+    font-family: var(--tum-font);
+    font-size: var(--tum-font-size-base);
+    -webkit-app-region: no-drag;
+    cursor: pointer;
+  }
+
+  .interval-select:focus {
+    outline: none;
+    border-color: var(--tum-accent-stroke);
+    box-shadow: 0 0 0 2px var(--tum-accent-fill);
+  }
+
   .interval__hint {
     font-size: var(--tum-font-size-sm);
     color: var(--tum-text-muted);
@@ -418,11 +475,38 @@
   }
 
   /* Provider list scrolls independently of header/footer */
-  .settings__section:nth-of-type(2) {
+  .settings__section:nth-of-type(4) {
     flex: 1;
     overflow-y: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--tum-border) transparent;
+  }
+
+  .behavior-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--tum-space-3);
+    -webkit-app-region: no-drag;
+  }
+
+  .behavior-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .behavior-label {
+    font-size: var(--tum-font-size-base);
+    font-weight: 600;
+    color: var(--tum-text-primary);
+    letter-spacing: 0.3px;
+  }
+
+  .behavior-hint {
+    font-size: var(--tum-font-size-sm);
+    color: var(--tum-text-muted);
+    line-height: 1.4;
   }
 
   .provider {

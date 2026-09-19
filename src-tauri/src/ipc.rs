@@ -181,6 +181,46 @@ pub fn clamp_window_to_work_area(window: &WebviewWindow, margin_logical: f64) ->
     changed
 }
 
+/// Snap the window to the nearest screen edge when it is dragged within
+/// `margin_logical` of one. Called from the dashboard's `Moved` window event.
+pub fn snap_to_edges(window: &WebviewWindow, margin_logical: f64) -> bool {
+    let Ok(pos) = window.outer_position() else { return false; };
+    let Ok(size) = window.outer_size() else { return false; };
+    let Ok(Some(monitor)) = window.current_monitor() else { return false; };
+    let area = monitor.work_area();
+    let margin = margin_logical * f64::from(monitor.scale_factor());
+    let mut nx = f64::from(pos.x);
+    let mut ny = f64::from(pos.y);
+    let w = f64::from(size.width);
+    let h = f64::from(size.height);
+    let (ax, ay) = (f64::from(area.position.x), f64::from(area.position.y));
+    let (aw, ah) = (f64::from(area.size.width), f64::from(area.size.height));
+
+    // Snap horizontally: near the left edge, or (window's right edge) near the
+    // work area's right edge.
+    if (nx - ax).abs() <= margin {
+        nx = ax;
+    } else if ((ax + aw) - (nx + w)).abs() <= margin {
+        nx = ax + aw - w;
+    }
+    // Snap vertically: near the top edge, or (window's bottom edge) near the
+    // work area's bottom edge.
+    if (ny - ay).abs() <= margin {
+        ny = ay;
+    } else if ((ay + ah) - (ny + h)).abs() <= margin {
+        ny = ay + ah - h;
+    }
+
+    if nx != f64::from(pos.x) || ny != f64::from(pos.y) {
+        let _ = window.set_position(PhysicalPosition::new(
+            nx.round() as i32,
+            ny.round() as i32,
+        ));
+        return true;
+    }
+    false
+}
+
 /// Switch the dashboard window between full and compact modes.
 #[tauri::command]
 pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String> {
@@ -275,6 +315,11 @@ pub async fn save_settings(
         .save(new_settings.clone())
         .await
         .map_err(|e| e.to_string())?;
+
+    // Mirror the cached window-behavior flags so the synchronous window-event
+    // handlers (close-to-tray, edge snap) pick up the change immediately.
+    state.close_to_tray.store(new_settings.close_to_tray, std::sync::atomic::Ordering::SeqCst);
+    state.edge_snap.store(new_settings.edge_snap, std::sync::atomic::Ordering::SeqCst);
 
     // Drop snapshots for providers the user just disabled. Otherwise the
     // dashboard keeps showing them until the next restart, which feels broken.
