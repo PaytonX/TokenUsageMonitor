@@ -4,7 +4,7 @@
 //! deliver at most one warn and one crit notification; once usage falls back
 //! below the warn threshold (window reset) the key is cleared and re-armed.
 
-use crate::providers::{BurnInfo, UsageSnapshot, UsageUnit};
+use crate::providers::{BurnInfo, UsageSnapshot};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -131,7 +131,7 @@ pub type SharedNotifyState = std::sync::Arc<tokio::sync::Mutex<NotifyState>>;
 #[cfg(test)]
 mod notify_state_tests {
     use super::*;
-    use crate::providers::{UsageWindows, WindowUsage};
+    use crate::providers::{UsageUnit, UsageWindows, WindowUsage};
 
     fn window(pct: f64) -> WindowUsage {
         WindowUsage {
