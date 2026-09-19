@@ -1,73 +1,84 @@
 /* TokenUsageMonitor design system
- * Aesthetic: aerospace instrument cluster
- *   - Deep slate canvas with subtle phosphor amber accent
- *   - Monospace numerics for that "telemetry readout" feel
- *   - Flat color blocks (no gradients), sharp 2-4px corners
- *   - Hard-edged geometry; no soft pastels, no purple gradients
+ * Aesthetic: Fluent glass (inspired by Pulse, adapted to Windows 11)
+ *   - Mica window body (#1a1b1e fallback) with CSS glass surface layers
+ *   - System-blue accent #4cc2ff; ok/warn/crit status gradients
+ *   - Soft 12/16px geometry, pill radius 999px, tabular numerals
+ * Legacy phosphor amber (#fbbf24) survives only as --tum-amber:
+ * settings brand dot and the heatmap "today" stroke.
  */
 
 :root {
-  /* Color palette - deep slate + phosphor amber */
-  --tum-bg: rgba(10, 14, 26, 0.92);
-  --tum-bg-solid: rgb(10, 14, 26);
-  --tum-bg-elevated: rgba(17, 22, 38, 0.85);
-  --tum-surface: rgba(20, 27, 45, 0.85);
-  --tum-surface-hover: rgba(32, 41, 64, 0.9);
-  --tum-border: rgba(148, 163, 184, 0.14);
-  --tum-border-strong: rgba(148, 163, 184, 0.28);
+  /* Window body - Mica is applied at the Tauri window level (Win11);
+     these are the solid fallback colors on older systems / when Mica fails */
+  --tum-bg: #1a1b1e;
+  --tum-bg-solid: #1a1b1e;
 
-  --tum-text-primary: #f1f5f9;
-  --tum-text-secondary: #94a3b8;
-  --tum-text-muted: #475569;
+  /* Glass surface layers (rgba white over Mica) */
+  --tum-surface: rgba(255, 255, 255, 0.055);
+  --tum-surface-hover: rgba(255, 255, 255, 0.085);
+  --tum-border: rgba(255, 255, 255, 0.09);
+  --tum-border-strong: rgba(255, 255, 255, 0.16);
 
-  /* Single primary accent: phosphor amber (no second hue, no gradient) */
-  --tum-accent: #fbbf24;
-  --tum-accent-hover: #fcd34d;
-  --tum-accent-glow: rgba(251, 191, 36, 0.35);
-  --tum-accent-fill: rgba(251, 191, 36, 0.12);
-  --tum-accent-fill-strong: rgba(251, 191, 36, 0.22);
-  --tum-accent-stroke: rgba(251, 191, 36, 0.42);
+  /* Text */
+  --tum-text-primary: #e6e8ea;
+  --tum-text-secondary: #b3b9c0;
+  --tum-text-muted: #8b949e;
 
-  /* Status hues - kept muted so amber stays dominant */
-  --tum-success: #4ade80;
-  --tum-success-fill: rgba(74, 222, 128, 0.12);
-  --tum-warning: #fb923c;
-  --tum-danger: #f87171;
-  --tum-danger-fill: rgba(248, 113, 113, 0.10);
+  /* Accent: Windows system blue (focus / hover / brand / "ok" gradient start) */
+  --tum-accent: #4cc2ff;
+  --tum-accent-hover: #7dd3fc;
+  --tum-accent-glow: rgba(76, 194, 255, 0.35);
+  --tum-accent-fill: rgba(76, 194, 255, 0.12);
+  --tum-accent-fill-strong: rgba(76, 194, 255, 0.22);
+  --tum-accent-stroke: rgba(76, 194, 255, 0.45);
 
-  /* Spacing scale */
+  /* Status hues + gradient fills (spec decision 2) */
+  --tum-ok: #6ccb5f;
+  --tum-warn: #ffc83d;
+  --tum-crit: #ff5f56;
+  --tum-grad-ok: linear-gradient(90deg, #4cc2ff, #6ccb5f);
+  --tum-grad-warn: linear-gradient(90deg, #e8b53d, #ffc83d);
+  --tum-grad-crit: linear-gradient(90deg, #e05248, #ff5f56);
+
+  /* Legacy status aliases (consumed by existing components / Settings.svelte) */
+  --tum-success: var(--tum-ok);
+  --tum-success-fill: rgba(108, 203, 95, 0.12);
+  --tum-warning: var(--tum-warn);
+  --tum-danger: var(--tum-crit);
+  --tum-danger-fill: rgba(255, 95, 86, 0.10);
+
+  /* Legacy phosphor amber - brand dot + heatmap-today only */
+  --tum-amber: #fbbf24;
+  --tum-amber-glow: rgba(251, 191, 36, 0.35);
+
+  /* Spacing scale (unchanged) */
   --tum-space-1: 4px;
   --tum-space-2: 8px;
   --tum-space-3: 12px;
   --tum-space-4: 16px;
   --tum-space-5: 24px;
 
-  /* Radius - hard geometry, very small radii */
-  --tum-radius-xs: 2px;
-  --tum-radius-sm: 3px;
-  --tum-radius-md: 4px;
-  --tum-radius-lg: 6px;
+  /* Radius - Fluent soft geometry; pill 999 */
+  --tum-radius-xs: 4px;
+  --tum-radius-sm: 8px;
+  --tum-radius-md: 12px;
+  --tum-radius-lg: 16px;
+  --tum-radius-pill: 999px;
 
-  /* Typography
-   * Numerics & data: Cascadia Code (ships with Win11) - telemetry readout feel
-   * UI text: Segoe UI Variable Display (Win11) with wide tracking on labels
-   */
-  --tum-font: "Segoe UI Variable Display", "Segoe UI", -apple-system, sans-serif;
-  --tum-font-mono: "Cascadia Code", "Cascadia Mono", "JetBrains Mono", "Consolas", monospace;
+  /* Typography */
+  --tum-font: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --tum-font-mono: "Cascadia Code", "Cascadia Mono", Consolas, monospace;
   --tum-font-size-xs: 10px;
   --tum-font-size-sm: 11px;
   --tum-font-size-base: 13px;
   --tum-font-size-lg: 16px;
   --tum-font-size-xl: 20px;
 
-  /* Subtle scanline overlay - hidden by default, opt-in via class */
-  --tum-scanline: repeating-linear-gradient(
-    0deg,
-    rgba(255, 255, 255, 0.012) 0px,
-    rgba(255, 255, 255, 0.012) 1px,
-    transparent 1px,
-    transparent 3px
-  );
+  /* Acrylic-style blur for floating cards (DetailCard in B3) */
+  --tum-blur-card: 24px;
+
+  /* Kept for compatibility; no component currently references it */
+  --tum-scanline: none;
 }
 
 * {
@@ -86,7 +97,6 @@ body {
   color: var(--tum-text-primary);
   user-select: none;
   -webkit-user-select: none;
-  /* Tighten default text rendering for that instrument feel */
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }

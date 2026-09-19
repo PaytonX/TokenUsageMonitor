@@ -342,8 +342,8 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--tum-accent);
-    box-shadow: 0 0 8px var(--tum-accent-glow), 0 0 2px var(--tum-accent);
+    background: var(--tum-amber);
+    box-shadow: 0 0 8px var(--tum-amber-glow), 0 0 2px var(--tum-amber);
   }
 
   .settings__title {
