@@ -184,7 +184,6 @@
       <span class="settings__dot"></span>
       <span class="settings__title">TokenUsageMonitor · 设置</span>
     </div>
-    <button class="settings__close" onclick={handleClose} title="保存并关闭">×</button>
   </header>
 
   <section class="settings__section">
@@ -352,24 +351,6 @@
     letter-spacing: 0.6px;
     text-transform: uppercase;
     font-family: var(--tum-font-mono);
-  }
-
-  .settings__close {
-    width: 28px;
-    height: 28px;
-    border: none;
-    background: transparent;
-    color: var(--tum-text-secondary);
-    font-size: 20px;
-    line-height: 1;
-    cursor: pointer;
-    border-radius: var(--tum-radius-sm);
-    -webkit-app-region: no-drag;
-  }
-
-  .settings__close:hover {
-    color: var(--tum-text-primary);
-    background: var(--tum-surface);
   }
 
   .settings__section {

@@ -46,7 +46,7 @@
   const PROVIDER_SHORT_NAMES: Record<string, string> = {
     minimax: "MiniMax",
     deepseek: "DeepSeek",
-    volcengine: "火山",
+    volcengine: "Volcano",
   };
 
   // Global focus: "all" (aggregate min) or one provider_id. Drives the
@@ -1018,12 +1018,13 @@
   }
 
   /* Floating field overlay (feedback #2): rendered at window level so the
-     full detail (rows + 7-day chart) is never clipped by a small card. It
-     sits above the cards list; hit-testing passes through to the hovered
-     card underneath so the overlay can't cause hover flicker. */
+     full detail (rows + 7-day chart) is never clipped by a small card. It is
+     docked along the bottom (above the footer) so it does NOT cover the
+     provider cards being scanned; hit-testing passes through to what is
+     underneath so the overlay can't cause hover flicker. */
   .detail-overlay {
     position: fixed;
-    top: 52px;
+    bottom: 48px;
     left: 14px;
     right: 14px;
     z-index: 60;

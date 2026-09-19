@@ -179,9 +179,9 @@
 
   .heatmap__cols {
     display: grid;
-    grid-template-columns: repeat(5, 14px);
-    gap: 3px;
-    justify-content: center;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 4px;
+    justify-items: center;
   }
 
   .heatmap__col {
