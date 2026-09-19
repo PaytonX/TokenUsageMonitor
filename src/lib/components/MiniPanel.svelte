@@ -16,8 +16,12 @@
   let { snapshots, actives = {} }: Props = $props();
 </script>
 
-<div class="mini" data-tauri-drag-region={false} role="list">
-  <h2 class="sr-only">已启用来源用量</h2>
+<div
+  class="mini"
+  data-tauri-drag-region={false}
+  role="list"
+  aria-label="已启用来源用量"
+>
   {#each snapshots as s (s.provider_id)}
     {@const critical = mostCriticalWindow(s)}
     {@const usedPct = critical ? percent(critical.window) : 0}
@@ -45,18 +49,6 @@
     flex-direction: column;
     gap: 6px;
     padding: 2px 0 8px;
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
   }
 
   .mini__row--empty {

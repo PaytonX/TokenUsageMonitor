@@ -184,7 +184,7 @@
   let pillHovered = $state(false);
   let pillFaded = $state(false);
   let pillFadeTimer: ReturnType<typeof setTimeout> | null = null;
-  let pillDragStart: { x: number; y: number } | null = null;
+  let pillDragStart: { x: number; y: number; fromControl: boolean } | null = null;
   let pillDidDrag = false;
   let pillFadeGen = 0;
 
@@ -288,7 +288,11 @@
 
   function onPillPointerDown(event: PointerEvent) {
     if (event.button !== 0) return;
-    pillDragStart = { x: event.clientX, y: event.clientY };
+    pillDragStart = {
+      x: event.clientX,
+      y: event.clientY,
+      fromControl: (event.target as HTMLElement).closest("button") !== null,
+    };
     pillDidDrag = false;
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   }
@@ -308,9 +312,10 @@
   function onPillPointerUp(event: PointerEvent) {
     if (!pillDragStart || event.button !== 0) return;
     const didDrag = pillDidDrag;
+    const fromControl = pillDragStart.fromControl;
     pillDragStart = null;
     pillDidDrag = false;
-    if (!didDrag) {
+    if (!didDrag && !fromControl) {
       void toggleMode();
     } else {
       void refreshPillFade();
@@ -428,31 +433,35 @@
       onpointermove={onPillPointerMove}
       onpointerup={onPillPointerUp}
       oncontextmenu={(e) => e.preventDefault()}
-      role="button"
-      tabindex="0"
-      aria-label="恢复主面板"
-      onkeydown={(e) => {
-        if (e.target !== e.currentTarget) return;
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          void toggleMode();
-        }
-      }}
+      role="group"
+      aria-label="迷你用量面板"
     >
       <div class="pill__main">
-        <div class="pill__ring">
-          <ProgressRing value={ringPercent} label="" size={24} stroke={3} idle={snapshots.length === 0} />
-          <span
-            class="pill__percent"
-            class:pill__percent--crit={pillTone === "crit"}
-          >{ringLabel}</span>
-        </div>
-        <span class="pill__divider"></span>
-        <span class="pill__dot" style:background={focusedColor}></span>
-        <span class="pill__name">{focusedName}</span>
         <button
+          type="button"
+          class="pill__restore"
+          aria-label="恢复主面板"
+          onclick={(e) => {
+            e.stopPropagation();
+            void toggleMode();
+          }}
+        >
+          <span class="pill__ring">
+            <ProgressRing value={ringPercent} label="" size={24} stroke={3} idle={snapshots.length === 0} />
+            <span
+              class="pill__percent"
+              class:pill__percent--crit={pillTone === "crit"}
+            >{ringLabel}</span>
+          </span>
+          <span class="pill__divider"></span>
+          <span class="pill__dot" style:background={focusedColor}></span>
+          <span class="pill__name">{focusedName}</span>
+        </button>
+        <button
+          type="button"
           class="pill__close"
           title="关闭应用"
+          aria-label="关闭应用"
           onpointerdown={(e) => e.stopPropagation()}
           onclick={(e) => {
             e.stopPropagation();
@@ -865,6 +874,28 @@
     gap: 6px;
   }
 
+  .pill__restore {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .pill__restore:focus-visible {
+    outline: 2px solid var(--tum-accent);
+    outline-offset: -2px;
+    border-radius: var(--tum-radius-pill);
+  }
+
   .pill__ring {
     display: flex;
     align-items: center;
@@ -929,5 +960,11 @@
   .pill__close:hover {
     background: var(--tum-danger-fill);
     color: var(--tum-danger);
+  }
+
+  .pill__close:focus-visible {
+    opacity: 1;
+    outline: 2px solid var(--tum-accent);
+    outline-offset: -2px;
   }
 </style>
