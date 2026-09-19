@@ -248,6 +248,14 @@
         )
       : "全部",
   );
+  // 胶囊品牌字母徽标：取短名的首字符作为徽标字母（如全部→“全”、MiniMax→“M”），
+  // 用品牌色填充，永不截断；悬停 title 显示完整账户名。
+  const focusedInitial = $derived(
+    focusedName.replace(/[\s/(（]/g, "").charAt(0) || "?",
+  );
+  const providerFullName = $derived(
+    focusedSnapshot ? focusedSnapshot.provider_display_name : "全部来源",
+  );
 
   // Pill fade machine (spec §3.4): fade to 22% after 2.5s while parked near
   // a screen edge in compact mode; pointer enter / leaving the edge /
@@ -527,8 +535,11 @@
             >{ringArcLabel}</span>
           </span>
           <span class="pill__divider"></span>
-          <span class="pill__dot" style:background={focusedColor}></span>
-          <span class="pill__name">{focusedName}</span>
+          <span
+            class="pill__badge"
+            style:background={focusedColor}
+            title={providerFullName}
+          >{focusedInitial}</span>
         </button>
         <button
           type="button"
@@ -1033,21 +1044,19 @@
     flex-shrink: 0;
   }
 
-  .pill__dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .pill__name {
-    font-size: var(--tum-font-size-xs);
+  .pill__badge {
+    /* 品牌字母徽标：填充式方块，字母居中，永不截断 */
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
     font-family: var(--tum-font);
-    color: var(--tum-text-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
+    color: #0b0e14;
+    flex-shrink: 0;
   }
 
   .pill__close {
