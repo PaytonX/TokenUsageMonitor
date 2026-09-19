@@ -97,6 +97,8 @@ export interface Settings {
   autostart_hint_shown: boolean;
   /** Close button hides to tray instead of quitting (B4). */
   close_to_tray: boolean;
+  /** Whether to fire OS notifications on threshold breach. */
+  notify_enabled: boolean;
   /** Notification thresholds in percent (B4 settings UI edits these). */
   notify_warn_percent: number;
   notify_crit_percent: number;

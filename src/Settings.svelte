@@ -35,6 +35,7 @@
   let pollInterval = $state<number>(0);
   let ringWindow = $state<string>("auto");
   let edgeSnap = $state(true);
+  let notifyEnabled = $state(true);
   let saving = $state(false);
   let savedFlash = $state(false);
 
@@ -54,6 +55,7 @@
     pollInterval = settings.poll_interval_seconds ?? 0;
     ringWindow = settings.ring_window ?? "auto";
     edgeSnap = settings.edge_snap ?? true;
+    notifyEnabled = settings.notify_enabled ?? true;
   });
 
   function isAccessKey(info: ProviderInfo): boolean {
@@ -151,6 +153,7 @@
         poll_interval_seconds: pollInterval,
         ring_window: ringWindow,
         edge_snap: edgeSnap,
+        notify_enabled: notifyEnabled,
       };
       await saveSettings(next);
       settings = next;
@@ -231,6 +234,16 @@
       </div>
       <label class="toggle">
         <input type="checkbox" bind:checked={edgeSnap} />
+        <span class="toggle__track"><span class="toggle__thumb"></span></span>
+      </label>
+    </div>
+    <div class="behavior-row">
+      <div class="behavior-info">
+        <span class="behavior-label">用量告急通知</span>
+        <span class="behavior-hint">用量跨越警告/告急阈值时弹出系统通知。</span>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" bind:checked={notifyEnabled} />
         <span class="toggle__track"><span class="toggle__thumb"></span></span>
       </label>
     </div>
@@ -477,7 +490,11 @@
   /* Provider list scrolls independently of header/footer */
   .settings__section:nth-of-type(4) {
     flex: 1;
+    /* 关键：flex 子元素默认 min-height:auto，会导致内容撑开父级而非滚动；
+       设 0 才能让滚动区收缩到剩余高度并真正 overflow 滚动 */
+    min-height: 0;
     overflow-y: auto;
+    padding-bottom: var(--tum-space-4);
     scrollbar-width: thin;
     scrollbar-color: var(--tum-border) transparent;
   }

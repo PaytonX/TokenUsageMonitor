@@ -276,9 +276,10 @@ pub async fn poll_one(
             };
 
             // Threshold notification state machine. Lock order is fixed:
-            // snapshot map -> burn (released) -> settings -> notify.
+            // snapshot map -> burn (released) -> settings -> notify. Skips OS
+            // delivery entirely when the "用量告急通知" setting is off.
+            let settings = state.settings.get().await;
             let action = {
-                let settings = state.settings.get().await;
                 let mut notify_guard = state.notify.lock().await;
                 notify_guard.evaluate(
                     &snapshot,
@@ -287,8 +288,10 @@ pub async fn poll_one(
                     settings.notify_crit_percent,
                 )
             };
-            if let NotifyAction::Fire { title, body, .. } = &action {
-                notify::deliver(app, title, body);
+            if settings.notify_enabled {
+                if let NotifyAction::Fire { title, body, .. } = &action {
+                    notify::deliver(app, title, body);
+                }
             }
 
             let update = UsageUpdate {

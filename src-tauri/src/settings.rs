@@ -31,6 +31,10 @@ pub struct Settings {
     /// Close button hides to tray instead of quitting. Default true.
     #[serde(default = "default_close_to_tray")]
     pub close_to_tray: bool,
+    /// Whether to fire OS notifications when usage crosses a threshold.
+    /// Default true.
+    #[serde(default = "default_notify_enabled")]
+    pub notify_enabled: bool,
     /// Notification threshold (percent used) for the warning level.
     #[serde(default = "default_notify_warn_percent")]
     pub notify_warn_percent: u8,
@@ -49,6 +53,10 @@ pub struct Settings {
 }
 
 fn default_close_to_tray() -> bool {
+    true
+}
+
+fn default_notify_enabled() -> bool {
     true
 }
 
@@ -78,6 +86,7 @@ impl Default for Settings {
             compact_mode: false,
             autostart_hint_shown: false,
             close_to_tray: default_close_to_tray(),
+            notify_enabled: default_notify_enabled(),
             notify_warn_percent: default_notify_warn_percent(),
             notify_crit_percent: default_notify_crit_percent(),
             ring_window: default_ring_window(),
