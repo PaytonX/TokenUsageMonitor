@@ -137,31 +137,13 @@
     null,
   );
 
-  // Snapshots that actually carry heatmap data — drives the tab list.
-  let snapshotsWithHeatmap = $derived(
-    snapshots.filter(
-      (s) => s.heatmap && s.heatmap.length > 0,
-    ),
-  );
-  let hasHeatmap = $derived(snapshotsWithHeatmap.length > 0);
-
-  // Prefer the heatmap cells' own unit (e.g. Volcano windows are AFP but its
-  // heatmap cells are Tokens); fall back to the windows' unit.
-  let heatmapUnit = $derived(
-    activeSnapshot?.heatmap?.[0]?.unit ??
-    activeSnapshot?.windows?.monthly?.unit ??
-    activeSnapshot?.windows?.weekly?.unit ??
-    activeSnapshot?.windows?.five_hour?.unit ??
-    "tokens"
-  );
-
-  // Ensure heatmapTabId always points at a snapshot that exists &
-  // (preferably) has heatmap data, so the heatmap tab is never orphaned.
+  // HeatmapGrid self-fetches per provider via get_heatmap, so every provider
+  // can own a heatmap tab regardless of snapshot-embedded cells.
   $effect(() => {
     if (snapshots.length === 0) return;
     const stillExists = snapshots.some((s) => s.provider_id === heatmapTabId);
     if (!stillExists) {
-      heatmapTabId = snapshotsWithHeatmap[0]?.provider_id ?? snapshots[0].provider_id;
+      heatmapTabId = snapshots[0].provider_id;
     }
   });
 
@@ -453,13 +435,13 @@
       {/if}
     </section>
 
-    {#if snapshots.length > 0 && (hasHeatmap || focus !== "all")}
+    {#if snapshots.length > 0}
       <section class="shell__heatmap" data-tauri-drag-region={false}>
         <div class="heatmap__head">
           <span class="heatmap__title">日历热力图</span>
           {#if focus === "all"}
             <div class="heatmap__tabs">
-              {#each snapshotsWithHeatmap as snap (snap.provider_id)}
+              {#each snapshots as snap (snap.provider_id)}
                 <button
                   class="heatmap__tab {snap.provider_id === heatmapTabId ? 'heatmap__tab--active' : ''}"
                   onclick={() => (heatmapTabId = snap.provider_id)}
@@ -469,10 +451,13 @@
             </div>
           {/if}
         </div>
-        {#if activeSnapshot && activeSnapshot.heatmap}
-          <HeatmapGrid cells={activeSnapshot.heatmap} unit={heatmapUnit} />
-        {:else if focus !== "all"}
-          <div class="heatmap__empty">{activeSnapshot?.provider_id === "deepseek" ? "DeepSeek 依据余额下降累计消耗，启用后需积累数日才有数据" : "该来源暂无热力图数据"}</div>
+        {#if activeSnapshot}
+          <HeatmapGrid
+            providerId={activeSnapshot.provider_id}
+            emptyHint={activeSnapshot.provider_id === "deepseek"
+              ? "DeepSeek 依据余额下降累计消耗，启用后需积累数日才有数据"
+              : "该来源暂无热力图数据"}
+          />
         {/if}
       </section>
     {/if}
@@ -694,15 +679,6 @@
     border-radius: 50%;
     display: inline-block;
     flex-shrink: 0;
-  }
-
-  .heatmap__empty {
-    padding: var(--tum-space-4) 0;
-    text-align: center;
-    font-size: var(--tum-font-size-xs);
-    color: var(--tum-text-muted);
-    font-family: var(--tum-font-mono);
-    letter-spacing: 0.5px;
   }
 
   .shell__footer {

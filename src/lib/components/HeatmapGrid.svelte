@@ -1,19 +1,56 @@
 <script lang="ts">
-  import type { HeatmapCell, UsageUnit } from "../types";
-  import { formatUsage } from "../types";
+  import { getHeatmap } from "../api";
+  import { formatUsage, type HeatmapCell, type UsageUnit } from "../types";
 
   interface Props {
-    cells: HeatmapCell[];
+    providerId: string;
+    /** Shown instead of the default empty hint (e.g. DeepSeek ramp-up note). */
+    emptyHint?: string;
+    /** Unit fallback before the first fetch resolves; fetched cells carry
+     *  their own unit and take precedence. */
     unit?: UsageUnit;
   }
 
-  let { cells, unit = "tokens" as UsageUnit }: Props = $props();
+  let { providerId, emptyHint, unit = "tokens" as UsageUnit }: Props = $props();
 
-  const WEEKS = 18;
+  const WEEKS = 5; // 5 Monday-aligned columns cover the last 31 days
 
-  // Build a grid: column = week, row = day of week (Mon..Sun, ISO).
-  // Each cell: { date, value, level }.
-  type Day = { date: string; value: number; level: 0 | 1 | 2 | 3 | 4 } | null;
+  type Day =
+    | {
+        date: string;
+        value: number;
+        level: 0 | 1 | 2 | 3 | 4;
+        isToday: boolean;
+      }
+    | null;
+
+  let cells = $state<HeatmapCell[]>([]);
+  let loaded = $state(false);
+  let fetchSeq = 0;
+
+  $effect(() => {
+    const id = providerId;
+    const seq = ++fetchSeq;
+    loaded = false;
+    cells = [];
+    getHeatmap(id, 31)
+      .then((rows) => {
+        if (seq === fetchSeq) cells = rows;
+      })
+      .catch(() => {
+        if (seq === fetchSeq) cells = [];
+      })
+      .finally(() => {
+        if (seq === fetchSeq) loaded = true;
+      });
+  });
+
+  function localDateKey(d: Date): string {
+    const y = d.getFullYear();
+    const m = `${d.getMonth() + 1}`.padStart(2, "0");
+    const day = `${d.getDate()}`.padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
 
   let byDate = $derived.by(() => {
     const map = new Map<string, HeatmapCell>();
@@ -21,26 +58,33 @@
     return map;
   });
 
-  // Start = (today - weeks*7 days), aligned to Monday.
+  // Column = week, row = Mon..Sun (ISO). Past days missing from the payload
+  // render as transparent level-0 cells; future days render null (also clear).
   let grid = $derived.by(() => {
     const today = new Date();
-    const todayDay = (today.getDay() + 6) % 7; // 0=Mon, 6=Sun
+    const todayKey = localDateKey(today);
+    const todayDow = (today.getDay() + 6) % 7; // 0=Mon, 6=Sun
     const start = new Date(today);
-    start.setDate(today.getDate() - todayDay - (WEEKS - 1) * 7);
+    start.setDate(today.getDate() - todayDow - (WEEKS - 1) * 7);
     const cols: Day[][] = [];
-    for (let w = 0; w < WEEKS; w++) {
+    for (let wi = 0; wi < WEEKS; wi++) {
       const col: Day[] = [];
-      for (let d = 0; d < 7; d++) {
+      for (let di = 0; di < 7; di++) {
         const d2 = new Date(start);
-        d2.setDate(start.getDate() + w * 7 + d);
+        d2.setDate(start.getDate() + wi * 7 + di);
         if (d2 > today) {
           col.push(null);
           continue;
         }
-        const dateStr = d2.toISOString().slice(0, 10);
+        const dateStr = localDateKey(d2);
         const cell = byDate.get(dateStr);
         const value = cell?.value ?? 0;
-        col.push({ date: dateStr, value, level: levelFor(value, cells) });
+        col.push({
+          date: dateStr,
+          value,
+          level: levelFor(value, cells),
+          isToday: dateStr === todayKey,
+        });
       }
       cols.push(col);
     }
@@ -57,53 +101,64 @@
     return 4;
   }
 
+  // Accent-blue ramp (legacy amber survives only on the "today" stroke).
   function levelColor(level: 0 | 1 | 2 | 3 | 4): string {
-    // Amber scale - matches the primary accent for a cohesive instrument feel.
     switch (level) {
       case 0:
-        return "rgba(148,163,184,0.10)";
+        return "transparent";
       case 1:
-        return "rgba(251,191,36,0.20)";
+        return "rgba(76,194,255,0.18)";
       case 2:
-        return "rgba(251,191,36,0.42)";
+        return "rgba(76,194,255,0.38)";
       case 3:
-        return "rgba(251,191,36,0.68)";
+        return "rgba(76,194,255,0.62)";
       case 4:
-        return "rgba(251,191,36,0.95)";
+        return "rgba(76,194,255,0.92)";
     }
   }
 
-  function levelGlow(level: 0 | 1 | 2 | 3 | 4): string {
-    // Subtle glow only on the brightest level, like a phosphor pixel.
-    return level === 4 ? "0 0 4px rgba(251,191,36,0.5)" : "none";
+  function cellShadow(day: NonNullable<Day>): string {
+    const parts: string[] = [];
+    if (day.level === 4) parts.push("0 0 4px rgba(76,194,255,0.45)");
+    if (day.isToday) parts.push("inset 0 0 0 1.5px var(--tum-amber)");
+    return parts.length > 0 ? parts.join(",") : "none";
   }
 
-  // Pre-compute legend colors so the template doesn't need TS casts inline.
-  const legendLevels: Array<0 | 1 | 2 | 3 | 4> = [0, 1, 2, 3, 4];
+  const legendLevels: Array<1 | 2 | 3 | 4> = [1, 2, 3, 4];
   let legendColors = $derived(legendLevels.map((l) => levelColor(l)));
+  let maxValue = $derived(Math.max(0, ...cells.map((c) => c.value)));
+  let displayUnit = $derived(cells[0]?.unit ?? unit);
 </script>
 
 <div class="heatmap">
-  <div class="heatmap__cols">
-    {#each grid as col}
-      <div class="heatmap__col">
-        {#each col as day}
-          <div
-            class="heatmap__cell"
-            style={`background:${day ? levelColor(day.level) : "transparent"}; box-shadow:${day ? levelGlow(day.level) : "none"}`}
-            title={day ? `${day.date} · ${formatUsage(day.value, unit)}` : ""}
-          ></div>
-        {/each}
-      </div>
-    {/each}
-  </div>
-  <div class="heatmap__legend">
-    <span class="heatmap__legend-text">少</span>
-    {#each legendColors as color}
-      <span class="heatmap__legend-cell" style={`background:${color}`}></span>
-    {/each}
-    <span class="heatmap__legend-text">多</span>
-  </div>
+  {#if loaded && maxValue <= 0}
+    <div class="heatmap__empty">{emptyHint ?? "该来源暂无热力图数据"}</div>
+  {:else}
+    <div class="heatmap__cols">
+      {#each grid as col}
+        <div class="heatmap__col">
+          {#each col as day}
+            {#if day}
+              <div
+                class="heatmap__cell"
+                style={`background:${levelColor(day.level)};box-shadow:${cellShadow(day)}`}
+                title={`${day.date} · ${formatUsage(day.value, displayUnit)}`}
+              ></div>
+            {:else}
+              <div class="heatmap__cell heatmap__cell--future"></div>
+            {/if}
+          {/each}
+        </div>
+      {/each}
+    </div>
+    <div class="heatmap__legend">
+      <span class="heatmap__legend-text">少</span>
+      {#each legendColors as color}
+        <span class="heatmap__legend-cell" style={`background:${color}`}></span>
+      {/each}
+      <span class="heatmap__legend-text">多</span>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -116,9 +171,8 @@
 
   .heatmap__cols {
     display: grid;
-    grid-template-columns: repeat(18, 1fr);
+    grid-template-columns: repeat(5, 14px);
     gap: 3px;
-    width: 100%;
   }
 
   .heatmap__col {
@@ -128,8 +182,8 @@
   }
 
   .heatmap__cell {
-    width: 100%;
-    aspect-ratio: 1;
+    width: 14px;
+    height: 14px;
     border-radius: var(--tum-radius-xs);
     cursor: default;
     transition: transform 0.15s ease;
@@ -139,12 +193,25 @@
     transform: scale(1.4);
   }
 
+  .heatmap__cell--future {
+    background: transparent;
+    pointer-events: none;
+  }
+
+  .heatmap__empty {
+    padding: var(--tum-space-4) 0;
+    text-align: center;
+    font-size: var(--tum-font-size-xs);
+    color: var(--tum-text-muted);
+    font-family: var(--tum-font-mono);
+    letter-spacing: 0.5px;
+  }
+
   .heatmap__legend {
     display: flex;
     align-items: center;
     gap: 4px;
     margin-top: 4px;
-    justify-content: flex-end;
   }
 
   .heatmap__legend-cell {
