@@ -169,7 +169,8 @@ export type WindowKey = "five_hour" | "daily" | "weekly" | "monthly";
 /**
  * Mirror of the backend `most_critical_window` rule (scheduler.rs):
  * among windows with quota > 0, pick the one with the greatest used percent.
- * Ties keep the fixed diff order (five_hour -> daily -> weekly -> monthly).
+ * Ties resolve to the later window in diff order, matching Rust
+ * `Iterator::max_by`, which returns the last maximum (monthly direction).
  */
 export function mostCriticalWindow(
   snap: UsageSnapshot,
@@ -181,7 +182,7 @@ export function mostCriticalWindow(
     const win = snap.windows[key];
     if (win && win.quota > 0) {
       const p = percent(win);
-      if (p > bestPct) {
+      if (p >= bestPct) {
         bestPct = p;
         best = { key, window: win };
       }
