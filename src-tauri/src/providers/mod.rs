@@ -145,6 +145,27 @@ pub struct UsageSnapshot {
     pub heatmap: Option<Vec<HeatmapCell>>,
 }
 
+/// Burn rate derived from two consecutive snapshots of the same window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BurnInfo {
+    /// Usage units consumed per minute.
+    pub rate_per_min: f64,
+    /// Unit of `rate_per_min` (matches the window being diffed).
+    pub unit: UsageUnit,
+    /// Estimated seconds until the window quota is exhausted at this rate.
+    /// None when the quota is unknown or the rate is non-positive.
+    pub eta_seconds: Option<u64>,
+}
+
+/// Payload of the `usage-updated` event: the snapshot plus pulse metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageUpdate {
+    pub snapshot: UsageSnapshot,
+    pub burn: Option<BurnInfo>,
+    /// True when usage grew since the previous snapshot (active generation).
+    pub active: bool,
+}
+
 /// Provider error surfaced to the frontend.
 #[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
 pub enum ProviderError {
