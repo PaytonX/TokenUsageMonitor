@@ -9,6 +9,7 @@
 pub mod deepseek;
 pub mod minimax;
 pub mod mock;
+pub mod openai;
 pub mod volcengine;
 
 use async_trait::async_trait;
@@ -137,6 +138,12 @@ pub const PRESETS: &[Preset] = &[
         auth_kind: AuthKind::AccessKeySecret,
         default_accent: "#f59e0b",
     },
+    Preset {
+        kind: "openai",
+        display_name: "OpenAI 计费",
+        auth_kind: AuthKind::BearerKey,
+        default_accent: "#10a37f",
+    },
 ];
 
 /// Resolve a preset's display name by kind, falling back to the kind itself.
@@ -158,6 +165,8 @@ pub enum UsageUnit {
     Afp,
     Cny,
     Credits,
+    /// OpenAI billing usage, measured in US Dollars.
+    Usd,
     /// MiniMax Token Plan reports percentages, not absolute token counts.
     Percent,
 }
@@ -169,6 +178,7 @@ impl UsageUnit {
             UsageUnit::Afp => "AFP",
             UsageUnit::Cny => "¥",
             UsageUnit::Credits => "credits",
+            UsageUnit::Usd => "$",
             UsageUnit::Percent => "%",
         }
     }

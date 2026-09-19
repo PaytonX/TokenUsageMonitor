@@ -188,6 +188,7 @@ fn unit_db_code(unit: UsageUnit) -> &'static str {
         UsageUnit::Afp => "afp",
         UsageUnit::Cny => "cny",
         UsageUnit::Credits => "credits",
+        UsageUnit::Usd => "usd",
         UsageUnit::Percent => "percent",
     }
 }
@@ -198,6 +199,7 @@ fn unit_from_db_str(s: &str) -> UsageUnit {
         "afp" | "AFP" => UsageUnit::Afp,
         "cny" | "¥" => UsageUnit::Cny,
         "credits" => UsageUnit::Credits,
+        "usd" | "$" => UsageUnit::Usd,
         "percent" | "%" => UsageUnit::Percent,
         _ => UsageUnit::Tokens,
     }
@@ -222,6 +224,7 @@ mod storage_unit_tests {
             ("p_afp", UsageUnit::Afp),
             ("p_cny", UsageUnit::Cny),
             ("p_credits", UsageUnit::Credits),
+            ("p_upd", UsageUnit::Usd),
             ("p_percent", UsageUnit::Percent),
         ];
         for (provider_id, unit) in cases {

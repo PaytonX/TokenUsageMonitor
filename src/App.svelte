@@ -18,7 +18,7 @@
     type Settings,
     type BurnInfo,
     ringWindowRemaining,
-    providerShortName,
+    providerBrandMark,
   } from "./lib";
   import ProviderCard from "./lib/components/ProviderCard.svelte";
   import ProgressRing from "./lib/components/ProgressRing.svelte";
@@ -38,6 +38,7 @@
     minimax: "#ff5c5c",
     deepseek: "#4d6bfe",
     volcengine: "#12b76a",
+    openai: "#10a37f",
   };
   const FOCUS_FALLBACK_COLOR = "#8a8f98";
   const FOCUS_KEY = "tum.focus";
@@ -236,22 +237,19 @@
     }
   });
 
-  // Mini pill (compact mode) — focused provider color/name.
+  // Mini pill (compact mode) — focused provider color/brand mark.
   const focusedColor = $derived(
     focusedSnapshot ? colorOf(focusedSnapshot.provider_id) : FOCUS_FALLBACK_COLOR,
   );
-  const focusedName = $derived(
+  // 胶囊品牌字标：取短名的 2-4 字符品牌缩写（如 MiniMax→“MM”、OpenAI→“OAI”），
+  // 用品牌色填充，宽度自适应，永不截断；悬停 title 显示完整账户名。
+  const focusedBrandMark = $derived(
     focusedSnapshot
-      ? providerShortName(
+      ? providerBrandMark(
           focusedSnapshot.provider_id,
           focusedSnapshot.provider_display_name,
         )
-      : "全部",
-  );
-  // 胶囊品牌字母徽标：取短名的首字符作为徽标字母（如全部→“全”、MiniMax→“M”），
-  // 用品牌色填充，永不截断；悬停 title 显示完整账户名。
-  const focusedInitial = $derived(
-    focusedName.replace(/[\s/(（]/g, "").charAt(0) || "?",
+      : "全",
   );
   const providerFullName = $derived(
     focusedSnapshot ? focusedSnapshot.provider_display_name : "全部来源",
@@ -539,7 +537,7 @@
             class="pill__badge"
             style:background={focusedColor}
             title={providerFullName}
-          >{focusedInitial}</span>
+          >{focusedBrandMark}</span>
         </button>
         <button
           type="button"
@@ -1045,16 +1043,18 @@
   }
 
   .pill__badge {
-    /* 品牌字母徽标：填充式方块，字母居中，永不截断 */
-    width: 18px;
+    /* 品牌彩色字标：圆角胶囊，内容自适应宽度，永不截断 */
+    min-width: 20px;
     height: 18px;
-    border-radius: 5px;
+    padding: 0 5px;
+    border-radius: 9px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
-    font-family: var(--tum-font);
+    font-family: var(--tum-font-mono);
+    letter-spacing: 0.2px;
     color: #0b0e14;
     flex-shrink: 0;
   }

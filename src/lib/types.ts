@@ -2,7 +2,7 @@
 // Keep field names in sync with `src-tauri/src/providers/mod.rs` snake_case
 // serde serialization.
 
-export type UsageUnit = "tokens" | "afp" | "cny" | "credits" | "percent";
+export type UsageUnit = "tokens" | "afp" | "cny" | "credits" | "usd" | "percent";
 
 export interface WindowUsage {
   used: number;
@@ -180,6 +180,29 @@ export function providerShortName(providerId: string, displayName: string): stri
   return SHORT_KIND_NAMES[kind] ?? displayName;
 }
 
+/** Short 2-4 char brand monogram for the compact capsule badge. Distinct from
+ * `providerShortName`: it is a compact *logo* (e.g. MiniMax→"MM", OpenAI→"OAI")
+ * that is guaranteed to fit the fixed badge without truncation. Falls back to
+ * the first two characters of the short name for unknown kinds. */
+const BRAND_MARKS: Record<string, string> = {
+  minimax: "MM",
+  deepseek: "DS",
+  volcengine: "VC",
+  openai: "OAI",
+  gemini: "GM",
+  anthropic: "AN",
+  qwen: "QW",
+  kimi: "KM",
+  doubao: "豆",
+  spark: "SP",
+};
+
+export function providerBrandMark(providerId: string, displayName: string): string {
+  const dash = providerId.indexOf("-");
+  const kind = dash > 0 ? providerId.slice(0, dash) : providerId;
+  return BRAND_MARKS[kind] ?? providerShortName(providerId, displayName).slice(0, 2);
+}
+
 /** Parse a "#RRGGBB" hex color into a "r,g,b" CSS triplet (so callers can use
  * `rgba(var(--x-rgb), a)`). Returns null when the string isn't 6-digit hex. */
 export function hexToRgb(hex: string): string | null {
@@ -206,6 +229,9 @@ export function lightenHex(hex: string, amt = 0.35): string {
 
 /** Helper to format a usage value with the right unit suffix. */
 export function formatUsage(value: number, unit: UsageUnit): string {
+  if (unit === "usd") {
+    return `$${value.toFixed(2)}`;
+  }
   if (unit === "cny") {
     return `¥${value.toFixed(2)}`;
   }
@@ -227,6 +253,8 @@ export function unitLabel(unit: UsageUnit): string {
       return "AFP";
     case "cny":
       return "¥";
+    case "usd":
+      return "$";
     case "credits":
       return "credits";
     case "percent":

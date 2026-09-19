@@ -19,7 +19,7 @@ pub mod storage;
 
 use providers::{
     AccountMeta, Credentials, ProviderRegistry, SharedProviderState,
-    deepseek::DeepSeekProvider, minimax::MiniMaxProvider,
+    deepseek::DeepSeekProvider, minimax::MiniMaxProvider, openai::OpenAIProvider,
     volcengine::VolcengineProvider,
 };
 use notify::SharedNotifyState;
@@ -89,6 +89,7 @@ pub fn build_account_provider(
         "minimax" => Arc::new(MiniMaxProvider::new(http, storage, instance_id, label)),
         "deepseek" => Arc::new(DeepSeekProvider::new(http, storage, instance_id, label)),
         "volcengine" => Arc::new(VolcengineProvider::new(http, instance_id, label)),
+        "openai" => Arc::new(OpenAIProvider::new(http, storage, instance_id, label)),
         _ => return None,
     };
     Some(p)
