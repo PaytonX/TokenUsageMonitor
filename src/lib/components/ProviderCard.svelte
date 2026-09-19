@@ -9,7 +9,6 @@
   import ResetCountdown from "./ResetCountdown.svelte";
   import ProgressRing from "./ProgressRing.svelte";
   import PulseDot from "./PulseDot.svelte";
-  import DetailCard from "./DetailCard.svelte";
 
   interface Props {
     snapshot: UsageSnapshot;
@@ -21,6 +20,9 @@
     focused?: boolean;
     /** Called when the user clicks this card; App links it to focus + heatmap. */
     onSelect?: () => void;
+    /** Reported as the pointer enters/leaves the card; drives the floating
+     *  detail overlay in App (small cards no longer clip the detail). */
+    onHover?: (id: string, hovering: boolean) => void;
   }
 
   let {
@@ -31,6 +33,7 @@
     lastRefreshAt = Date.now(),
     focused = false,
     onSelect,
+    onHover,
   }: Props = $props();
 
   let w = $derived(snapshot.windows);
@@ -59,6 +62,8 @@
   class:card--expanded={expanded}
   class:card--focused={focused}
   data-tauri-drag-region={false}
+  onpointerenter={() => onHover?.(snapshot.provider_id, true)}
+  onpointerleave={() => onHover?.(snapshot.provider_id, false)}
   onclick={(e) => {
     // Title button already toggles expansion (and selects); a click
     // elsewhere anchors the header ring + heatmap to this provider.
@@ -120,8 +125,6 @@
       {/if}
     {/if}
   </div>
-
-  <DetailCard {snapshot} {burn} {lastRefreshAt} />
 </article>
 
 <style>

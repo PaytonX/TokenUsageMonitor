@@ -149,35 +149,13 @@
 
 <style>
   .detail {
-    position: absolute;
-    inset: 0;
-    z-index: 5;
     display: flex;
     flex-direction: column;
     gap: 6px;
-    padding: 10px 12px;
-    border-radius: inherit;
+    border-radius: var(--tum-radius-md);
     border: 1px solid var(--tum-border-strong);
-    background: rgba(36, 38, 42, 0.92);
-    backdrop-filter: blur(var(--tum-blur-card));
-    -webkit-backdrop-filter: blur(var(--tum-blur-card));
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.18s ease;
-    overflow: hidden;
-  }
-
-  /* .card 属于 ProviderCard 的作用域，跨组件祖先选择器必须 :global；覆盖层保持点击穿透，仅柱图区接收事件以保留 title 提示 */
-  :global(.card:hover) .detail,
-  :global(.card:focus-within) .detail,
-  :global(.card--expanded) .detail {
-    opacity: 1;
-  }
-
-  :global(.card:hover) .detail__bars,
-  :global(.card:focus-within) .detail__bars,
-  :global(.card--expanded) .detail__bars {
-    pointer-events: auto;
+    background: rgba(36, 38, 42, 0.95);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
   }
 
   .detail__head {

@@ -23,6 +23,7 @@
   import ProgressRing from "./lib/components/ProgressRing.svelte";
   import HeatmapGrid from "./lib/components/HeatmapGrid.svelte";
   import MiniPanel from "./lib/components/MiniPanel.svelte";
+  import DetailCard from "./lib/components/DetailCard.svelte";
 
   type Mode = "dashboard" | "compact";
 
@@ -51,6 +52,13 @@
   // Global focus: "all" (aggregate min) or one provider_id. Drives the
   // header ring, the chips row and the heatmap panel.
   let focus = $state(localStorage.getItem(FOCUS_KEY) ?? "all");
+  // Provider whose card the pointer is currently over; drives the floating
+  // detail overlay (see .detail-overlay).
+  let hoveredId = $state<string | null>(null);
+  function onCardHover(id: string, hovering: boolean) {
+    if (hovering) hoveredId = id;
+    else if (hoveredId === id) hoveredId = null;
+  }
   const PILL_DRAG_THRESHOLD_PX = 4;
   const PILL_FADE_DELAY_MS = 2500;
   const PILL_EDGE_THRESHOLD_PX = 24;
@@ -150,6 +158,12 @@
     snapshots.find((s) => s.provider_id === heatmapTabId) ??
     snapshots[0] ??
     null,
+  );
+
+  // Provider behind the floating detail overlay (hovered card). Rendered once
+  // at window level so small cards (e.g. DeepSeek) can never clip its content.
+  let detailSnapshot = $derived(
+    hoveredId ? (snapshots.find((s) => s.provider_id === hoveredId) ?? null) : null,
   );
 
   // HeatmapGrid self-fetches per provider via get_heatmap, so every provider
@@ -539,6 +553,7 @@
             active={actives[snap.provider_id] ?? false}
             {lastRefreshAt}
             focused={focus === snap.provider_id}
+            onHover={onCardHover}
             onSelect={() => {
               focus = snap.provider_id;
               heatmapTabId = snap.provider_id;
@@ -583,6 +598,16 @@
       </span>
       <span class="shell__count">共 {snapshots.length} 个 Provider</span>
     </footer>
+
+    {#if detailSnapshot}
+      <div class="detail-overlay" data-tauri-drag-region={false}>
+        <DetailCard
+          snapshot={detailSnapshot}
+          burn={burns[detailSnapshot.provider_id] ?? null}
+          {lastRefreshAt}
+        />
+      </div>
+    {/if}
   {/if}
 </main>
 
@@ -990,5 +1015,22 @@
     opacity: 1;
     outline: 2px solid var(--tum-accent);
     outline-offset: -2px;
+  }
+
+  /* Floating field overlay (feedback #2): rendered at window level so the
+     full detail (rows + 7-day chart) is never clipped by a small card. It
+     sits above the cards list; hit-testing passes through to the hovered
+     card underneath so the overlay can't cause hover flicker. */
+  .detail-overlay {
+    position: fixed;
+    top: 52px;
+    left: 14px;
+    right: 14px;
+    z-index: 60;
+    pointer-events: none;
+  }
+
+  .detail-overlay :global(.detail) {
+    padding: 10px 12px;
   }
 </style>
