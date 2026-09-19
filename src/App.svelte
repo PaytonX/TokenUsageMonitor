@@ -591,7 +591,12 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    background: var(--tum-bg);
+    /* Layered glass over a transparent window: a faint accent tint on top of a
+       translucent dark base. The window itself is transparent (mica removed),
+       so the border-radius corners below are genuinely see-through. */
+    background:
+      radial-gradient(120% 120% at 0% 0%, rgba(76, 194, 255, 0.07), transparent 42%),
+      rgba(24, 26, 30, 0.82);
     border: 1px solid var(--tum-border);
     border-radius: var(--tum-radius-lg);
     backdrop-filter: blur(16px);
