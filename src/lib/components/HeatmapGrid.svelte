@@ -181,6 +181,7 @@
     display: grid;
     grid-template-columns: repeat(5, 14px);
     gap: 3px;
+    justify-content: center;
   }
 
   .heatmap__col {
@@ -220,6 +221,7 @@
     align-items: center;
     gap: 4px;
     margin-top: 4px;
+    justify-content: center;
   }
 
   .heatmap__legend-cell {

@@ -39,6 +39,14 @@
   };
   const FOCUS_FALLBACK_COLOR = "#8a8f98";
   const FOCUS_KEY = "tum.focus";
+  // Short display names for the compact pill (window is only 150px wide, so
+  // long plan names like "MiniMax Token Plan" / "火山引擎 Agent Plan" cannot
+  // fit). Falls back to the provider display name, ellipsized by CSS.
+  const PROVIDER_SHORT_NAMES: Record<string, string> = {
+    minimax: "MiniMax",
+    deepseek: "DeepSeek",
+    volcengine: "火山",
+  };
 
   // Global focus: "all" (aggregate min) or one provider_id. Drives the
   // header ring, the chips row and the heatmap panel.
@@ -175,7 +183,10 @@
       : FOCUS_FALLBACK_COLOR,
   );
   const focusedName = $derived(
-    focusedSnapshot ? focusedSnapshot.provider_display_name : "全部",
+    focusedSnapshot
+      ? (PROVIDER_SHORT_NAMES[focusedSnapshot.provider_id] ??
+        focusedSnapshot.provider_display_name)
+      : "全部",
   );
 
   // Pill fade machine (spec §3.4): fade to 22% after 2.5s while parked near
@@ -527,6 +538,11 @@
             burn={burns[snap.provider_id] ?? null}
             active={actives[snap.provider_id] ?? false}
             {lastRefreshAt}
+            focused={focus === snap.provider_id}
+            onSelect={() => {
+              focus = snap.provider_id;
+              heatmapTabId = snap.provider_id;
+            }}
           />
         {/each}
       {/if}

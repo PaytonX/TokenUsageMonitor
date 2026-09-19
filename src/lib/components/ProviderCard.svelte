@@ -17,6 +17,10 @@
     burn?: BurnInfo | null;
     active?: boolean;
     lastRefreshAt?: number;
+    /** Provider whose card is currently focused in the header ring. */
+    focused?: boolean;
+    /** Called when the user clicks this card; App links it to focus + heatmap. */
+    onSelect?: () => void;
   }
 
   let {
@@ -25,6 +29,8 @@
     burn = null,
     active = false,
     lastRefreshAt = Date.now(),
+    focused = false,
+    onSelect,
   }: Props = $props();
 
   let w = $derived(snapshot.windows);
@@ -44,14 +50,32 @@
   let expanded = $state(false);
 </script>
 
-<article class="card" class:card--expanded={expanded} data-tauri-drag-region={false}>
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events:
+     whole-card quick-select (body click anchors focus+heatmap). Keyboard
+     access is provided by the title button (see card__titlebtn), which also
+     selects the provider. -->
+<article
+  class="card"
+  class:card--expanded={expanded}
+  class:card--focused={focused}
+  data-tauri-drag-region={false}
+  onclick={(e) => {
+    // Title button already toggles expansion (and selects); a click
+    // elsewhere anchors the header ring + heatmap to this provider.
+    if ((e.target as HTMLElement).closest("button")) return;
+    onSelect?.();
+  }}
+>
   <header class="card__head">
     <button
       type="button"
       class="card__titlebtn"
       aria-expanded={expanded}
       aria-label={`${snapshot.provider_display_name}，用量详情${active ? "（正在请求）" : ""}`}
-      onclick={() => (expanded = !expanded)}
+      onclick={() => {
+        expanded = !expanded;
+        onSelect?.();
+      }}
     >
       <PulseDot {active} {tone} size={8} />
       <span class="card__name">{snapshot.provider_display_name}</span>
@@ -120,6 +144,11 @@
 
   .card--expanded {
     z-index: 6;
+  }
+
+  .card--focused {
+    border-color: var(--tum-accent-stroke);
+    box-shadow: inset 0 0 0 1px var(--tum-accent-stroke);
   }
 
   .card__head {
