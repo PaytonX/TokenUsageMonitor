@@ -167,11 +167,16 @@
     overflow: hidden;
   }
 
-  /* .card 属于 ProviderCard 的作用域，跨组件祖先选择器必须 :global */
+  /* .card 属于 ProviderCard 的作用域，跨组件祖先选择器必须 :global；覆盖层保持点击穿透，仅柱图区接收事件以保留 title 提示 */
   :global(.card:hover) .detail,
   :global(.card:focus-within) .detail,
   :global(.card--expanded) .detail {
     opacity: 1;
+  }
+
+  :global(.card:hover) .detail__bars,
+  :global(.card:focus-within) .detail__bars,
+  :global(.card--expanded) .detail__bars {
     pointer-events: auto;
   }
 

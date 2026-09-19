@@ -50,7 +50,7 @@
       type="button"
       class="card__titlebtn"
       aria-expanded={expanded}
-      aria-label={`${snapshot.provider_display_name}${active ? "，正在请求" : ""}用量详情`}
+      aria-label={`${snapshot.provider_display_name}，用量详情${active ? "（正在请求）" : ""}`}
       onclick={() => (expanded = !expanded)}
     >
       <PulseDot {active} {tone} size={8} />
@@ -141,13 +141,12 @@
     font: inherit;
     color: inherit;
     text-align: left;
-    cursor: default;
+    cursor: pointer;
   }
 
-  .card__titlebtn:focus-visible {
+  .card:has(:focus-visible) {
     outline: 2px solid var(--tum-accent);
     outline-offset: 2px;
-    border-radius: var(--tum-radius-xs);
   }
 
   .card__name {
@@ -161,6 +160,8 @@
   }
 
   .card__tier {
+    flex: none;
+    white-space: nowrap;
     font-size: var(--tum-font-size-xs);
     font-weight: 500;
     color: var(--tum-accent);
