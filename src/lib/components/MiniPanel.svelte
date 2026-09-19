@@ -2,6 +2,7 @@
   import {
     mostCriticalWindow,
     percent,
+    providerShortName,
     remainingPercent,
     type UsageSnapshot,
   } from "../types";
@@ -32,7 +33,9 @@
     {@const tone = usedPct >= 0.95 ? "crit" : usedPct >= 0.8 ? "warn" : "ok"}
     <div class="mini__row" role="listitem">
       <PulseDot active={!!actives[s.provider_id]} {tone} size={7} />
-      <span class="mini__name">{s.provider_display_name}</span>
+      <span class="mini__name">
+        {providerShortName(s.provider_id, s.provider_display_name)}
+      </span>
       <span class="mini__track">
         <span
           class={`mini__fill mini__fill--${tone}`}

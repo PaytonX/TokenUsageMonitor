@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getHeatmap, forceRefresh, openSettings } from "../api";
+  import { getHeatmap, forceRefresh } from "../api";
   import {
     formatUsage,
     hexToRgb,
@@ -226,12 +226,6 @@
       onclick={() => void forceRefresh(snapshot.provider_id)}
       title="立即刷新该账户"
     >↻ 刷新该账户</button>
-    <button
-      type="button"
-      class="detail__btn"
-      onclick={() => void openSettings()}
-      title="打开设置"
-    >⚙ 打开设置</button>
   </div>
 </div>
 

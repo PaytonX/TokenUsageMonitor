@@ -158,6 +158,28 @@ export type TestResult =
   | { ok: true; snapshot: UsageSnapshot }
   | { ok: false; message: string };
 
+/** Short display name for compact surfaces (capsule pill / quick rows).
+ * `provider_id` is an `instance_id` shaped like `"<kind>-<ts>-<n>"`, so the
+ * kind is the prefix before the first `-`. Falls back to the account label. */
+const SHORT_KIND_NAMES: Record<string, string> = {
+  minimax: "MiniMax",
+  deepseek: "DeepSeek",
+  volcengine: "Volcano",
+  openai: "OpenAI",
+  gemini: "Gemini",
+  anthropic: "Anthropic",
+  qwen: "Qwen",
+  kimi: "Kimi",
+  doubao: "豆包",
+  spark: "Spark",
+};
+
+export function providerShortName(providerId: string, displayName: string): string {
+  const dash = providerId.indexOf("-");
+  const kind = dash > 0 ? providerId.slice(0, dash) : providerId;
+  return SHORT_KIND_NAMES[kind] ?? displayName;
+}
+
 /** Parse a "#RRGGBB" hex color into a "r,g,b" CSS triplet (so callers can use
  * `rgba(var(--x-rgb), a)`). Returns null when the string isn't 6-digit hex. */
 export function hexToRgb(hex: string): string | null {

@@ -301,6 +301,12 @@
   function deleteLabel(f: AccountForm): string {
     return deleteConfirmId === f.meta.instance_id ? "确认删除" : "删除账户";
   }
+
+  // 关键：窗口打开时必须先加载数据，否则 catalog/settings 恒为 null，
+  // 会导致账户与预设都不显示、所有设置开关失效、保存按钮禁用。
+  onMount(() => {
+    refreshAll();
+  });
 </script>
 
 <main class="settings" oncontextmenu={(e) => e.preventDefault()}>

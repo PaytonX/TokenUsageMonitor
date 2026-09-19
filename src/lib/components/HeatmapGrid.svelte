@@ -110,18 +110,20 @@
   }
 
   // Accent-blue ramp (legacy amber survives only on the "today" stroke).
+  // Level 0 = no usage: a muted light gray that stays visible against the dark
+  // panel (so empty cells are still discernible as a grid), instead of black.
   function levelColor(level: 0 | 1 | 2 | 3 | 4): string {
     switch (level) {
       case 0:
-        return "transparent";
+        return "rgba(148, 163, 184, 0.16)";
       case 1:
-        return "rgba(76,194,255,0.18)";
+        return "rgba(76,194,255,0.22)";
       case 2:
-        return "rgba(76,194,255,0.38)";
+        return "rgba(76,194,255,0.42)";
       case 3:
-        return "rgba(76,194,255,0.62)";
+        return "rgba(76,194,255,0.66)";
       case 4:
-        return "rgba(76,194,255,0.92)";
+        return "rgba(76,194,255,0.94)";
     }
   }
 
@@ -194,16 +196,13 @@
     width: 14px;
     height: 14px;
     border-radius: var(--tum-radius-xs);
-    /* 半透明虚线描边：让所有格子（包括无数据的空档）都浮现出清晰的网格线，
-       不与黑色背景融为一体，整体更美观 */
-    border: 1px dashed rgba(148, 163, 184, 0.28);
+    /* 空档由 level-0 的浅灰填充体现，不再用虚线描边 */
     cursor: default;
     transition: transform 0.15s ease;
   }
 
   .heatmap__cell:hover {
     transform: scale(1.4);
-    border-color: rgba(148, 163, 184, 0.6);
   }
 
   .heatmap__cell--future {
