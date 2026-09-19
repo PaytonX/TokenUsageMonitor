@@ -4,6 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  BurnInfo,
   Credentials,
   HeatmapCell,
   ProviderError,
@@ -12,6 +13,7 @@ import type {
   Settings,
   TestResult,
   UsageSnapshot,
+  UsageUpdate,
   WindowMode,
 } from "./types";
 
@@ -31,7 +33,7 @@ export async function getProviderStates(): Promise<
 
 export async function getHeatmap(
   providerId: string,
-  days = 90,
+  days = 31,
 ): Promise<HeatmapCell[]> {
   return invoke<HeatmapCell[]>("get_heatmap", {
     providerId,
@@ -43,6 +45,10 @@ export async function forceRefresh(
   providerId?: string,
 ): Promise<void> {
   await invoke<void>("force_refresh", { providerId });
+}
+
+export async function togglePolling(paused: boolean): Promise<boolean> {
+  return invoke<boolean>("toggle_polling", { paused });
 }
 
 export async function setWindowMode(mode: WindowMode): Promise<void> {
@@ -104,7 +110,7 @@ export async function testProvider(
 
 export interface UsageUpdatedEvent {
   event: string;
-  payload: UsageSnapshot;
+  payload: UsageUpdate;
 }
 
 export interface ProviderErrorEvent {
@@ -113,9 +119,9 @@ export interface ProviderErrorEvent {
 }
 
 export function onUsageUpdated(
-  cb: (snapshot: UsageSnapshot) => void,
+  cb: (update: UsageUpdate) => void,
 ): Promise<UnlistenFn> {
-  return listen<UsageSnapshot>("usage-updated", (e) => cb(e.payload));
+  return listen<UsageUpdate>("usage-updated", (e) => cb(e.payload));
 }
 
 export function onProviderError(

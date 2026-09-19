@@ -63,7 +63,8 @@
 
     // Live updates.
     unlistenFns.push(
-      await onUsageUpdated((snap) => {
+      await onUsageUpdated((update) => {
+        const snap = update.snapshot;
         snapshots = snapshots
           .filter((s) => s.provider_id !== snap.provider_id)
           .concat(snap)

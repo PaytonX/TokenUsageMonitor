@@ -43,6 +43,21 @@ export interface UsageSnapshot {
   heatmap?: HeatmapCell[];
 }
 
+/** Mirrors Rust `BurnInfo` (providers/mod.rs). */
+export interface BurnInfo {
+  rate_per_min: number;
+  unit: UsageUnit;
+  /** Seconds until quota exhaustion at the current rate; null = unknown. */
+  eta_seconds: number | null;
+}
+
+/** Payload of the `usage-updated` event. Mirrors Rust `UsageUpdate`. */
+export interface UsageUpdate {
+  snapshot: UsageSnapshot;
+  burn: BurnInfo | null;
+  active: boolean;
+}
+
 export interface ProviderInfo {
   id: string;
   display_name: string;
@@ -80,6 +95,11 @@ export interface Settings {
   dashboard_y: number | null;
   compact_mode: boolean;
   autostart_hint_shown: boolean;
+  /** Close button hides to tray instead of quitting (B4). */
+  close_to_tray: boolean;
+  /** Notification thresholds in percent (B4 settings UI edits these). */
+  notify_warn_percent: number;
+  notify_crit_percent: number;
 }
 
 /** Tagged union mirroring Rust `Credentials`. The `kind` field discriminates. */
