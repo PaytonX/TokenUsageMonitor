@@ -10,6 +10,7 @@
 //! - Periodic scheduler that emits `usage-updated` events
 
 pub mod ipc;
+pub mod notify;
 pub mod providers;
 pub mod scheduler;
 pub mod settings;
