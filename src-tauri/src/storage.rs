@@ -31,7 +31,7 @@ impl Storage {
                 provider_id   TEXT    NOT NULL,
                 date          TEXT    NOT NULL,             -- YYYY-MM-DD
                 value         REAL    NOT NULL,             -- used quota
-                unit          TEXT    NOT NULL,             -- tokens|afp|cny|credits
+                unit          TEXT    NOT NULL,             -- tokens|afp|cny|credits|percent
                 captured_at   TEXT    NOT NULL,             -- ISO8601 UTC
                 PRIMARY KEY (provider_id, date)
             );
@@ -64,7 +64,7 @@ impl Storage {
                 provider_id,
                 today.to_string(),
                 value,
-                unit.label(),
+                unit_db_code(unit),
                 now_iso,
             ],
         )?;
@@ -89,7 +89,7 @@ impl Storage {
                 provider_id,
                 today.to_string(),
                 delta,
-                unit.label(),
+                unit_db_code(unit),
                 now_iso,
             ],
         )?;
@@ -141,17 +141,95 @@ impl Storage {
                 ))?;
             let value: f64 = row.get(1)?;
             let unit_str: String = row.get(2)?;
-            let unit = match unit_str.as_str() {
-                "tokens" => UsageUnit::Tokens,
-                "afp" => UsageUnit::Afp,
-                "cny" => UsageUnit::Cny,
-                "credits" => UsageUnit::Credits,
-                _ => UsageUnit::Tokens,
-            };
+            let unit = unit_from_db_str(&unit_str);
             Ok(HeatmapCell { date, value, unit })
         })?;
         let mut cells: Vec<HeatmapCell> = rows.collect::<rusqlite::Result<_>>()?;
         cells.reverse(); // oldest first for left-to-right rendering
         Ok(cells)
+    }
+}
+
+fn unit_db_code(unit: UsageUnit) -> &'static str {
+    match unit {
+        UsageUnit::Tokens => "tokens",
+        UsageUnit::Afp => "afp",
+        UsageUnit::Cny => "cny",
+        UsageUnit::Credits => "credits",
+        UsageUnit::Percent => "percent",
+    }
+}
+
+fn unit_from_db_str(s: &str) -> UsageUnit {
+    match s {
+        "tokens" => UsageUnit::Tokens,
+        "afp" | "AFP" => UsageUnit::Afp,
+        "cny" | "¥" => UsageUnit::Cny,
+        "credits" => UsageUnit::Credits,
+        "percent" | "%" => UsageUnit::Percent,
+        _ => UsageUnit::Tokens,
+    }
+}
+
+#[cfg(test)]
+mod storage_unit_tests {
+    use super::*;
+    use crate::providers::UsageUnit;
+
+    fn temp_storage() -> Storage {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("pulse_heatmap_unit_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        Storage::open(&path).unwrap()
+    }
+
+    #[test]
+    fn round_trips_all_canonical_units() {
+        let cases = [
+            ("p_tokens", UsageUnit::Tokens),
+            ("p_afp", UsageUnit::Afp),
+            ("p_cny", UsageUnit::Cny),
+            ("p_credits", UsageUnit::Credits),
+            ("p_percent", UsageUnit::Percent),
+        ];
+        for (provider_id, unit) in cases {
+            let storage = temp_storage();
+            storage.record_daily(provider_id, 42.0, unit).unwrap();
+            let cells = storage.load_heatmap(provider_id, 31).unwrap();
+            assert_eq!(cells.len(), 1, "expected exactly one cell for {provider_id}");
+            assert_eq!(
+                cells[0].unit, unit,
+                "unit round-trip mismatch for {provider_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_afp_label_still_parses() {
+        assert_eq!(unit_from_db_str("AFP"), UsageUnit::Afp);
+    }
+
+    #[test]
+    fn legacy_cny_symbol_still_parses() {
+        assert_eq!(unit_from_db_str("¥"), UsageUnit::Cny);
+    }
+
+    #[test]
+    fn legacy_percent_symbol_still_parses() {
+        assert_eq!(unit_from_db_str("%"), UsageUnit::Percent);
+    }
+
+    #[test]
+    fn canonical_codes_parse() {
+        assert_eq!(unit_from_db_str("tokens"), UsageUnit::Tokens);
+        assert_eq!(unit_from_db_str("afp"), UsageUnit::Afp);
+        assert_eq!(unit_from_db_str("cny"), UsageUnit::Cny);
+        assert_eq!(unit_from_db_str("credits"), UsageUnit::Credits);
+        assert_eq!(unit_from_db_str("percent"), UsageUnit::Percent);
+    }
+
+    #[test]
+    fn unknown_unit_falls_back_to_tokens() {
+        assert_eq!(unit_from_db_str("nonsense"), UsageUnit::Tokens);
     }
 }
