@@ -202,6 +202,7 @@ pub fn run() {
             ipc::get_provider_states,
             ipc::get_heatmap,
             ipc::force_refresh,
+            ipc::toggle_polling,
             ipc::set_window_mode,
             ipc::open_settings,
             ipc::close_settings,

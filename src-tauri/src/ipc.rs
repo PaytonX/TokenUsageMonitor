@@ -66,30 +66,39 @@ pub async fn get_provider_states(
     Ok(state.state.read().await.clone())
 }
 
-/// Heatmap placeholder - real impl lands in step 8 (HeatmapGrid) backed by SQLite.
+/// Heatmap data for one provider. Prefer the native daily breakdown carried
+/// by the latest snapshot (Volcengine); otherwise read the locally captured
+/// daily rows from SQLite (MiniMax / DeepSeek), oldest first.
 #[tauri::command]
 pub async fn get_heatmap(
-    _state: State<'_, AppState>,
-    _provider_id: String,
-    _days: u32,
+    state: State<'_, AppState>,
+    provider_id: String,
+    days: u32,
 ) -> Result<Vec<HeatmapCell>, String> {
-    // Step 8 will read from SQLite daily_snapshots.
-    Ok(Vec::new())
+    {
+        let guard = state.state.read().await;
+        if let Some(ps) = guard.get(&provider_id) {
+            if let Some(heatmap) = ps.snapshot.as_ref().and_then(|s| s.heatmap.clone()) {
+                return Ok(heatmap);
+            }
+        }
+    }
+    state
+        .storage
+        .load_heatmap(&provider_id, days)
+        .map_err(|e| e.to_string())
 }
 
-/// Trigger an immediate refresh for one provider (or all if `provider_id` is None).
-/// Emits `usage-updated` events as snapshots come in.
-///
-/// Credentials are now sourced from the OS credential store via SettingsStore.
-/// If credentials are missing, the provider returns `ProviderError::NotConfigured`.
+/// Trigger an immediate refresh for one provider (or all enabled providers
+/// when `provider_id` is None). Runs through the same unified pipeline as
+/// periodic polling (burn diff, notifications, UsageUpdate event), and works
+/// even while polling is paused.
 #[tauri::command]
 pub async fn force_refresh(
     state: State<'_, AppState>,
     app: AppHandle,
     provider_id: Option<String>,
 ) -> Result<(), String> {
-    // Read enabled list so we don't poll (and emit errors for) providers the
-    // user has just turned off in Settings.
     let settings = state.settings.get().await;
     let enabled: std::collections::HashSet<String> =
         settings.enabled_providers.iter().cloned().collect();
@@ -110,47 +119,25 @@ pub async fn force_refresh(
     };
 
     for provider in targets {
-        // Pull credentials from OS store (None if user hasn't configured them yet).
-        let creds = match state.settings.load_credentials(provider.id()) {
-            Some(c) => c,
-            None => Credentials::BearerKey {
-                api_key: "mock".to_string(),
-            },
-        };
-
-        let result = provider.fetch_usage(&creds).await;
-        let id = provider.id().to_string();
-        let mut guard = state.state.write().await;
-        match result {
-            Ok(snapshot) => {
-                let _ = app.emit("usage-updated", &snapshot);
-                guard.insert(
-                    id.clone(),
-                    ProviderState {
-                        snapshot: Some(snapshot),
-                        last_error: None,
-                        last_updated_at: Some(chrono::Utc::now()),
-                    },
-                );
-            }
-            Err(err) => {
-                let _ = app.emit(
-                    "provider-error",
-                    &serde_json::json!({ "id": id, "error": &err }),
-                );
-                guard.insert(
-                    id.clone(),
-                    ProviderState {
-                        snapshot: None,
-                        last_error: Some(err),
-                        last_updated_at: Some(chrono::Utc::now()),
-                    },
-                );
-            }
+        // Per-provider failures are already surfaced via the provider-error
+        // event inside poll_one; keep refreshing the remaining targets.
+        if let Err(e) = crate::scheduler::poll_one(&app, &provider).await {
+            tracing::warn!(provider = %provider.id(), error = %e,
+                "manual refresh failed");
         }
     }
-
     Ok(())
+}
+
+/// Pause/resume background polling. Returns the effective new state.
+/// Manual `force_refresh` keeps working while paused.
+#[tauri::command]
+pub async fn toggle_polling(
+    state: State<'_, AppState>,
+    paused: bool,
+) -> Result<bool, String> {
+    state.pause_tx.send_replace(paused);
+    Ok(*state.pause_tx.borrow())
 }
 
 fn clamp_rect(
@@ -297,6 +284,9 @@ pub async fn save_settings(
     // changed, so it can re-pull usage and drop cards for disabled providers
     // immediately instead of waiting for a poll that no longer happens.
     let _ = app.emit("settings-changed", &new_settings);
+    // Wake polling loops immediately so interval/enable edits apply now
+    // instead of after the current period.
+    let _ = state.settings_wake.send(());
     Ok(())
 }
 
