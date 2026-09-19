@@ -221,7 +221,8 @@
     align-items: center;
     gap: 4px;
     margin-top: 4px;
-    justify-content: center;
+    /* 靠左排列，配合上方铺满的热力图网格 */
+    justify-content: flex-start;
   }
 
   .heatmap__legend-cell {

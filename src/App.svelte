@@ -910,11 +910,17 @@
     0%,
     100% {
       border-color: rgba(255, 95, 86, 0.55);
-      box-shadow: 0 0 0 0 rgba(255, 95, 86, 0);
+      box-shadow:
+        0 0 0 0 rgba(255, 95, 86, 0),
+        inset 0 0 0 1px rgba(255, 95, 86, 0.4);
     }
     50% {
       border-color: rgba(255, 95, 86, 0.95);
-      box-shadow: 0 0 14px 2px rgba(255, 95, 86, 0.38);
+      /* blur 大、spread 0 的柔和外发光 + 贴合圆角的内描边：
+         避免旧版 `14px 2px` 的硬边外扩在透明窗口里呈矩形块状光晕 */
+      box-shadow:
+        0 0 16px 0 rgba(255, 95, 86, 0.5),
+        inset 0 0 0 1px rgba(255, 95, 86, 0.85);
     }
   }
 
