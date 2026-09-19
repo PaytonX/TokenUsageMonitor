@@ -294,7 +294,9 @@
       fromControl: (event.target as HTMLElement).closest("button") !== null,
     };
     pillDidDrag = false;
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    if (!pillDragStart.fromControl) {
+      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    }
   }
 
   function onPillPointerMove(event: PointerEvent) {
@@ -884,6 +886,7 @@
     padding: 0;
     border: none;
     background: transparent;
+    appearance: none;
     font: inherit;
     color: inherit;
     text-align: left;
