@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { LogicalSize } from "@tauri-apps/api/dpi";
   import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
   import {
     getUsage,
@@ -15,16 +16,20 @@
     type ProviderState,
     type ProviderError,
     type Settings,
+    type BurnInfo,
     remainingPercent,
   } from "./lib";
   import ProviderCard from "./lib/components/ProviderCard.svelte";
   import ProgressRing from "./lib/components/ProgressRing.svelte";
   import HeatmapGrid from "./lib/components/HeatmapGrid.svelte";
+  import MiniPanel from "./lib/components/MiniPanel.svelte";
 
   type Mode = "dashboard" | "compact";
 
   let snapshots = $state<UsageSnapshot[]>([]);
   let errors = $state<Record<string, string>>({});
+  let burns = $state<Record<string, BurnInfo | null>>({});
+  let actives = $state<Record<string, boolean>>({});
   let mode = $state<Mode>("dashboard");
   let heatmapTabId = $state<string | null>(null);
   const PROVIDER_COLORS: Record<string, string> = {
@@ -69,6 +74,8 @@
           .filter((s) => s.provider_id !== snap.provider_id)
           .concat(snap)
           .sort((a, b) => a.provider_id.localeCompare(b.provider_id));
+        burns = { ...burns, [snap.provider_id]: update.burn };
+        actives = { ...actives, [snap.provider_id]: update.active };
         if (!heatmapTabId) heatmapTabId = snap.provider_id;
         errors = { ...errors, [snap.provider_id]: "" };
         lastRefreshAt = Date.now();
@@ -180,6 +187,57 @@
   let pillDragStart: { x: number; y: number } | null = null;
   let pillDidDrag = false;
   let pillFadeGen = 0;
+
+  // Compact pill three-state tone (spec §5.2): ringPercent is aggregate
+  // REMAINING, so used = 1 - ringPercent. <80 silent / 80-95 amber / >=95 red.
+  // Empty data normalizes to "ok" so the no-data idle ring never breathes red.
+  let pillTone = $derived(
+    snapshots.length === 0
+      ? "ok"
+      : 1 - ringPercent >= 0.95
+        ? "crit"
+        : 1 - ringPercent >= 0.8
+          ? "warn"
+          : "ok",
+  );
+
+  // The compact OS window is physically 150x44 (ipc::set_window_mode). The
+  // hover MiniPanel grows it downward via setSize; top-left anchor is kept.
+  // B4 switches the collapsed height 44 -> 40: update PILL_COLLAPSED_H there
+  // together with the Rust LogicalSize.
+  const PILL_COLLAPSED_W = 150;
+  const PILL_COLLAPSED_H = 44;
+  const PILL_EXPANDED_BASE = 48; // 44 main row + MiniPanel vertical padding
+  const PILL_EXPANDED_ROW = 24; // 18px row + 6px gap
+  let pillExpanded = $state(false);
+  let pillResizeGen = 0;
+
+  async function expandPill() {
+    if (mode !== "compact" || snapshots.length === 0) return;
+    const gen = ++pillResizeGen;
+    const height =
+      PILL_EXPANDED_BASE + snapshots.length * PILL_EXPANDED_ROW;
+    try {
+      await getCurrentWindow().setSize(
+        new LogicalSize(PILL_COLLAPSED_W, height),
+      );
+      if (gen === pillResizeGen) pillExpanded = true;
+    } catch {
+      // IPC failed — leave the pill collapsed.
+    }
+  }
+
+  async function collapsePill(): Promise<void> {
+    const gen = ++pillResizeGen;
+    pillExpanded = false;
+    try {
+      await getCurrentWindow().setSize(
+        new LogicalSize(PILL_COLLAPSED_W, PILL_COLLAPSED_H),
+      );
+    } catch {
+      // Ignore — window may be mid mode-switch.
+    }
+  }
 
   function clearPillFadeTimer() {
     if (pillFadeTimer !== null) {
@@ -310,6 +368,8 @@
     mode = next;
     pillHovered = false;
     pillFaded = false;
+    pillExpanded = false;
+    pillResizeGen++;
     clearPillFadeTimer();
     if (next === "compact") {
       void refreshPillFade();
@@ -350,36 +410,59 @@
     <div
       class="pill"
       class:is-faded={pillFaded}
+      class:pill--expanded={pillExpanded}
+      data-tone={pillTone}
       onpointerenter={() => {
         pillHovered = true;
         clearPillFadeTimer();
         pillFaded = false;
+        void expandPill();
       }}
       onpointerleave={() => {
         pillHovered = false;
-        void refreshPillFade();
+        // Restore the physical size FIRST so the edge-fade check measures
+        // the 150x44 pill, not the transient expanded rectangle.
+        void collapsePill().then(() => refreshPillFade());
       }}
       onpointerdown={onPillPointerDown}
       onpointermove={onPillPointerMove}
       onpointerup={onPillPointerUp}
       oncontextmenu={(e) => e.preventDefault()}
+      role="button"
+      tabindex="0"
+      aria-label="恢复主面板"
+      onkeydown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          void toggleMode();
+        }
+      }}
     >
-      <div class="pill__ring">
-        <ProgressRing value={ringPercent} label="" size={24} stroke={3} />
-        <span class="pill__percent">{ringLabel}</span>
+      <div class="pill__main">
+        <div class="pill__ring">
+          <ProgressRing value={ringPercent} label="" size={24} stroke={3} idle={snapshots.length === 0} />
+          <span
+            class="pill__percent"
+            class:pill__percent--crit={pillTone === "crit"}
+          >{ringLabel}</span>
+        </div>
+        <span class="pill__divider"></span>
+        <span class="pill__dot" style:background={focusedColor}></span>
+        <span class="pill__name">{focusedName}</span>
+        <button
+          class="pill__close"
+          title="关闭应用"
+          onpointerdown={(e) => e.stopPropagation()}
+          onclick={(e) => {
+            e.stopPropagation();
+            void closeApp();
+          }}
+        >✕</button>
       </div>
-      <span class="pill__divider"></span>
-      <span class="pill__dot" style:background={focusedColor}></span>
-      <span class="pill__name">{focusedName}</span>
-      <button
-        class="pill__close"
-        title="关闭应用"
-        onpointerdown={(e) => e.stopPropagation()}
-        onclick={(e) => {
-          e.stopPropagation();
-          void closeApp();
-        }}
-      >✕</button>
+      {#if pillExpanded}
+        <MiniPanel {snapshots} {actives} />
+      {/if}
     </div>
   {:else}
     <header class="shell__header" data-tauri-drag-region>
@@ -388,7 +471,7 @@
         <span class="shell__title">TokenUsageMonitor</span>
       </div>
       <div class="shell__actions" data-tauri-drag-region={false}>
-        <ProgressRing value={ringPercent} label={ringLabel} size={28} stroke={3} />
+        <ProgressRing value={ringPercent} label={ringLabel} size={28} stroke={3} idle={snapshots.length === 0} />
         <button class="shell__btn" onclick={refresh} title="立即刷新">↻</button>
         <button class="shell__btn" onclick={() => openSettings()} title="设置">⚙</button>
         <button class="shell__btn" onclick={toggleMode} title="折叠到迷你态">⤢</button>
@@ -430,6 +513,9 @@
           <ProviderCard
             snapshot={snap}
             error={errors[snap.provider_id] ?? null}
+            burn={burns[snap.provider_id] ?? null}
+            active={actives[snap.provider_id] ?? false}
+            {lastRefreshAt}
           />
         {/each}
       {/if}
@@ -572,6 +658,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--tum-space-2);
+    padding: 0 3px;
     scrollbar-width: thin;
     scrollbar-color: var(--tum-border) transparent;
   }
@@ -717,25 +804,65 @@
     letter-spacing: 0.4px;
   }
 
-  /* Mini pill (compact) — single row 150x44 (see ipc::set_window_mode
-     "compact"). Background matches the old compact__btn fill. */
+  /* Mini pill (compact): collapsed physical window is 150x44 (see
+     ipc::set_window_mode). Hover grows it for the MiniPanel rows.
+     Three states via data-tone: silent (<80%) / amber (80-95%) /
+     red breathe (>=95%, spec §5.2 CompactPill). */
   .pill {
     height: 100%;
     display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 8px;
+    flex-direction: column;
+    padding: 0 8px;
     border-radius: 22px;
-    background: rgba(10, 14, 26, 0.9);
+    background: rgba(10, 14, 26, 0.92);
     border: 1px solid var(--tum-border);
-    transition: opacity 0.35s ease, transform 0.35s ease;
+    transition:
+      opacity 0.35s ease,
+      transform 0.35s ease,
+      border-color 0.3s ease,
+      border-radius 0.2s ease,
+      box-shadow 0.3s ease;
     cursor: default;
     overflow: hidden;
+  }
+
+  .pill--expanded {
+    border-radius: var(--tum-radius-lg);
+  }
+
+  .pill[data-tone="warn"] {
+    border-color: rgba(255, 200, 61, 0.55);
+  }
+
+  .pill[data-tone="crit"] {
+    border-color: rgba(255, 95, 86, 0.65);
+    animation: pill-breathe 1.6s ease-in-out infinite;
   }
 
   .pill.is-faded {
     opacity: 0.22;
     transform: scale(0.9);
+    animation: none;
+  }
+
+  @keyframes pill-breathe {
+    0%,
+    100% {
+      border-color: rgba(255, 95, 86, 0.55);
+      box-shadow: 0 0 0 0 rgba(255, 95, 86, 0);
+    }
+    50% {
+      border-color: rgba(255, 95, 86, 0.95);
+      box-shadow: 0 0 14px 2px rgba(255, 95, 86, 0.38);
+    }
+  }
+
+  .pill__main {
+    height: 44px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .pill__ring {
@@ -750,6 +877,10 @@
     font-family: var(--tum-font-mono);
     color: var(--tum-text-primary);
     letter-spacing: 0.3px;
+  }
+
+  .pill__percent--crit {
+    color: var(--tum-crit);
   }
 
   .pill__divider {

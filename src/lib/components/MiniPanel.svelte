@@ -16,13 +16,14 @@
   let { snapshots, actives = {} }: Props = $props();
 </script>
 
-<div class="mini" data-tauri-drag-region={false}>
+<div class="mini" data-tauri-drag-region={false} role="list">
+  <h2 class="sr-only">已启用来源用量</h2>
   {#each snapshots as s (s.provider_id)}
     {@const critical = mostCriticalWindow(s)}
     {@const usedPct = critical ? percent(critical.window) : 0}
     {@const remain = remainingPercent(s)}
     {@const tone = usedPct >= 0.95 ? "crit" : usedPct >= 0.8 ? "warn" : "ok"}
-    <div class="mini__row">
+    <div class="mini__row" role="listitem">
       <PulseDot active={!!actives[s.provider_id]} {tone} size={7} />
       <span class="mini__name">{s.provider_display_name}</span>
       <span class="mini__track">
@@ -33,6 +34,8 @@
       </span>
       <span class="mini__pct">{Math.round(remain * 100)}%</span>
     </div>
+  {:else}
+    <div class="mini__row mini__row--empty" role="listitem">暂无已启用来源</div>
   {/each}
 </div>
 
@@ -42,6 +45,23 @@
     flex-direction: column;
     gap: 6px;
     padding: 2px 0 8px;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .mini__row--empty {
+    color: var(--tum-text-muted);
+    font-size: var(--tum-font-size-xs);
   }
 
   .mini__row {

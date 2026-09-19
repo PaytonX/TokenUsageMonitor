@@ -9,9 +9,11 @@
     size?: number;
     stroke?: number;
     label?: string;
+    /** No data yet: neutral empty track, no progress arc, no crit glow. */
+    idle?: boolean;
   }
 
-  let { value, size = 56, stroke = 4, label }: Props = $props();
+  let { value, size = 56, stroke = 4, label, idle = false }: Props = $props();
 
   let gradientSeq = $state(nextSeq++);
   let gradientId = `tum-ring-grad-${gradientSeq}`;
@@ -22,8 +24,8 @@
   let offset = $derived(circumference * (1 - clamped));
 
   // value = REMAINING; thresholds align with spec: used >= 95% crit, >= 80% warn
-  let tone = $derived(1 - clamped >= 0.95 ? "crit" : 1 - clamped >= 0.8 ? "warn" : "ok");
-  let isCrit = $derived(tone === "crit");
+  let tone = $derived(idle ? "ok" : 1 - clamped >= 0.95 ? "crit" : 1 - clamped >= 0.8 ? "warn" : "ok");
+  let isCrit = $derived(!idle && tone === "crit");
 
   let fontSize = $derived(Math.max(9, Math.round(size * 0.34)));
 </script>
@@ -57,19 +59,21 @@
     stroke="rgba(255,255,255,0.10)"
     stroke-width={stroke}
   />
-  <circle
-    cx={size / 2}
-    cy={size / 2}
-    r={radius}
-    fill="none"
-    stroke={`url(#${gradientId})`}
-    stroke-width={stroke}
-    stroke-linecap="round"
-    stroke-dasharray={circumference}
-    stroke-dashoffset={offset}
-    transform={`rotate(-90 ${size / 2} ${size / 2})`}
-    style="transition: stroke-dashoffset 0.6s ease"
-  />
+  {#if !idle}
+    <circle
+      cx={size / 2}
+      cy={size / 2}
+      r={radius}
+      fill="none"
+      stroke={`url(#${gradientId})`}
+      stroke-width={stroke}
+      stroke-linecap="round"
+      stroke-dasharray={circumference}
+      stroke-dashoffset={offset}
+      transform={`rotate(-90 ${size / 2} ${size / 2})`}
+      style="transition: stroke-dashoffset 0.6s ease"
+    />
+  {/if}
   {#if label}
     <text
       x="50%"
