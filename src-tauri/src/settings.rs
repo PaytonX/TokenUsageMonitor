@@ -22,10 +22,33 @@ pub struct Settings {
     pub dashboard_x: Option<i32>,
     pub dashboard_y: Option<i32>,
     /// Compact-mode flag.
+    #[serde(default)]
     pub compact_mode: bool,
     /// Whether to autostart on system boot (informational; the user must add
     /// a shortcut to shell:startup themselves for now).
+    #[serde(default)]
     pub autostart_hint_shown: bool,
+    /// Close button hides to tray instead of quitting. Default true.
+    #[serde(default = "default_close_to_tray")]
+    pub close_to_tray: bool,
+    /// Notification threshold (percent used) for the warning level.
+    #[serde(default = "default_notify_warn_percent")]
+    pub notify_warn_percent: u8,
+    /// Notification threshold (percent used) for the critical level.
+    #[serde(default = "default_notify_crit_percent")]
+    pub notify_crit_percent: u8,
+}
+
+fn default_close_to_tray() -> bool {
+    true
+}
+
+fn default_notify_warn_percent() -> u8 {
+    80
+}
+
+fn default_notify_crit_percent() -> u8 {
+    95
 }
 
 impl Default for Settings {
@@ -37,6 +60,9 @@ impl Default for Settings {
             dashboard_y: None,
             compact_mode: false,
             autostart_hint_shown: false,
+            close_to_tray: default_close_to_tray(),
+            notify_warn_percent: default_notify_warn_percent(),
+            notify_crit_percent: default_notify_crit_percent(),
         }
     }
 }
@@ -107,5 +133,44 @@ impl SettingsStore {
             let _ = entry.delete_credential();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod settings_defaults_tests {
+    use super::Settings;
+
+    #[test]
+    fn old_toml_without_new_fields_gets_defaults() {
+        let raw = "\
+enabled_providers = [\"minimax\"]
+poll_interval_seconds = 30
+dashboard_x = 100
+dashboard_y = 200
+compact_mode = true
+autostart_hint_shown = false
+";
+        let parsed: Settings = toml::from_str(raw).expect("parse legacy config");
+        assert!(parsed.close_to_tray);
+        assert_eq!(parsed.notify_warn_percent, 80);
+        assert_eq!(parsed.notify_crit_percent, 95);
+    }
+
+    #[test]
+    fn new_fields_round_trip() {
+        let raw = "\
+enabled_providers = []
+poll_interval_seconds = 60
+close_to_tray = false
+notify_warn_percent = 70
+notify_crit_percent = 90
+";
+        let parsed: Settings = toml::from_str(raw).expect("parse new config");
+        assert!(!parsed.close_to_tray);
+        assert_eq!(parsed.notify_warn_percent, 70);
+        assert_eq!(parsed.notify_crit_percent, 90);
+
+        let dumped = toml::to_string(&Settings::default()).expect("serialize defaults");
+        assert!(dumped.contains("close_to_tray = true"));
     }
 }
