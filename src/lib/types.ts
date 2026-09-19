@@ -139,6 +139,9 @@ export interface Settings {
   ring_window: string;
   /** Snap the dashboard to screen edges when dragged near one. */
   edge_snap: boolean;
+  /** Ring gauge display mode: false = show `used`; true = show `remaining`
+   * (countdown). */
+  countdown_mode: boolean;
 }
 
 /** Tagged union mirroring Rust `Credentials`. The `kind` field discriminates. */
@@ -154,6 +157,30 @@ export type Credentials =
 export type TestResult =
   | { ok: true; snapshot: UsageSnapshot }
   | { ok: false; message: string };
+
+/** Parse a "#RRGGBB" hex color into a "r,g,b" CSS triplet (so callers can use
+ * `rgba(var(--x-rgb), a)`). Returns null when the string isn't 6-digit hex. */
+export function hexToRgb(hex: string): string | null {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+}
+
+/** Lighten a "#RRGGBB" color by `amt` (0..1) toward white — used to build a
+ * two-stop arc gradient from a single per-account accent. */
+export function lightenHex(hex: string, amt = 0.35): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const c = (v: number) => Math.round(v + (255 - v) * amt);
+  return `#${[c(r), c(g), c(b)]
+    .map((v) => v.toString(16).padStart(2, "0"))
+    .join("")}`;
+}
 
 /** Helper to format a usage value with the right unit suffix. */
 export function formatUsage(value: number, unit: UsageUnit): string {

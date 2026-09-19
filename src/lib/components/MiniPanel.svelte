@@ -11,9 +11,12 @@
     snapshots: UsageSnapshot[];
     /** provider_id -> active flag from the latest UsageUpdate. */
     actives?: Record<string, boolean>;
+    /** true = show REMAINING %; false = show USED % (see `countdown_mode`).
+     *  The fill bar always visualizes consumed amount either way. */
+    countdown?: boolean;
   }
 
-  let { snapshots, actives = {} }: Props = $props();
+  let { snapshots, actives = {}, countdown = true }: Props = $props();
 </script>
 
 <div
@@ -36,7 +39,9 @@
           style={`width:${(usedPct * 100).toFixed(1)}%`}
         ></span>
       </span>
-      <span class="mini__pct">{Math.round(remain * 100)}%</span>
+      <span class="mini__pct">
+        {Math.round((countdown ? remain : usedPct) * 100)}%
+      </span>
     </div>
   {:else}
     <div class="mini__row mini__row--empty" role="listitem">暂无已启用来源</div>

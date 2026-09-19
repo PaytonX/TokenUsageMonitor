@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     formatUsage,
+    hexToRgb,
     percent,
     remainingPercent,
     type BurnInfo,
@@ -19,6 +20,11 @@
     lastRefreshAt?: number;
     /** Provider whose card is currently focused in the header ring. */
     focused?: boolean;
+    /** Per-account accent (#RRGGBB). Injected as `--acct-accent*` CSS vars on
+     *  the card root and passed to the ring; falls back to --tum-accent. */
+    accent?: string;
+    /** true = the ring/label show REMAINING; false = USED (see `countdown_mode`). */
+    countdown?: boolean;
     /** Called when the user clicks this card; App links it to focus + heatmap. */
     onSelect?: () => void;
     /** Reported as the pointer enters/leaves the card; drives the floating
@@ -33,6 +39,8 @@
     active = false,
     lastRefreshAt = Date.now(),
     focused = false,
+    accent,
+    countdown = true,
     onSelect,
     onHover,
   }: Props = $props();
@@ -43,10 +51,16 @@
     return `${formatUsage(w.balance.total, "cny")}`;
   });
 
-  // Ring shows REMAINING; tone thresholds are on used % (80 / 95).
+  // Ring/label flip: `countdown` true shows REMAINING, false shows USED.
+  // Tone thresholds stay on used % regardless of display mode.
   let remaining = $derived(remainingPercent(snapshot));
   let usedPct = $derived(1 - remaining);
-  let ringLabel = $derived(`${Math.round(remaining * 100)}%`);
+  let ringLabel = $derived(
+    countdown
+      ? `${Math.round(remaining * 100)}%`
+      : `${Math.round(usedPct * 100)}%`,
+  );
+  let ringValue = $derived(countdown ? remaining : usedPct);
   let tone = $derived<"ok" | "warn" | "crit">(
     usedPct >= 0.95 ? "crit" : usedPct >= 0.8 ? "warn" : "ok",
   );
@@ -76,6 +90,20 @@
       : "",
   );
 
+  // Per-account accent → override CSS vars on the card root (fall back to the
+  // global --tum-accent scheme when absent).
+  let accentStyle = $derived.by(() => {
+    if (!accent) return undefined;
+    const rgb = hexToRgb(accent);
+    if (!rgb) return undefined;
+    return [
+      `--acct-accent:${accent}`,
+      `--acct-accent-stroke:rgba(${rgb},0.45)`,
+      `--acct-accent-fill:rgba(${rgb},0.12)`,
+      `--acct-accent-glow:rgba(${rgb},0.35)`,
+    ].join(";");
+  });
+
   let expanded = $state(false);
 </script>
 
@@ -87,6 +115,7 @@
   class="card"
   class:card--expanded={expanded}
   class:card--focused={focused}
+  style={accentStyle}
   data-tauri-drag-region={false}
   onpointerenter={() => onHover?.(snapshot.provider_id, true)}
   onpointerleave={() => onHover?.(snapshot.provider_id, false)}
@@ -120,9 +149,9 @@
       {/if}
       <span class="card__ring" title={useDual ? dualLegend : undefined}>
         {#if useDual}
-          <ProgressRing value={shortRemain!} outerValue={longRemain!} label={ringLabel} size={36} stroke={4} />
+          <ProgressRing value={countdown ? shortRemain! : 1 - shortRemain!} outerValue={countdown ? longRemain! : 1 - longRemain!} label={ringLabel} size={36} stroke={4} {countdown} {accent} />
         {:else}
-          <ProgressRing value={remaining} label={ringLabel} size={36} stroke={4} />
+          <ProgressRing value={ringValue} label={ringLabel} size={36} stroke={4} {countdown} {accent} />
         {/if}
       </span>
     </div>
@@ -180,8 +209,8 @@
   }
 
   .card--focused {
-    border-color: var(--tum-accent-stroke);
-    box-shadow: inset 0 0 0 1px var(--tum-accent-stroke);
+    border-color: var(--acct-accent-stroke, var(--tum-accent-stroke));
+    box-shadow: inset 0 0 0 1px var(--acct-accent-stroke, var(--tum-accent-stroke));
   }
 
   .card__head {
@@ -207,7 +236,7 @@
   }
 
   .card:has(:focus-visible) {
-    outline: 2px solid var(--tum-accent);
+    outline: 2px solid var(--acct-accent, var(--tum-accent));
     outline-offset: 2px;
   }
 
@@ -226,9 +255,9 @@
     white-space: nowrap;
     font-size: var(--tum-font-size-xs);
     font-weight: 500;
-    color: var(--tum-accent);
-    background: var(--tum-accent-fill);
-    border: 1px solid var(--tum-accent-stroke);
+    color: var(--acct-accent, var(--tum-accent));
+    background: var(--acct-accent-fill, var(--tum-accent-fill));
+    border: 1px solid var(--acct-accent-stroke, var(--tum-accent-stroke));
     padding: 1px 6px;
     border-radius: var(--tum-radius-xs);
     font-family: var(--tum-font-mono);

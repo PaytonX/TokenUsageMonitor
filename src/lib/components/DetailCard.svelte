@@ -1,13 +1,16 @@
 <script lang="ts">
-  import { getHeatmap } from "../api";
+  import { getHeatmap, forceRefresh, openSettings } from "../api";
   import {
     formatUsage,
+    hexToRgb,
     mostCriticalWindow,
+    percent,
     type BurnInfo,
     type HeatmapCell,
     type UsageSnapshot,
     type UsageUnit,
     type WindowKey,
+    type WindowUsage,
   } from "../types";
 
   interface Props {
@@ -15,9 +18,22 @@
     burn?: BurnInfo | null;
     /** Wall-clock ms of the last usage update; drives the "上次刷新" row. */
     lastRefreshAt?: number;
+    /** true = quota rows show REMAINING %; false = USED % (see `countdown_mode`). */
+    countdown?: boolean;
+    /** Per-account accent (#RRGGBB); tints the chart bars + window label. */
+    accent?: string;
+    /** Latest error string for this provider, if any. */
+    error?: string | null;
   }
 
-  let { snapshot, burn = null, lastRefreshAt = Date.now() }: Props = $props();
+  let {
+    snapshot,
+    burn = null,
+    lastRefreshAt = Date.now(),
+    countdown = true,
+    accent,
+    error = null,
+  }: Props = $props();
 
   const WINDOW_LABELS: Record<WindowKey, string> = {
     five_hour: "5 小时窗口",
@@ -25,6 +41,17 @@
     weekly: "本周窗口",
     monthly: "月度窗口",
   };
+
+  // Per-account accent → override CSS vars on the detail root.
+  let accentStyle = $derived.by(() => {
+    if (!accent) return undefined;
+    const rgb = hexToRgb(accent);
+    if (!rgb) return undefined;
+    return [
+      `--acct-accent:${accent}`,
+      `--acct-accent-rgb:${rgb}`,
+    ].join(";");
+  });
 
   let critical = $derived(mostCriticalWindow(snapshot));
 
@@ -110,9 +137,31 @@
   let barUnit = $derived<UsageUnit>(
     weekCells[0]?.unit ?? critical?.window.unit ?? "tokens",
   );
+
+  // Quota pool (额度池): every quota'd window with its used/quota amounts +
+  // the used/remaining fraction depending on `countdown`.
+  let quotaRows = $derived.by(() => {
+    const wins: { label: string; win: WindowUsage }[] = [];
+    const push = (key: WindowKey, label: string) => {
+      const w = snapshot.windows[key];
+      if (w && w.quota > 0) wins.push({ label, win: w });
+    };
+    push("five_hour", "5 小时");
+    push("daily", "当日");
+    push("weekly", "周用量");
+    push("monthly", "月度");
+    return wins.map(({ label, win }) => {
+      const pct = percent(win);
+      return {
+        label,
+        amount: `${formatUsage(win.used, win.unit)} / ${formatUsage(win.quota, win.unit)}`,
+        pctLabel: `${Math.round((countdown ? 1 - pct : pct) * 100)}%`,
+      };
+    });
+  });
 </script>
 
-<div class="detail" data-tauri-drag-region={false}>
+<div class="detail" style={accentStyle} data-tauri-drag-region={false}>
   <div class="detail__head">
     <span class="detail__title">{snapshot.provider_display_name}</span>
     <span class="detail__window">
@@ -120,15 +169,39 @@
     </span>
   </div>
 
+  {#if quotaRows.length > 0}
+    <div class="detail__pool">
+      <span class="detail__pool-label">额度池</span>
+      {#each quotaRows as row (row.label)}
+        <div class="detail__pool-row">
+          <span class="detail__pool-name">{row.label}</span>
+          <span class="detail__pool-amount">{row.amount}</span>
+          <span class="detail__pool-pct">{row.pctLabel}</span>
+        </div>
+      {/each}
+      {#if critical?.window.reset_at}
+        <div class="detail__pool-row">
+          <span class="detail__pool-name">重置</span>
+          <span class="detail__pool-amount">下一窗口</span>
+          <span class="detail__pool-pct">{resetLabel}</span>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
   <dl class="detail__rows">
     <dt>燃烧率</dt>
     <dd>{burnLabel}</dd>
     <dt>预计耗尽</dt>
     <dd>{etaLabel}</dd>
-    <dt>窗口重置</dt>
+    <dt>当前窗口重置</dt>
     <dd>{resetLabel}</dd>
     <dt>上次刷新</dt>
     <dd>{refreshedLabel}</dd>
+    {#if error}
+      <dt class="detail__err-label">诊断</dt>
+      <dd class="detail__err">{error}</dd>
+    {/if}
   </dl>
 
   <div class="detail__chart">
@@ -144,6 +217,21 @@
         </div>
       {/each}
     </div>
+  </div>
+
+  <div class="detail__actions">
+    <button
+      type="button"
+      class="detail__btn"
+      onclick={() => void forceRefresh(snapshot.provider_id)}
+      title="立即刷新该账户"
+    >↻ 刷新该账户</button>
+    <button
+      type="button"
+      class="detail__btn"
+      onclick={() => void openSettings()}
+      title="打开设置"
+    >⚙ 打开设置</button>
   </div>
 </div>
 
@@ -179,8 +267,89 @@
     flex: none;
     font-family: var(--tum-font-mono);
     font-size: var(--tum-font-size-xs);
-    color: var(--tum-accent);
+    color: var(--acct-accent, var(--tum-accent));
     letter-spacing: 0.4px;
+  }
+
+  .detail__pool {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    background: var(--tum-surface);
+    border: 1px solid var(--tum-border);
+    border-radius: var(--tum-radius-sm);
+    flex: none;
+  }
+
+  .detail__pool-label {
+    font-family: var(--tum-font-mono);
+    font-size: 9px;
+    color: var(--tum-text-muted);
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+  }
+
+  .detail__pool-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--tum-font-mono);
+    font-size: var(--tum-font-size-xs);
+  }
+
+  .detail__pool-name {
+    color: var(--tum-text-muted);
+    flex: none;
+  }
+
+  .detail__pool-amount {
+    color: var(--tum-text-secondary);
+    flex: 1 1 auto;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .detail__pool-pct {
+    flex: none;
+    text-align: right;
+    color: var(--acct-accent, var(--tum-accent));
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.3px;
+  }
+
+  .detail__err-label {
+    color: var(--tum-danger) !important;
+  }
+
+  .detail__err {
+    color: var(--tum-danger) !important;
+  }
+
+  .detail__actions {
+    display: flex;
+    gap: 6px;
+    flex: none;
+  }
+
+  .detail__btn {
+    flex: 1;
+    padding: 3px 8px;
+    font-size: var(--tum-font-size-xs);
+    font-family: var(--tum-font);
+    color: var(--tum-text-secondary);
+    background: var(--tum-surface);
+    border: 1px solid var(--tum-border);
+    border-radius: var(--tum-radius-xs);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+  }
+
+  .detail__btn:hover {
+    color: var(--acct-accent, var(--tum-accent));
+    border-color: var(--acct-accent-stroke, var(--tum-accent-stroke));
+    background: var(--acct-accent-fill, var(--tum-accent-fill));
   }
 
   .detail__rows {
@@ -240,7 +409,7 @@
   .detail__bar {
     width: 100%;
     border-radius: 2px 2px 0 0;
-    background: linear-gradient(180deg, rgba(76, 194, 255, 0.9), rgba(76, 194, 255, 0.45));
+    background: linear-gradient(180deg, rgba(var(--acct-accent-rgb, 76, 194, 255), 0.9), rgba(var(--acct-accent-rgb, 76, 194, 255), 0.45));
     min-height: 2px;
   }
 

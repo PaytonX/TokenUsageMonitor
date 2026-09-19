@@ -50,6 +50,7 @@
   let notifyEnabled = $state(true);
   let notifyWarn = $state<number>(80);
   let notifyCrit = $state<number>(95);
+  let countdownMode = $state(false);
   let saving = $state(false);
   let savedFlash = $state(false);
   let busy = $state<string | null>(null);
@@ -105,6 +106,7 @@
       notifyEnabled = s.notify_enabled ?? true;
       notifyWarn = s.notify_warn_percent ?? 80;
       notifyCrit = s.notify_crit_percent ?? 95;
+      countdownMode = s.countdown_mode ?? false;
       forms = buildForms();
     } catch (e) {
       genericError = String(e);
@@ -250,6 +252,7 @@
         notify_enabled: notifyEnabled,
         notify_warn_percent: clampPercent(notifyWarn),
         notify_crit_percent: clampPercent(notifyCrit),
+        countdown_mode: countdownMode,
       };
       await saveSettings(next);
       settings = next;
@@ -364,6 +367,16 @@
                 <option value="monthly">月度窗口</option>
               </select>
             </label>
+            <div class="behavior-row">
+              <div class="behavior-info">
+                <span class="behavior-label">倒计时模式（显示剩余量）</span>
+                <span class="behavior-hint">关闭时圆环显示已用量；开启后显示剩余量，便于估算还能用多久。</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" bind:checked={countdownMode} />
+                <span class="toggle__track"><span class="toggle__thumb"></span></span>
+              </label>
+            </div>
           </div>
         </div>
 

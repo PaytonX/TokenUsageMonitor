@@ -3,8 +3,11 @@
 </script>
 
 <script lang="ts">
+  import { lightenHex } from "../types";
+
   interface Props {
-    /** Remaining percentage, 0..1 (ring fills by remaining quota) */
+    /** Percentage 0..1. The arc always draws `value`; whether it means "used"
+     *  or "remaining" is declared by `countdown`, which the tone mapping uses. */
     value: number;
     size?: number;
     stroke?: number;
@@ -17,6 +20,13 @@
     outerValue?: number;
     /** Gap between the inner and outer rings, in px. */
     outerGap?: number;
+    /** true = `value` (and `outerValue`) are REMAINING (countdown display);
+     *  false = they are USED. Only affects the ok/warn/crit tone (thresholds are
+     *  on used %, so used stays 80/95 under both mappings). Defaults to true. */
+    countdown?: boolean;
+    /** Optional per-account accent (#RRGGBB). Tints the "ok" arc gradient;
+     *  warn/crit keep their status colors for clarity. Missing → system blue. */
+    accent?: string;
   }
 
   let {
@@ -27,6 +37,8 @@
     idle = false,
     outerValue,
     outerGap = 2,
+    countdown = true,
+    accent,
   }: Props = $props();
 
   let gradientSeq = $state(nextSeq++);
@@ -45,9 +57,23 @@
   let outerCircumference = $derived(2 * Math.PI * outerRadius);
   let outerOffset = $derived(outerCircumference * (1 - outerClamped));
 
-  // value = REMAINING; thresholds align with spec: used >= 95% crit, >= 80% warn
-  let tone = $derived(idle ? "ok" : 1 - clamped >= 0.95 ? "crit" : 1 - clamped >= 0.8 ? "warn" : "ok");
+  // value = the displayed fraction; thresholds align with spec: used >= 95%
+  // crit, >= 80% warn. Recover "used" from the value according to `countdown`.
+  let usedFraction = $derived(countdown ? 1 - clamped : clamped);
+  let tone = $derived(
+    idle
+      ? "ok"
+      : usedFraction >= 0.95
+        ? "crit"
+        : usedFraction >= 0.8
+          ? "warn"
+          : "ok",
+  );
   let isCrit = $derived(!idle && tone === "crit");
+
+  // "ok" arc gradient: per-account accent when supplied, else system blue.
+  let okStart = $derived(accent ?? "#4cc2ff");
+  let okEnd = $derived(accent ? lightenHex(accent, 0.35) : "#6ccb5f");
 
   // Dual ring leaves a smaller center hole — shrink the label to fit.
   let fontSize = $derived(
@@ -65,8 +91,8 @@
   <defs>
     <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
       {#if tone === "ok"}
-        <stop offset="0%" stop-color="#4cc2ff" />
-        <stop offset="100%" stop-color="#6ccb5f" />
+        <stop offset="0%" stop-color={okStart} />
+        <stop offset="100%" stop-color={okEnd} />
       {:else if tone === "warn"}
         <stop offset="0%" stop-color="#e8b53d" />
         <stop offset="100%" stop-color="#ffc83d" />

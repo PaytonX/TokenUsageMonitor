@@ -64,6 +64,24 @@
   const PILL_EDGE_THRESHOLD_PX = 24;
   let settings = $state<Settings | null>(null);
 
+  // Per-account accent map (instance_id -> #RRGGBB), derived from settings.
+  // Snapshot `provider_id` doubles as the account `instance_id`, so lookup by it.
+  let accentById = $derived(
+    (settings?.accounts ?? []).reduce(
+      (m, a) => {
+        m[a.instance_id] = a.accent_color;
+        return m;
+      },
+      {} as Record<string, string>,
+    ),
+  );
+  // Resolve a provider's emphasis colour with the legacy fallback chain.
+  const colorOf = (id: string) =>
+    accentById[id] ?? PROVIDER_COLORS[id] ?? FOCUS_FALLBACK_COLOR;
+
+  // Countdown mode: false = show USED, true = show REMAINING (1 - used).
+  let displayRemaining = $derived(settings?.countdown_mode ?? false);
+
   let now = $state(new Date());
   // Wall-clock at the moment we last received an `usage-updated` (or did a
   // manual refresh). Drives the "next refresh in Ns" countdown in the footer.
@@ -156,6 +174,15 @@
       : aggregateLabel,
   );
 
+  // Ring arc/label mirror `displayRemaining`: remaining figures above flip to
+  // "used" (1 - remaining) when the user prefers the used display.
+  let ringArcValue = $derived(displayRemaining ? ringPercent : 1 - ringPercent);
+  let ringArcLabel = $derived(
+    displayRemaining
+      ? ringLabel
+      : `${Math.round((1 - ringPercent) * 100)}%`,
+  );
+
   // The active snapshot whose heatmap is shown in the bottom panel.
   let activeSnapshot = $derived(
     focusedSnapshot ??
@@ -196,9 +223,7 @@
 
   // Mini pill (compact mode) — focused provider color/name.
   const focusedColor = $derived(
-    focusedSnapshot
-      ? (PROVIDER_COLORS[focusedSnapshot.provider_id] ?? FOCUS_FALLBACK_COLOR)
-      : FOCUS_FALLBACK_COLOR,
+    focusedSnapshot ? colorOf(focusedSnapshot.provider_id) : FOCUS_FALLBACK_COLOR,
   );
   const focusedName = $derived(
     focusedSnapshot
@@ -478,11 +503,11 @@
           }}
         >
           <span class="pill__ring">
-            <ProgressRing value={ringPercent} label="" size={24} stroke={3} idle={snapshots.length === 0} />
+            <ProgressRing value={ringArcValue} label="" size={24} stroke={3} idle={snapshots.length === 0} countdown={displayRemaining} />
             <span
               class="pill__percent"
               class:pill__percent--crit={pillTone === "crit"}
-            >{ringLabel}</span>
+            >{ringArcLabel}</span>
           </span>
           <span class="pill__divider"></span>
           <span class="pill__dot" style:background={focusedColor}></span>
@@ -501,7 +526,7 @@
         >✕</button>
       </div>
       {#if pillExpanded}
-        <MiniPanel {snapshots} {actives} />
+        <MiniPanel {snapshots} {actives} countdown={displayRemaining} />
       {/if}
     </div>
   {:else}
@@ -511,7 +536,7 @@
         <span class="shell__title">TokenUsageMonitor</span>
       </div>
       <div class="shell__actions" data-tauri-drag-region={false}>
-        <ProgressRing value={ringPercent} label={ringLabel} size={28} stroke={3} idle={snapshots.length === 0} />
+        <ProgressRing value={ringArcValue} label={ringArcLabel} size={28} stroke={3} idle={snapshots.length === 0} countdown={displayRemaining} />
         <button class="shell__btn" onclick={refresh} title="立即刷新">↻</button>
         <button class="shell__btn" onclick={() => openSettings()} title="设置">⚙</button>
         <button class="shell__btn" onclick={toggleMode} title="折叠到迷你态">⤢</button>
@@ -534,7 +559,7 @@
           >
             <span
               class="focus-dot"
-              style:background={PROVIDER_COLORS[snap.provider_id] ?? FOCUS_FALLBACK_COLOR}
+              style:background={colorOf(snap.provider_id)}
             ></span>
             {snap.provider_display_name}
           </button>
@@ -557,6 +582,8 @@
             active={actives[snap.provider_id] ?? false}
             {lastRefreshAt}
             focused={focus === snap.provider_id}
+            accent={accentById[snap.provider_id]}
+            countdown={displayRemaining}
             onHover={onCardHover}
             onSelect={() => {
               focus = snap.provider_id;
@@ -609,6 +636,9 @@
           snapshot={detailSnapshot}
           burn={burns[detailSnapshot.provider_id] ?? null}
           {lastRefreshAt}
+          countdown={displayRemaining}
+          accent={accentById[detailSnapshot.provider_id]}
+          error={errors[detailSnapshot.provider_id] ?? null}
         />
       </div>
     {/if}

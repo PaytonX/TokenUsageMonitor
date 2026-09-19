@@ -56,6 +56,14 @@ pub struct Settings {
     /// on.
     #[serde(default = "default_edge_snap")]
     pub edge_snap: bool,
+    /// Ring gauge display mode. `false` = show usage *used*; `true` = show the
+    /// *remaining* position (countdown). Display-only, read by the frontend.
+    #[serde(default = "default_countdown_mode")]
+    pub countdown_mode: bool,
+}
+
+fn default_countdown_mode() -> bool {
+    false
 }
 
 fn default_close_to_tray() -> bool {
@@ -98,6 +106,7 @@ impl Default for Settings {
             notify_crit_percent: default_notify_crit_percent(),
             ring_window: default_ring_window(),
             edge_snap: default_edge_snap(),
+            countdown_mode: default_countdown_mode(),
         }
     }
 }
