@@ -5,6 +5,7 @@
 //! `usage-updated` Tauri event. Failures don't kill the task - they emit
 //! `provider-error` and the next tick tries again.
 
+use crate::notify::{self, NotifyAction};
 use crate::providers::{
     BurnInfo, Credentials, Provider, ProviderState, UsageSnapshot, UsageUpdate, WindowUsage,
 };
@@ -15,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::{interval_at, Instant};
+use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
 /// Default per-provider polling intervals (seconds). Tunable via Settings later.
 pub const DEFAULT_INTERVAL_MINIMAX: u64 = 300; // 5 min
@@ -29,6 +30,17 @@ pub fn default_interval_for(provider_id: &str) -> u64 {
         "volcengine" => DEFAULT_INTERVAL_VOLCENGINE,
         _ => 300,
     }
+}
+
+/// Effective polling period: a positive global override in Settings wins;
+/// 0 means "use the per-provider default".
+fn effective_interval(provider_id: &str, global_seconds: u32) -> Duration {
+    let secs = if global_seconds > 0 {
+        global_seconds as u64
+    } else {
+        default_interval_for(provider_id)
+    };
+    Duration::from_secs(secs)
 }
 
 /// Max gap between two snapshots that still allows a burn diff (seconds).
@@ -135,12 +147,9 @@ fn total_used(snap: &UsageSnapshot) -> f64 {
 pub type SharedBurnTracker = Arc<Mutex<BurnTracker>>;
 
 /// Spawn a polling task per registered provider. Each task is fire-and-forget
-/// for the lifetime of the app and re-reads the enabled set on every tick, so
-/// toggling a provider in Settings takes effect without a restart: disabled
-/// providers stop polling entirely (an unconditionally-polling task would
-/// keep emitting `usage-updated` and re-inserting snapshots, resurrecting the
-/// dashboard card the user just disabled), and newly enabled providers pick
-/// up polling on their next tick.
+/// for the lifetime of the app. The loop inside re-reads settings on every
+/// tick and on every settings-changed ping, so toggling a provider, changing
+/// the interval, or pausing takes effect without a restart.
 pub async fn spawn_all(app: &AppHandle) {
     let state = app.state::<AppState>();
     let providers = state.registry.list();
@@ -148,44 +157,95 @@ pub async fn spawn_all(app: &AppHandle) {
         let id = provider.id().to_string();
         let app = app.clone();
         let provider = provider.clone();
-        // First tick happens immediately so users see data on launch without
-        // waiting the full interval. Enabled gating happens inside the loop.
-        let start = Instant::now() + Duration::from_secs(1);
-        let mut tick = interval_at(start, Duration::from_secs(default_interval_for(&id)));
         tauri::async_runtime::spawn(async move {
-            loop {
-                tick.tick().await;
-                let enabled_now = app
+            poll_loop(app, provider, id).await;
+        });
+    }
+}
+
+/// Per-provider polling loop.
+///
+/// - `tick`: fires on the effective interval (Settings override > per-provider
+///   default); skipped while paused or while the provider is disabled.
+/// - `settings_rx.changed()`: wakes immediately on save_settings, rebuilds the
+///   interval if the period changed, and does one immediate fetch if enabled.
+async fn poll_loop(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
+    let initial_period = {
+        let s = app.state::<AppState>().settings.get().await;
+        effective_interval(&id, s.poll_interval_seconds)
+    };
+    let mut period = initial_period;
+    // First tick ~1s after launch so users see data immediately.
+    let start = Instant::now() + Duration::from_secs(1);
+    let mut tick = interval_at(start, period);
+    // Delay (not Burst): after a long pause we must not instantly replay all
+    // missed ticks.
+    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut settings_rx = app.state::<AppState>().settings_wake.subscribe();
+    let pause_rx = app.state::<AppState>().pause_tx.subscribe();
+
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                if *pause_rx.borrow() {
+                    continue;
+                }
+                let enabled = app
                     .state::<AppState>()
                     .settings
                     .get()
                     .await
                     .enabled_providers
                     .contains(&id);
-                if !enabled_now {
+                if !enabled {
                     continue;
                 }
                 if let Err(e) = poll_one(&app, &provider).await {
                     tracing::warn!(provider = %id, error = %e, "poll failed");
                 }
             }
-        });
+            changed = settings_rx.changed() => {
+                // Sender lives in AppState for the whole app lifetime; if it
+                // is gone the app is tearing down, so end this task.
+                if changed.is_err() {
+                    break;
+                }
+                let (enabled, new_period) = {
+                    let s = app.state::<AppState>().settings.get().await;
+                    (
+                        s.enabled_providers.contains(&id),
+                        effective_interval(&id, s.poll_interval_seconds),
+                    )
+                };
+                if new_period != period {
+                    period = new_period;
+                    let mut rebuilt = interval_at(Instant::now() + period, period);
+                    rebuilt.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                    tick = rebuilt;
+                }
+                // Enable/disable or interval edits refresh immediately.
+                if enabled && !*pause_rx.borrow() {
+                    if let Err(e) = poll_one(&app, &provider).await {
+                        tracing::warn!(provider = %id, error = %e,
+                            "poll after settings change failed");
+                    }
+                }
+            }
+        }
     }
 }
 
-/// Polls a single provider and updates state + emits events.
+/// Fetch one provider and run the unified update pipeline:
+/// burn diff -> threshold notify -> emit UsageUpdate -> upsert ProviderState.
+/// Shared by the periodic scheduler and `force_refresh`.
 pub async fn poll_one(
     app: &AppHandle,
     provider: &Arc<dyn Provider>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use tauri::Manager;
     let state = app.state::<AppState>();
 
-    // Pull credentials. Missing credentials surface as NotConfigured rather
-    // than a network error. We check the in-memory cache first (fast path),
-    // then fall back to the OS credential store (covers the case where
-    // credentials were saved in a previous app session and the cache hasn't
-    // been populated yet for this provider).
+    // In-memory credential cache first, then OS credential store, then the
+    // "mock" fallback (matches the pre-refactor behavior).
     let creds = {
         let cache = state.credentials.read().await;
         cache.get(provider.id()).cloned()
@@ -201,7 +261,34 @@ pub async fn poll_one(
     let mut guard = state.state.write().await;
     match result {
         Ok(snapshot) => {
-            let _ = app.emit("usage-updated", &snapshot);
+            // Burn + active share one baseline with manual refresh.
+            let (burn, active) = {
+                let mut tracker = state.burn.lock().await;
+                tracker.observe(&id, &snapshot)
+            };
+
+            // Threshold notification state machine. Lock order is fixed:
+            // snapshot map -> burn (released) -> settings -> notify.
+            let action = {
+                let settings = state.settings.get().await;
+                let mut notify_guard = state.notify.lock().await;
+                notify_guard.evaluate(
+                    &snapshot,
+                    burn.as_ref(),
+                    settings.notify_warn_percent,
+                    settings.notify_crit_percent,
+                )
+            };
+            if let NotifyAction::Fire { title, body, .. } = &action {
+                notify::deliver(app, title, body);
+            }
+
+            let update = UsageUpdate {
+                snapshot: snapshot.clone(),
+                burn,
+                active,
+            };
+            let _ = app.emit("usage-updated", &update);
             guard.insert(
                 id,
                 ProviderState {
@@ -216,8 +303,8 @@ pub async fn poll_one(
                 "provider-error",
                 &serde_json::json!({ "id": id, "error": &err }),
             );
-            // Don't overwrite the last good snapshot - keep showing stale data
-            // with an error badge.
+            // Keep the last good snapshot: stale data + error badge beats an
+            // empty card during a transient API outage.
             let entry = guard.entry(id.clone()).or_default();
             entry.last_error = Some(err);
             entry.last_updated_at = Some(Utc::now());
@@ -317,5 +404,26 @@ mod burn_tests {
         let prev = snap_with_monthly(0.0, 1_000_000_000.0, t0);
         let cur = snap_with_monthly(500_000_000.0, 1_000_000_000.0, t1);
         assert!(compute_burn(&prev, &cur).is_none());
+    }
+}
+
+#[cfg(test)]
+mod interval_tests {
+    use super::*;
+
+    #[test]
+    fn positive_global_override_wins() {
+        assert_eq!(
+            effective_interval("minimax", 30),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn zero_falls_back_to_provider_default() {
+        assert_eq!(
+            effective_interval("minimax", 0),
+            Duration::from_secs(DEFAULT_INTERVAL_MINIMAX)
+        );
     }
 }
