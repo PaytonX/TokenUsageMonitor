@@ -22,11 +22,13 @@ use providers::{
     deepseek::DeepSeekProvider, minimax::MiniMaxProvider,
     volcengine::VolcengineProvider,
 };
+use notify::SharedNotifyState;
 use reqwest::Client;
+use scheduler::SharedBurnTracker;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Manager;
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
 
 /// Global application state shared across IPC commands and the scheduler.
 pub struct AppState {
@@ -42,6 +44,17 @@ pub struct AppState {
     pub storage: Arc<storage::Storage>,
     /// TOML + keyring settings.
     pub settings: Arc<settings::SettingsStore>,
+    /// Burn-diff baselines shared by the scheduler and force_refresh so a
+    /// manual refresh diffs against the same previous snapshot.
+    pub burn: SharedBurnTracker,
+    /// Threshold notification dedupe state (one warn + one crit per window).
+    pub notify: SharedNotifyState,
+    /// Pause flag broadcast. `toggle_polling` flips it; polling tasks
+    /// subscribe and skip ticks while the latest value is true.
+    pub pause_tx: Arc<watch::Sender<bool>>,
+    /// A ping on this channel wakes every polling task so interval edits and
+    /// enable/disable changes apply immediately instead of after one period.
+    pub settings_wake: Arc<watch::Sender<()>>,
 }
 
 /// The set of provider ids the app knows how to register. Anything in the
@@ -122,12 +135,32 @@ pub fn run() {
             let registry = build_registry(http, store.clone());
             let credentials = load_credentials_into_cache(&settings_store);
 
+            // burn / notify shared state.
+            let burn: SharedBurnTracker =
+                Arc::new(tokio::sync::Mutex::new(Default::default()));
+            let notify_state: SharedNotifyState =
+                Arc::new(tokio::sync::Mutex::new(Default::default()));
+
+            // Pause broadcast (initial value false = polling normally). The
+            // initial receiver is dropped: tasks subscribe later, and a
+            // watch channel accepts new subscribers while the sender lives.
+            let (pause_tx, _pause_rx) = watch::channel(false);
+            let pause_tx = Arc::new(pause_tx);
+
+            // Settings-change wake ping, same pattern.
+            let (settings_wake, _wake_rx) = watch::channel(());
+            let settings_wake = Arc::new(settings_wake);
+
             let state = AppState {
                 registry,
                 state: Arc::new(RwLock::new(HashMap::new())),
                 credentials: Arc::new(RwLock::new(credentials)),
                 storage: store,
                 settings: Arc::new(settings_store),
+                burn,
+                notify: notify_state,
+                pause_tx,
+                settings_wake,
             };
 
             app.manage(state);
