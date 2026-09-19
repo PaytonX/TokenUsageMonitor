@@ -163,3 +163,29 @@ export function remainingPercent(snap: UsageSnapshot): number {
     ...windows.map((w) => 1 - percent(w)),
   );
 }
+
+export type WindowKey = "five_hour" | "daily" | "weekly" | "monthly";
+
+/**
+ * Mirror of the backend `most_critical_window` rule (scheduler.rs):
+ * among windows with quota > 0, pick the one with the greatest used percent.
+ * Ties keep the fixed diff order (five_hour -> daily -> weekly -> monthly).
+ */
+export function mostCriticalWindow(
+  snap: UsageSnapshot,
+): { key: WindowKey; window: WindowUsage } | null {
+  const order: WindowKey[] = ["five_hour", "daily", "weekly", "monthly"];
+  let best: { key: WindowKey; window: WindowUsage } | null = null;
+  let bestPct = -1;
+  for (const key of order) {
+    const win = snap.windows[key];
+    if (win && win.quota > 0) {
+      const p = percent(win);
+      if (p > bestPct) {
+        bestPct = p;
+        best = { key, window: win };
+      }
+    }
+  }
+  return best;
+}
