@@ -66,9 +66,13 @@ pub async fn get_provider_states(
     Ok(state.state.read().await.clone())
 }
 
-/// Heatmap data for one provider. Prefer the native daily breakdown carried
-/// by the latest snapshot (Volcengine); otherwise read the locally captured
-/// daily rows from SQLite (MiniMax / DeepSeek), oldest first.
+/// Heatmap data for one provider. Prefer the daily breakdown carried by the
+/// latest snapshot when present (the Volcengine native breakdown, or up to 90
+/// locally captured days embedded by MiniMax / DeepSeek); otherwise read the
+/// local daily rows from SQLite, oldest first.
+///
+/// The snapshot branch ignores `days` (its window is provider-defined);
+/// `days` only limits the SQLite fallback.
 #[tauri::command]
 pub async fn get_heatmap(
     state: State<'_, AppState>,
