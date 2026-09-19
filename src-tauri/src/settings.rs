@@ -170,7 +170,15 @@ notify_crit_percent = 90
         assert_eq!(parsed.notify_warn_percent, 70);
         assert_eq!(parsed.notify_crit_percent, 90);
 
-        let dumped = toml::to_string(&Settings::default()).expect("serialize defaults");
-        assert!(dumped.contains("close_to_tray = true"));
+        let dumped = toml::to_string(&parsed).expect("serialize parsed");
+        let reparsed: Settings = toml::from_str(&dumped).expect("reparse dumped config");
+        assert!(!reparsed.close_to_tray);
+        assert_eq!(reparsed.notify_warn_percent, 70);
+        assert_eq!(reparsed.notify_crit_percent, 90);
+
+        let default_dumped = toml::to_string(&Settings::default()).expect("serialize defaults");
+        assert!(default_dumped.contains("close_to_tray = true"));
+        assert!(default_dumped.contains("notify_warn_percent = 80"));
+        assert!(default_dumped.contains("notify_crit_percent = 95"));
     }
 }
