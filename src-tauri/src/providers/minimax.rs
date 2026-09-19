@@ -301,7 +301,7 @@ impl Provider for MiniMaxProvider {
 
         let heatmap: Option<Vec<HeatmapCell>> = self
             .storage
-            .load_heatmap(self.self_id(), 90)
+            .load_heatmap(self.self_id(), 200)
             .ok()
             .filter(|v| !v.is_empty());
 

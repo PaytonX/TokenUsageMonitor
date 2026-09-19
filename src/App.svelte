@@ -44,6 +44,17 @@
   };
   const FOCUS_FALLBACK_COLOR = "#8a8f98";
   const FOCUS_KEY = "tum.focus";
+  const HEATMAP_VIEW_KEY = "tum.heatmapView";
+
+  // 热力图时间范围："compact" = 近 31 天 5×7 网格；"calendar" = GitHub 式
+  // 近 6 个月日历（自然月标注 + 累计/峰值/活跃统计）。默认日历——滚动
+  // 31 天窗口不直观，按自然月看当月与过去数月更符合直觉。
+  let heatmapView = $state<"compact" | "calendar">(
+    localStorage.getItem(HEATMAP_VIEW_KEY) === "compact" ? "compact" : "calendar",
+  );
+  $effect(() => {
+    localStorage.setItem(HEATMAP_VIEW_KEY, heatmapView);
+  });
 
   // Global focus: "all" (aggregate min) or one provider_id. Drives the
   // header ring, the chips row and the heatmap panel.
@@ -649,10 +660,25 @@
               {/each}
             </div>
           {/if}
+          <div class="heatmap__view" role="group" aria-label="热力图时间范围">
+            <button
+              class="heatmap__view-btn"
+              class:is-active={heatmapView === "compact"}
+              onclick={() => (heatmapView = "compact")}
+              title="最近 31 天滚动窗口"
+            >31天</button>
+            <button
+              class="heatmap__view-btn"
+              class:is-active={heatmapView === "calendar"}
+              onclick={() => (heatmapView = "calendar")}
+              title="按自然月查看近 6 个月用量"
+            >月历</button>
+          </div>
         </div>
         {#if activeSnapshot}
           <HeatmapGrid
             providerId={activeSnapshot.provider_id}
+            view={heatmapView}
             emptyHint={activeSnapshot.provider_id === "deepseek"
               ? "DeepSeek 依据余额下降累计消耗，启用后需积累数日才有数据"
               : "该来源暂无热力图数据"}
@@ -853,6 +879,38 @@
     letter-spacing: 1.2px;
     color: var(--tum-text-muted);
     font-family: var(--tum-font-mono);
+  }
+
+  /* 热力图时间范围切换（31天滚动 / 月历），与 Provider tabs 同语言的
+     胶囊分段控件。 */
+  .heatmap__view {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--tum-border);
+    border-radius: var(--tum-radius-pill);
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .heatmap__view-btn {
+    border: none;
+    background: transparent;
+    color: var(--tum-text-muted);
+    font-size: 10px;
+    font-family: var(--tum-font);
+    padding: 2px 9px;
+    border-radius: var(--tum-radius-pill);
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+
+  .heatmap__view-btn:hover {
+    color: var(--tum-text-primary);
+  }
+
+  .heatmap__view-btn.is-active {
+    background: rgba(76, 194, 255, 0.18);
+    color: var(--tum-text-primary);
   }
 
   .heatmap__tabs {

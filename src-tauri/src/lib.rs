@@ -88,7 +88,7 @@ pub fn build_account_provider(
     let p: Arc<dyn providers::Provider> = match kind {
         "minimax" => Arc::new(MiniMaxProvider::new(http, storage, instance_id, label)),
         "deepseek" => Arc::new(DeepSeekProvider::new(http, storage, instance_id, label)),
-        "volcengine" => Arc::new(VolcengineProvider::new(http, instance_id, label)),
+        "volcengine" => Arc::new(VolcengineProvider::new(http, storage, instance_id, label)),
         "openai" => Arc::new(OpenAIProvider::new(http, storage, instance_id, label)),
         _ => return None,
     };

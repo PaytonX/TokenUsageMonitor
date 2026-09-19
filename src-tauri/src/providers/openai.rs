@@ -32,9 +32,10 @@ use std::sync::Arc;
 const SUB_URL: &str = "https://api.openai.com/v1/dashboard/billing/subscription";
 const USAGE_URL: &str = "https://api.openai.com/v1/dashboard/billing/usage";
 
-/// How many days of history we request (the heatmap grid shows 31 days, but
-/// fetching a little more gives the frontend room to scroll further back).
-const HISTORY_DAYS: i64 = 119;
+/// How many days of history we request. The usage endpoint rejects spans
+/// longer than ~100 days (HTTP 400), so 99 is the safe maximum; the calendar
+/// heatmap view reads whatever local storage has accumulated.
+const HISTORY_DAYS: i64 = 99;
 
 pub struct OpenAIProvider {
     http: Client,
@@ -209,7 +210,7 @@ impl Provider for OpenAIProvider {
 
         let heatmap: Option<Vec<HeatmapCell>> = self
             .storage
-            .load_heatmap(self.self_id(), 90)
+            .load_heatmap(self.self_id(), 200)
             .ok()
             .filter(|v| !v.is_empty());
 
