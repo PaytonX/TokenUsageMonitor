@@ -58,14 +58,23 @@
     return map;
   });
 
-  // Column = week, row = Mon..Sun (ISO). Past days missing from the payload
-  // render as transparent level-0 cells; future days render null (also clear).
-  let grid = $derived.by(() => {
+  // Visible Monday..today window. The IPC snapshot branch ignores `days` and
+  // may embed up to 90 days, so levels and the empty-state check normalize on
+  // this window only (mirrors DetailCard's 7-day projection). One derived
+  // keeps the clock and payload in lockstep — it recomputes whenever cells
+  // changes (e.g. when a tab-switch fetch resolves on the long-lived instance).
+  let view = $derived.by(() => {
     const today = new Date();
     const todayKey = localDateKey(today);
     const todayDow = (today.getDay() + 6) % 7; // 0=Mon, 6=Sun
     const start = new Date(today);
     start.setDate(today.getDate() - todayDow - (WEEKS - 1) * 7);
+    const startKey = localDateKey(start);
+    const windowCells = cells.filter(
+      (c) => c.date >= startKey && c.date <= todayKey,
+    );
+    // Column = week, row = Mon..Sun (ISO). Past days missing from the payload
+    // render as transparent level-0 cells; future days render null (clear).
     const cols: Day[][] = [];
     for (let wi = 0; wi < WEEKS; wi++) {
       const col: Day[] = [];
@@ -77,18 +86,17 @@
           continue;
         }
         const dateStr = localDateKey(d2);
-        const cell = byDate.get(dateStr);
-        const value = cell?.value ?? 0;
+        const value = byDate.get(dateStr)?.value ?? 0;
         col.push({
           date: dateStr,
           value,
-          level: levelFor(value, cells),
+          level: levelFor(value, windowCells),
           isToday: dateStr === todayKey,
         });
       }
       cols.push(col);
     }
-    return cols;
+    return { cols, windowCells };
   });
 
   function levelFor(value: number, all: HeatmapCell[]): 0 | 1 | 2 | 3 | 4 {
@@ -126,8 +134,8 @@
 
   const legendLevels: Array<1 | 2 | 3 | 4> = [1, 2, 3, 4];
   let legendColors = $derived(legendLevels.map((l) => levelColor(l)));
-  let maxValue = $derived(Math.max(0, ...cells.map((c) => c.value)));
-  let displayUnit = $derived(cells[0]?.unit ?? unit);
+  let maxValue = $derived(Math.max(0, ...view.windowCells.map((c) => c.value)));
+  let displayUnit = $derived(view.windowCells[0]?.unit ?? unit);
 </script>
 
 <div class="heatmap">
@@ -135,7 +143,7 @@
     <div class="heatmap__empty">{emptyHint ?? "该来源暂无热力图数据"}</div>
   {:else}
     <div class="heatmap__cols">
-      {#each grid as col}
+      {#each view.cols as col}
         <div class="heatmap__col">
           {#each col as day}
             {#if day}
