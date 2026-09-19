@@ -233,6 +233,20 @@
 
   // --- Bulk save --------------------------------------------------------------
 
+  /** Apply the countdown-mode switch immediately so the dashboard ring flips
+   * without waiting for a full save. Only persists countdown_mode. */
+  async function applyCountdownNow(e: Event) {
+    const checked = (e.currentTarget as HTMLInputElement).checked;
+    countdownMode = checked;
+    if (!settings) return;
+    try {
+      await saveSettings({ ...settings, countdown_mode: checked });
+      settings = { ...settings, countdown_mode: checked };
+    } catch (err) {
+      genericError = String(err);
+    }
+  }
+
   function clampPercent(n: number): number {
     if (Number.isNaN(n)) return 0;
     return Math.max(0, Math.min(100, Math.round(n)));
@@ -373,7 +387,7 @@
                 <span class="behavior-hint">关闭时圆环显示已用量；开启后显示剩余量，便于估算还能用多久。</span>
               </div>
               <label class="toggle">
-                <input type="checkbox" bind:checked={countdownMode} />
+                <input type="checkbox" onchange={applyCountdownNow} />
                 <span class="toggle__track"><span class="toggle__thumb"></span></span>
               </label>
             </div>
@@ -806,7 +820,8 @@
     min-width: 0;
     min-height: 0;
     overflow-y: auto;
-    padding: var(--tum-space-4) var(--tum-space-5) var(--tum-space-6);
+    /* 加大横向内边距，让右侧内容与左侧导航明确分离开，避免内容紧贴导航栏 */
+    padding: 22px 34px 32px;
     scrollbar-width: thin;
     scrollbar-color: var(--tum-border) transparent;
   }
@@ -815,7 +830,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--tum-space-5);
-    max-width: 620px;
+    max-width: 680px;
   }
 
   .pane__title {

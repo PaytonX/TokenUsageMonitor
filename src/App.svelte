@@ -55,9 +55,31 @@
   // Provider whose card the pointer is currently over; drives the floating
   // detail overlay (see .detail-overlay).
   let hoveredId = $state<string | null>(null);
+  // Hiding the detail overlay is deferred by a short grace window so the
+  // pointer can travel from the card into the overlay (or back) without the
+  // overlay vanishing mid-move. Entering the overlay cancels the pending hide
+  // (pinning it); leaving it re-arms a hide so it closes when you go elsewhere.
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleOverlayHide() {
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      hoveredId = null;
+      hideTimer = null;
+    }, 160);
+  }
+  function cancelOverlayHide() {
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  }
   function onCardHover(id: string, hovering: boolean) {
-    if (hovering) hoveredId = id;
-    else if (hoveredId === id) hoveredId = null;
+    if (hovering) {
+      cancelOverlayHide();
+      hoveredId = id;
+    } else if (hoveredId === id) {
+      scheduleOverlayHide();
+    }
   }
   const PILL_DRAG_THRESHOLD_PX = 4;
   const PILL_FADE_DELAY_MS = 2500;
@@ -631,7 +653,13 @@
     </footer>
 
     {#if detailSnapshot}
-      <div class="detail-overlay" data-tauri-drag-region={false}>
+      <div
+        class="detail-overlay"
+        role="group"
+        data-tauri-drag-region={false}
+        onpointerenter={cancelOverlayHide}
+        onpointerleave={scheduleOverlayHide}
+      >
         <DetailCard
           snapshot={detailSnapshot}
           burn={burns[detailSnapshot.provider_id] ?? null}
@@ -1060,15 +1088,19 @@
   /* Floating field overlay (feedback #2): rendered at window level so the
      full detail (rows + 7-day chart) is never clipped by a small card. It is
      docked along the bottom (above the footer) so it does NOT cover the
-     provider cards being scanned; hit-testing passes through to what is
-     underneath so the overlay can't cause hover flicker. */
+    provider cards being scanned. Parking the pointer on it pins it open so the
+    actions inside are reachable. */
   .detail-overlay {
     position: fixed;
     bottom: 48px;
     left: 14px;
     right: 14px;
     z-index: 60;
-    pointer-events: none;
+    /* The overlay absorbs pointer events while the pointer is on it (so the
+       "打开设置 / 刷新" buttons inside are clickable), but otherwise the
+       shell below remains interactive. Hiding is deferred by the grace timer,
+       so parking on the overlay keeps it pinned without hover flicker. */
+    pointer-events: auto;
   }
 
   .detail-overlay :global(.detail) {

@@ -96,6 +96,38 @@ impl Storage {
         Ok(())
     }
 
+    /// Write a snapshot for a specific `date`, not necessarily today. This lets
+    /// providers (MiniMax) attribute a window's usage to the calendar day the
+    /// window *ends* on, rather than the day the poll happened. If the day
+    /// already holds a row, the larger value wins (peak usage across several
+    /// windows that closed the same day), so a day is never under-reported.
+    pub fn record_daily_on(
+        &self,
+        provider_id: &str,
+        date: NaiveDate,
+        value: f64,
+        unit: UsageUnit,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now_iso = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO daily_snapshots (provider_id, date, value, unit, captured_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(provider_id, date) DO UPDATE SET
+                 value = MAX(value, excluded.value),
+                 unit = excluded.unit,
+                 captured_at = excluded.captured_at",
+            params![
+                provider_id,
+                date.to_string(),
+                value,
+                unit_db_code(unit),
+                now_iso,
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Read a provider-scoped key/value pair (e.g. balance baselines).
     pub fn kv_get(&self, provider_id: &str, key: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();

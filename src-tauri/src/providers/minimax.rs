@@ -43,7 +43,7 @@ use crate::providers::{
 };
 use crate::storage::Storage;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 use reqwest::Client;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -240,14 +240,55 @@ impl Provider for MiniMaxProvider {
             daily: None,
         };
 
-        // Persist a daily snapshot for the heatmap. We use the consumed 5h
-        // percent so the heatmap still shows day-to-day activity intensity.
-        let daily_value = consumed_pct(general.current_interval_remaining_percent);
-        let _ = self.storage.record_daily(
-            self.self_id(),
-            daily_value,
-            UsageUnit::Percent,
-        );
+        // Persist a heatmap cell from the 5h window's consumed percent. MiniMax
+        // exposes only the *current* window's remaining %, so a window's usage
+        // is attributed to the calendar day its end_time falls on — never to the
+        // day the poll happened (which caused the previous day to "borrow" a
+        // window that actually ended but was still being re-recorded).
+        //
+        // Rule: remember the last observed window in kv; write a cell only when
+        // a *new* window appears (i.e. the previous one rolled), attributing the
+        // stored value to the stored end_date. Same-window polls just update the
+        // tracked value (只更新不写) so we never mis-date or double-count.
+        let end_ms = general.end_time;
+        let end_date = DateTime::<Utc>::from_timestamp_millis(end_ms)
+            .map(|d| d.with_timezone(&Local).date_naive())
+            .unwrap_or_else(|| Local::now().date_naive());
+        let consumed = consumed_pct(general.current_interval_remaining_percent);
+
+        let prev_end = self
+            .storage
+            .kv_get(self.self_id(), "mm_win_end_ms")
+            .ok()
+            .flatten();
+        let prev_consumed = self
+            .storage
+            .kv_get(self.self_id(), "mm_win_consumed_pct")
+            .ok()
+            .flatten();
+        let prev_date = self
+            .storage
+            .kv_get(self.self_id(), "mm_win_end_date")
+            .ok()
+            .flatten();
+
+        let rolled = matches!(&prev_end, Some(p) if p.parse::<i64>().ok() != Some(end_ms));
+        if rolled {
+            if let (Some(c_s), Some(d_s)) = (&prev_consumed, &prev_date) {
+                if let (Ok(prev_c), Ok(prev_d)) = (
+                    c_s.parse::<f64>(),
+                    NaiveDate::parse_from_str(d_s, "%Y-%m-%d"),
+                ) {
+                    let _ = self
+                        .storage
+                        .record_daily_on(self.self_id(), prev_d, prev_c, UsageUnit::Percent);
+                }
+            }
+        }
+        // Track the current window for the next poll's roll detection.
+        let _ = self.storage.kv_set(self.self_id(), "mm_win_end_ms", &end_ms.to_string());
+        let _ = self.storage.kv_set(self.self_id(), "mm_win_consumed_pct", &consumed.to_string());
+        let _ = self.storage.kv_set(self.self_id(), "mm_win_end_date", &end_date.to_string());
 
         let heatmap: Option<Vec<HeatmapCell>> = self
             .storage

@@ -194,16 +194,21 @@
     width: 14px;
     height: 14px;
     border-radius: var(--tum-radius-xs);
+    /* 半透明虚线描边：让所有格子（包括无数据的空档）都浮现出清晰的网格线，
+       不与黑色背景融为一体，整体更美观 */
+    border: 1px dashed rgba(148, 163, 184, 0.28);
     cursor: default;
     transition: transform 0.15s ease;
   }
 
   .heatmap__cell:hover {
     transform: scale(1.4);
+    border-color: rgba(148, 163, 184, 0.6);
   }
 
   .heatmap__cell--future {
     background: transparent;
+    border: none;
     pointer-events: none;
   }
 
