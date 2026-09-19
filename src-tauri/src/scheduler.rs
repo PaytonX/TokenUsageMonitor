@@ -83,10 +83,11 @@ pub fn compute_burn(prev: &UsageSnapshot, cur: &UsageSnapshot) -> Option<BurnInf
         return None;
     }
     let eta_seconds = if cur_w.quota > cur_w.used {
-        // round to nearest second: the f64 pipeline (rate already rounded
-        // once) can yield 479.9999... for a true 480s ETA, and plain `as u64`
-        // truncation would display 479. ETA is a display value, so nearest-
-        // second rounding is also more correct than truncation.
+        // round to nearest second: deriving seconds back through the f64
+        // pipeline (delta/elapsed*60, then remaining/rate*60) can yield
+        // 479.9999... for a true 480s ETA, and plain `as u64` truncation would
+        // display 479. ETA is a display value, so nearest-second rounding is
+        // also more correct than truncation.
         Some((((cur_w.quota - cur_w.used) / rate) * 60.0).round() as u64)
     } else {
         None
@@ -260,8 +261,12 @@ mod burn_tests {
 
     #[test]
     fn normal_growth_produces_rate_and_eta() {
-        let t0 = chrono::Utc::now() - chrono::Duration::seconds(60);
-        let t1 = chrono::Utc::now();
+        // Deterministic timestamps: two adjacent Utc::now() calls plus a
+        // zero-tolerance assertion would make this test flaky under scheduler
+        // stalls (elapsed truncating to 59s/61s). The function under test is
+        // pure and receives time by parameter, so feed it fixed instants.
+        let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let t1 = t0 + chrono::Duration::seconds(60);
         let prev = snap_with_monthly(1000.0, 10_000.0, t0);
         let cur = snap_with_monthly(2000.0, 10_000.0, t1);
         let burn = compute_burn(&prev, &cur).expect("burn expected");
