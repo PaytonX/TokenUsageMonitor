@@ -495,6 +495,8 @@ pub fn run() {
             ipc::upsert_account,
             ipc::remove_account,
             ipc::test_provider,
+            ipc::test_proxy,
+            ipc::detect_codex_token,
             ipc::get_local_tools,
             ipc::get_device_report,
             ipc::get_hub_devices,

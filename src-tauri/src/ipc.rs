@@ -832,9 +832,89 @@ pub async fn test_provider(
         .map_err(|e| e.to_string())
 }
 
+/// Result of a proxy connectivity probe. Serialized to the frontend as
+/// `{ ok, status, error }`; a failed probe is a normal result, not a command
+/// error, so the UI can render inline.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyTestResult {
+    pub ok: bool,
+    pub status: Option<u16>,
+    pub error: Option<String>,
+}
+
+/// Local Codex credentials detected from `~/.codex/auth.json`, using the
+/// spec's wire key names.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedCodexToken {
+    pub token: String,
+    pub account_id: String,
+    pub last_refresh: String,
+}
+
+/// Pure mapping from a probe response (HTTP status) or transport error to the
+/// wire result. A non-2xx status is reported as not-ok with a message.
+fn proxy_probe_outcome(probe: Result<u16, String>) -> ProxyTestResult {
+    match probe {
+        Ok(status) if (200..300).contains(&status) => ProxyTestResult {
+            ok: true,
+            status: Some(status),
+            error: None,
+        },
+        Ok(status) => ProxyTestResult {
+            ok: false,
+            status: Some(status),
+            error: Some(format!("代理已连通，但目标返回 HTTP {status}")),
+        },
+        Err(error) => ProxyTestResult {
+            ok: false,
+            status: None,
+            error: Some(error),
+        },
+    }
+}
+
+/// Build a temporary client through the supplied proxy and probe a lightweight
+/// 204 endpoint. Nothing is persisted; the saved client is untouched.
+#[tauri::command]
+pub async fn test_proxy(url: String) -> Result<ProxyTestResult, String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Ok(ProxyTestResult {
+            ok: false,
+            status: None,
+            error: Some("请输入代理地址".to_string()),
+        });
+    }
+    let client = crate::build_http_client(Some(&url))?;
+    let probe = async {
+        let resp = client
+            .get("https://www.google.com/generate_204")
+            .send()
+            .await
+            .map_err(|e| format!("代理连接失败：{e}"))?;
+        Ok::<u16, String>(resp.status().as_u16())
+    }
+    .await;
+    Ok(proxy_probe_outcome(probe))
+}
+
+/// Read the local Codex CLI credentials (`~/.codex/auth.json`) so the
+/// Settings form can pre-fill them. `None` when the file is absent or the
+/// token is blank.
+#[tauri::command]
+pub async fn detect_codex_token() -> Result<Option<DetectedCodexToken>, String> {
+    Ok(crate::providers::codex::detect_auth().map(|auth| DetectedCodexToken {
+        token: auth.access_token,
+        account_id: auth.account_id,
+        last_refresh: auth.last_refresh,
+    }))
+}
+
 #[cfg(test)]
 mod proxy_tests {
-    use super::proxy_changed;
+    use super::{proxy_changed, proxy_probe_outcome};
 
     #[test]
     fn detects_real_change() {
@@ -857,6 +937,30 @@ mod proxy_tests {
             &Some("http://127.0.0.1:7890".to_string()),
             &Some("  http://127.0.0.1:7890 ".to_string())
         ));
+    }
+
+    #[test]
+    fn probe_outcome_reports_success_status() {
+        let r = proxy_probe_outcome(Ok(204u16));
+        assert!(r.ok);
+        assert_eq!(r.status, Some(204));
+        assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn probe_outcome_marks_non_success_status() {
+        let r = proxy_probe_outcome(Ok(500u16));
+        assert!(!r.ok);
+        assert_eq!(r.status, Some(500));
+        assert!(r.error.is_some());
+    }
+
+    #[test]
+    fn probe_outcome_reports_transport_error() {
+        let r = proxy_probe_outcome(Err("connection refused".to_string()));
+        assert!(!r.ok);
+        assert!(r.status.is_none());
+        assert_eq!(r.error.as_deref(), Some("connection refused"));
     }
 }
 
