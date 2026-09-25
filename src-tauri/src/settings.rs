@@ -88,6 +88,10 @@ pub struct Settings {
     /// 网络拉取值；键须为受支持币种（USD/CNY/TWD/HKD/JPY/EUR/GBP），非法值忽略。
     #[serde(default)]
     pub rate_overrides: HashMap<String, f64>,
+    /// Optional outbound proxy for all provider/hub HTTP traffic.
+    /// Accepts `http://host:port` or `socks5://host:port`; `None` uses the default client.
+    #[serde(default)]
+    pub proxy_url: Option<String>,
 }
 
 fn default_hub_port() -> u16 {
@@ -154,6 +158,7 @@ impl Default for Settings {
             report_on: false,
             hub_token: String::new(),
             rate_overrides: HashMap::new(),
+            proxy_url: None,
         }
     }
 }
@@ -303,6 +308,29 @@ autostart_hint_shown = false
         assert_eq!(parsed.notify_warn_percent, 80);
         assert_eq!(parsed.notify_crit_percent, 95);
         assert!(parsed.rate_overrides.is_empty());
+        assert!(parsed.proxy_url.is_none());
+    }
+
+    #[test]
+    fn proxy_url_defaults_to_none_and_round_trips() {
+        let raw = "\
+enabled_providers = []
+poll_interval_seconds = 60
+";
+        let parsed: Settings = toml::from_str(raw).expect("parse config without proxy");
+        assert!(parsed.proxy_url.is_none());
+
+        let with_proxy = "\
+enabled_providers = []
+poll_interval_seconds = 60
+proxy_url = \"socks5://127.0.0.1:1080\"
+";
+        let parsed: Settings = toml::from_str(with_proxy).expect("parse config with proxy");
+        assert_eq!(parsed.proxy_url.as_deref(), Some("socks5://127.0.0.1:1080"));
+
+        let dumped = toml::to_string(&parsed).expect("serialize settings");
+        let reparsed: Settings = toml::from_str(&dumped).expect("reparse dumped settings");
+        assert_eq!(reparsed.proxy_url.as_deref(), Some("socks5://127.0.0.1:1080"));
     }
 
     #[test]
