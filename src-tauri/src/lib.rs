@@ -112,6 +112,22 @@ fn build_registry(
     registry
 }
 
+/// Build the shared HTTP client. `proxy_url` comes from `Settings::proxy_url`
+/// and may be empty (no proxy configured). A non-empty value must parse as an
+/// `http(s)`, `socks5` or `socks5h` (remote DNS) proxy URL (`user:pass@host:port`
+/// supported). An explicit proxy replaces env-var proxy detection so the
+/// setting is deterministic; with no proxy the previous env-aware default is
+/// kept. Errors are returned as display strings for `test_proxy`.
+pub fn build_http_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    let mut builder = Client::builder().timeout(std::time::Duration::from_secs(15));
+    if let Some(url) = proxy_url.map(str::trim).filter(|u| !u.is_empty()) {
+        let proxy = reqwest::Proxy::all(url)
+            .map_err(|e| format!("invalid proxy url {url:?}: {e}"))?;
+        builder = builder.no_proxy().proxy(proxy);
+    }
+    builder.build().map_err(|e| format!("building reqwest client failed: {e}"))
+}
+
 /// Load any saved credentials for the configured accounts into the in-memory
 /// cache. Failures (no creds saved, keyring unavailable) are silently skipped
 /// - the cache just stays empty and the provider returns NotConfigured.
@@ -544,4 +560,28 @@ pub(crate) mod dwm_corner {
 mod windows_test_manifest {
     #[link(name = "cargo_test_manifest_res", kind = "static", modifiers = "+whole-archive")]
     extern "C" {}
+}
+
+#[cfg(test)]
+mod http_client_tests {
+    use super::*;
+
+    #[test]
+    fn none_and_blank_build_without_proxy() {
+        assert!(build_http_client(None).is_ok());
+        assert!(build_http_client(Some("")).is_ok());
+        assert!(build_http_client(Some("   ")).is_ok());
+    }
+
+    #[test]
+    fn valid_http_and_socks_urls_are_accepted() {
+        assert!(build_http_client(Some("http://127.0.0.1:7890")).is_ok());
+        assert!(build_http_client(Some("http://user:pass@127.0.0.1:7890")).is_ok());
+        assert!(build_http_client(Some("socks5://127.0.0.1:1080")).is_ok());
+    }
+
+    #[test]
+    fn invalid_proxy_string_is_rejected() {
+        assert!(build_http_client(Some("not a proxy")).is_err());
+    }
 }
