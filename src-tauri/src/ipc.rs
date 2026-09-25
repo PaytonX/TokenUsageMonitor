@@ -226,7 +226,8 @@ pub async fn get_hub_devices(
     let mut warning: Option<String> = None;
     let mut sources: Vec<Vec<HubDevice>> = Vec::new();
     if s.hub_mode == "agent" && !s.hub_base.is_empty() {
-        match crate::hub::fetch_devices(&state.http, &s.hub_base, &s.hub_token).await {
+        let client = state.http.read().await.clone();
+        match crate::hub::fetch_devices(&client, &s.hub_base, &s.hub_token).await {
             Ok(remote) => sources.push(remote),
             Err(e) => warning = Some(format!("远端 hub 拉取失败：{e}")),
         }
@@ -258,7 +259,8 @@ pub async fn get_exchange_rates(
     app: AppHandle,
 ) -> Result<crate::exchange::RatesSnapshot, String> {
     let settings = state.settings.get().await;
-    let snap = crate::exchange::refresh_rates(&state.storage, &settings, &state.http, false).await;
+    let client = state.http.read().await.clone();
+    let snap = crate::exchange::refresh_rates(&state.storage, &settings, &client, false).await;
     // 合并结果（含刚保存的覆盖值）广播给其它窗口，实现跨窗口即时同步
     let _ = app.emit("rates-updated", &snap);
     Ok(snap)
@@ -271,7 +273,8 @@ pub async fn refresh_exchange_rates(
     app: AppHandle,
 ) -> Result<crate::exchange::RatesSnapshot, String> {
     let settings = state.settings.get().await;
-    let snap = crate::exchange::refresh_rates(&state.storage, &settings, &state.http, true).await;
+    let client = state.http.read().await.clone();
+    let snap = crate::exchange::refresh_rates(&state.storage, &settings, &client, true).await;
     // 广播给其它窗口同步（设置窗口自己直接消费返回值）
     let _ = app.emit("rates-updated", &snap);
     Ok(snap)
@@ -569,6 +572,19 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
     Ok(state.settings.get().await)
 }
 
+/// Whether a settings save changes the effective proxy URL. Blank strings and
+/// surrounding whitespace normalize to `None`, so saves that merely touch
+/// other settings keep using the fast incremental registry reconcile.
+fn proxy_changed(old: &Option<String>, new: &Option<String>) -> bool {
+    let normalize = |v: &Option<String>| {
+        v.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    normalize(old) != normalize(new)
+}
+
 /// Persists new settings to config.toml. Also updates the in-memory cache.
 /// Removes state for providers that are no longer enabled so the dashboard
 /// immediately reflects the change instead of showing stale snapshots.
@@ -578,6 +594,10 @@ pub async fn save_settings(
     state: State<'_, AppState>,
     new_settings: Settings,
 ) -> Result<(), String> {
+    // Capture before save(): saving overwrites the cached settings, after
+    // which the old proxy would be unobservable.
+    let old_proxy_url = state.settings.get().await.proxy_url.clone();
+
     state
         .settings
         .save(new_settings.clone())
@@ -589,31 +609,64 @@ pub async fn save_settings(
     state.close_to_tray.store(new_settings.close_to_tray, std::sync::atomic::Ordering::SeqCst);
     state.edge_snap.store(new_settings.edge_snap, std::sync::atomic::Ordering::SeqCst);
 
-    // Reconcile the live registry with the saved accounts: register newly added
-    // accounts (and spawn a polling task), drop stale snapshots for accounts
-    // that were removed or disabled. Enabled/interval edits are picked up by
-    // the existing poll loops via the settings_wake ping below.
-    let account_ids: std::collections::HashSet<String> =
-        new_settings.accounts.iter().map(|a| a.instance_id.clone()).collect();
-    let mut registry = state.registry.write().await;
-    for account in &new_settings.accounts {
-        if registry.get(&account.instance_id).is_none() {
-            if let Some(provider) =
-                build_account_provider(account, state.http.clone(), state.storage.clone())
-            {
-                registry.insert(provider.clone());
-                let app = app.clone();
-                let id = account.instance_id.clone();
-                crate::scheduler::spawn_one(app, provider, id);
+    if proxy_changed(&old_proxy_url, &new_settings.proxy_url) {
+        // Build the replacement first. On failure, settings are already
+        // persisted, so leave the live client/registry untouched and let the
+        // user correct the URL and save again.
+        let client = crate::build_http_client(new_settings.proxy_url.as_deref())?;
+        // Rebuild every provider against the new client in one shot.
+        let fresh = crate::build_registry(
+            &new_settings.accounts,
+            client.clone(),
+            state.storage.clone(),
+        );
+        *state.http.write().await = client;
+        let mut registry = state.registry.write().await;
+        *registry = fresh;
+        // Spawn a polling task for every rebuilt instance. The previous tasks
+        // see the replaced Arc via the Task 9 identity check and retire
+        // themselves, so no task is ever polling the old proxy.
+        for account in &new_settings.accounts {
+            if let Some(provider) = registry.get(&account.instance_id) {
+                crate::scheduler::spawn_one(
+                    app.clone(),
+                    provider,
+                    account.instance_id.clone(),
+                );
             }
         }
-    }
-    for id in registry.list() {
-        if !account_ids.contains(&id.id()) {
-            registry.remove(&id.id());
+        drop(registry);
+    } else {
+        // Reconcile the live registry with the saved accounts incrementally:
+        // register newly added accounts (and spawn a polling task), remove
+        // accounts that disappeared. Interval/enable edits are picked up by
+        // the existing poll loops via the settings_wake ping below.
+        let account_ids: std::collections::HashSet<String> = new_settings
+            .accounts
+            .iter()
+            .map(|a| a.instance_id.clone())
+            .collect();
+        let client = state.http.read().await.clone();
+        let mut registry = state.registry.write().await;
+        for account in &new_settings.accounts {
+            if registry.get(&account.instance_id).is_none() {
+                if let Some(provider) =
+                    build_account_provider(account, client.clone(), state.storage.clone())
+                {
+                    registry.insert(provider.clone());
+                    let app = app.clone();
+                    let id = account.instance_id.clone();
+                    crate::scheduler::spawn_one(app, provider, id);
+                }
+            }
         }
+        for id in registry.list() {
+            if !account_ids.contains(&id.id()) {
+                registry.remove(&id.id());
+            }
+        }
+        drop(registry);
     }
-    drop(registry);
 
     // Drop snapshots for accounts the user just removed or disabled. Otherwise
     // the dashboard keeps showing them until the next restart, which feels
@@ -676,9 +729,8 @@ pub async fn upsert_account(
     let instance_id = account.instance_id.clone();
     let mut registry = state.registry.write().await;
     if registry.get(&instance_id).is_none() {
-        if let Some(provider) =
-            build_account_provider(&account, state.http.clone(), state.storage.clone())
-        {
+        let client = state.http.read().await.clone();
+        if let Some(provider) = build_account_provider(&account, client, state.storage.clone()) {
             registry.insert(provider.clone());
             crate::scheduler::spawn_one(app, provider, instance_id.clone());
         }
@@ -768,12 +820,41 @@ pub async fn test_provider(
         enabled: true,
         note: None,
     };
-    let provider = build_account_provider(&account, state.http.clone(), state.storage.clone())
+    let client = state.http.read().await.clone();
+    let provider = build_account_provider(&account, client, state.storage.clone())
         .ok_or_else(|| format!("unknown provider kind: {provider_kind}"))?;
     provider
         .fetch_usage(&creds)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::proxy_changed;
+
+    #[test]
+    fn detects_real_change() {
+        assert!(proxy_changed(&None, &Some("http://127.0.0.1:7890".to_string())));
+        assert!(proxy_changed(
+            &Some("http://127.0.0.1:7890".to_string()),
+            &Some("socks5://127.0.0.1:1080".to_string())
+        ));
+    }
+
+    #[test]
+    fn treats_blank_as_none() {
+        assert!(!proxy_changed(&None, &Some("   ".to_string())));
+        assert!(!proxy_changed(&Some(" ".to_string()), &None));
+    }
+
+    #[test]
+    fn ignores_surrounding_whitespace() {
+        assert!(!proxy_changed(
+            &Some("http://127.0.0.1:7890".to_string()),
+            &Some("  http://127.0.0.1:7890 ".to_string())
+        ));
+    }
 }
 
 #[cfg(test)]

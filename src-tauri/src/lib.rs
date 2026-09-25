@@ -61,8 +61,10 @@ pub struct AppState {
     /// A ping on this channel wakes every polling task so interval edits and
     /// enable/disable changes apply immediately instead of after one period.
     pub settings_wake: Arc<watch::Sender<()>>,
-    /// Shared HTTP client for building provider instances at runtime.
-    pub http: Client,
+    /// Swappable shared HTTP client. A proxy change replaces the client under
+    /// the write lock and rebuilds the whole registry; access sites take a
+    /// read lock and clone the cheap inner Arc.
+    pub http: Arc<RwLock<Client>>,
     /// Cached `Settings::close_to_tray`, mirrored so the synchronous window
     /// close interceptor can read it without an async lock. Kept in sync by
     /// `ipc::save_settings`.
@@ -98,7 +100,7 @@ pub fn build_account_provider(
 
 /// Build the provider registry from the user's configured accounts. Only known
 /// kinds are instantiated; unknown kinds are skipped.
-fn build_registry(
+pub(crate) fn build_registry(
     accounts: &[AccountMeta],
     http: Client,
     storage: Arc<storage::Storage>,
@@ -199,18 +201,24 @@ pub fn run() {
             let settings_store = settings::SettingsStore::new(data_dir)
                 .expect("loading settings store");
 
-            // Single shared HTTP client with sensible defaults.
-            let http = Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .expect("building reqwest client");
+            // Shared, swappable HTTP client. A saved proxy URL that fails to
+            // build falls back to a direct client instead of aborting launch.
+            let initial_proxy = settings_store.read_blocking().proxy_url.clone();
+            let initial_client =
+                crate::build_http_client(initial_proxy.as_deref()).unwrap_or_else(|_| {
+                    Client::builder()
+                        .timeout(std::time::Duration::from_secs(15))
+                        .build()
+                        .expect("building reqwest client")
+                });
 
             let registry = {
                 // First-load the settings to learn the configured accounts.
                 let accounts = settings_store.read_blocking().accounts;
-                let reg = build_registry(&accounts, http.clone(), store.clone());
+                let reg = build_registry(&accounts, initial_client.clone(), store.clone());
                 Arc::new(RwLock::new(reg))
             };
+            let http = Arc::new(RwLock::new(initial_client));
             let credentials = {
                 let accounts = settings_store.read_blocking().accounts;
                 load_credentials_into_cache(&settings_store, &accounts)
@@ -284,8 +292,9 @@ pub fn run() {
                                     &id, &host, &os, &arch, &ver,
                                     tool_tokens, provider_count, tool_count, daily,
                                 );
+                                let client = http_reporter.read().await.clone();
                                 let _ = hub::report_to_hub(
-                                    &http_reporter,
+                                    &client,
                                     &base,
                                     &device,
                                     &token,
@@ -317,7 +326,8 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     loop {
                         let s = settings_fx.read_blocking();
-                        let snap = exchange::refresh_rates(&store_fx, &s, &http_fx, false).await;
+                        let client = http_fx.read().await.clone();
+                        let snap = exchange::refresh_rates(&store_fx, &s, &client, false).await;
                         match snap.warning {
                             // 数据有效（新拉取或缓存仍新鲜）→ 广播，让所有窗口同步生效表
                             None => {
