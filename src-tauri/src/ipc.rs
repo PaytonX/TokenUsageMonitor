@@ -624,8 +624,11 @@ pub async fn save_settings(
         let mut registry = state.registry.write().await;
         *registry = fresh;
         // Spawn a polling task for every rebuilt instance. The previous tasks
-        // see the replaced Arc via the Task 9 identity check and retire
-        // themselves, so no task is ever polling the old proxy.
+        // see the replaced Arc via the identity check at their next loop
+        // iteration and retire themselves; a request already in flight at the
+        // moment of the swap may briefly keep using the old client, but the
+        // per-id poll lock makes it mutually exclusive with the new task's
+        // first poll, so balance-delta accounting cannot double-count.
         for account in &new_settings.accounts {
             if let Some(provider) = registry.get(&account.instance_id) {
                 crate::scheduler::spawn_one(

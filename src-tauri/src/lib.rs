@@ -65,6 +65,11 @@ pub struct AppState {
     /// the write lock and rebuilds the whole registry; access sites take a
     /// read lock and clone the cheap inner Arc.
     pub http: Arc<RwLock<Client>>,
+    /// Per-account-id async mutexes serializing whole polls (fetch +
+    /// balance-delta accounting). Shared across the old and new loops of a
+    /// rebuilt registry so the two can never interleave their non-idempotent
+    /// accounting. Entries are created lazily and live for the app lifetime.
+    pub poll_locks: crate::scheduler::PollLocks,
     /// Cached `Settings::close_to_tray`, mirrored so the synchronous window
     /// close interceptor can read it without an async lock. Kept in sync by
     /// `ipc::save_settings`.
@@ -403,6 +408,7 @@ pub fn run() {
                 pause_tx,
                 settings_wake,
                 http,
+                poll_locks: Arc::new(RwLock::new(HashMap::new())),
                 close_to_tray,
                 edge_snap,
                 _tray: tray,

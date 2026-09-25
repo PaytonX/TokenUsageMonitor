@@ -161,6 +161,30 @@ fn total_used(snap: &UsageSnapshot) -> f64 {
 /// against the same baseline.
 pub type SharedBurnTracker = Arc<Mutex<BurnTracker>>;
 
+/// Per-account-id async mutexes serializing whole polls (fetch + balance-delta
+/// accounting).
+pub type PollLocks =
+    Arc<tokio::sync::RwLock<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
+
+/// Get (creating if absent) the mutex entry for one account id.
+fn lock_entry(
+    map: &mut HashMap<String, Arc<Mutex<()>>>,
+    id: &str,
+) -> Arc<Mutex<()>> {
+    map.entry(id.to_string()).or_default().clone()
+}
+
+/// Get (creating if absent) the mutex serializing polls for one account
+/// id. Keyed by id (not by provider Arc) on purpose: when a proxy change
+/// rebuilds the registry, the old loop's in-flight fetch and the new
+/// loop's first fetch contend on the same mutex, so balance-delta
+/// accounting (read baseline -> accumulate -> write baseline) can never
+/// interleave and double-count.
+pub async fn poll_lock_for(state: &AppState, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let mut map = state.poll_locks.write().await;
+    lock_entry(&mut map, id)
+}
+
 /// Spawn a polling task per registered provider. Each task is fire-and-forget
 /// for the lifetime of the app. The loop inside re-reads settings on every
 /// tick and on every settings-changed ping, so toggling a provider, changing
@@ -292,6 +316,10 @@ pub async fn poll_one(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = app.state::<AppState>();
 
+    let id = provider.id().to_string();
+    let poll_lock = poll_lock_for(&state, &id).await;
+    let _poll_guard = poll_lock.lock().await;
+
     // In-memory credential cache first, then OS credential store, then the
     // "mock" fallback (matches the pre-refactor behavior).
     let creds = {
@@ -304,7 +332,6 @@ pub async fn poll_one(
             api_key: "mock".to_string(),
         });
 
-    let id = provider.id().to_string();
     let result = provider.fetch_usage(&creds).await;
     let mut guard = state.state.write().await;
     match result {
@@ -514,5 +541,34 @@ mod registration_tests {
         let p = provider("acct-a");
         let registry = ProviderRegistry::new();
         assert!(!is_current(&registry, &p, "acct-a"));
+    }
+}
+
+#[cfg(test)]
+mod poll_lock_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn same_id_shares_one_mutex_and_excludes_reentrancy() {
+        let mut map = HashMap::new();
+        let a = lock_entry(&mut map, "acct-a");
+        let a_again = lock_entry(&mut map, "acct-a");
+        let b = lock_entry(&mut map, "acct-b");
+
+        // Same id, including across a registry rebuild: one and the same lock.
+        assert!(Arc::ptr_eq(&a, &a_again));
+        // Different ids never block each other.
+        assert!(!Arc::ptr_eq(&a, &b));
+
+        // Held lock rejects a second acquisition of the same lock.
+        let guard = a.lock().await;
+        assert!(a.try_lock().is_err());
+        assert!(a_again.try_lock().is_err());
+        // The other id's lock stays free.
+        assert!(b.try_lock().is_ok());
+        drop(guard);
+
+        // Once released, the same lock can be acquired again.
+        assert!(a.try_lock().is_ok());
     }
 }
