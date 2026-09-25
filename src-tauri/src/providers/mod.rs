@@ -248,6 +248,43 @@ pub const PRESETS: &[Preset] = &[
         ]),
         experimental: false,
     },
+    Preset {
+        kind: "xai",
+        display_name: "xAI Grok",
+        auth_kind: AuthKind::BearerKey,
+        default_accent: "#1d1d1d",
+        sub_modes: None,
+        experimental: true,
+    },
+    Preset {
+        kind: "kimi",
+        display_name: "Kimi",
+        auth_kind: AuthKind::BearerKey,
+        default_accent: "#16c2a3",
+        sub_modes: Some(&[
+            PresetSubMode {
+                kind: "kimi",
+                label: "国内站",
+                note: "api.moonshot.cn，CNY 计费",
+                limited: false,
+            },
+            PresetSubMode {
+                kind: "kimi_global",
+                label: "国际站",
+                note: "api.moonshot.ai，USD 计费，Key 与国内站不通用",
+                limited: false,
+            },
+        ]),
+        experimental: false,
+    },
+    Preset {
+        kind: "codex",
+        display_name: "ChatGPT Codex",
+        auth_kind: AuthKind::LocalToken,
+        default_accent: "#10a37f",
+        sub_modes: None,
+        experimental: true,
+    },
 ];
 
 /// Resolve a preset's display name by kind, falling back to the kind itself.
@@ -567,6 +604,15 @@ pub static PROVIDER_REGISTRY: &[(&'static str, ProviderBuilder)] = &[
     ("openai", |h, s, i, l| Arc::new(openai::OpenAIProvider::new(h, s, i, l))),
     ("xiaomi_plan", |h, s, i, l| Arc::new(xiaomi::XiaoMiPlanProvider::new(h, s, i, l))),
     ("xiaomi_api", |h, s, i, l| Arc::new(xiaomi::XiaoMiApiProvider::new(h, s, i, l))),
+    ("xai", |h, s, i, l| Arc::new(xai::XaiProvider::new(h, s, i, l))),
+    ("kimi", |h, s, i, l| Arc::new(kimi::KimiProvider::new(h, s, i, l))),
+    (
+        "kimi_global",
+        |h, s, i, l| {
+            Arc::new(kimi::KimiProvider::new_with_base(h, s, i, l, kimi::GLOBAL_BASE))
+        },
+    ),
+    ("codex", |h, s, i, l| Arc::new(codex::CodexProvider::new(h, s, i, l))),
 ];
 
 /// Build a live provider for an account `kind`, or `None` for an unknown kind.
