@@ -352,6 +352,8 @@ mod burn_tests {
             unit: UsageUnit::Tokens,
             reset_at: None,
             over_quota: false,
+            cost_source: Default::default(),
+            tokens: None,
         }
     }
 

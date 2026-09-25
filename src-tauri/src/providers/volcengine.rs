@@ -30,20 +30,21 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-const HOST: &str = "ark.cn-beijing.volcengineapi.com";
-const BASE_URL: &str = "https://ark.cn-beijing.volcengineapi.com/";
+pub(crate) const HOST: &str = "ark.cn-beijing.volcengineapi.com";
+pub(crate) const BASE_URL: &str = "https://ark.cn-beijing.volcengineapi.com/";
 
 /// Numbers in Volcengine responses are sometimes JSON numbers and sometimes
-/// strings ("50.0"); accept both.
+/// strings ("50.0"); accept both. `pub(crate)` so the pay-as-you-go variant
+/// (`volcengine_api`) can reuse it to parse usage fields.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum FlexibleNum {
+pub(crate) enum FlexibleNum {
     Number(f64),
     Text(String),
 }
 
 impl FlexibleNum {
-    fn value(&self) -> Option<f64> {
+    pub(crate) fn value(&self) -> Option<f64> {
         match self {
             FlexibleNum::Number(n) => Some(*n),
             FlexibleNum::Text(s) => s.trim().parse().ok(),
@@ -158,6 +159,8 @@ impl WindowRaw {
             unit,
             reset_at,
             over_quota: used > quota,
+            cost_source: crate::providers::CostSource::ProviderReported,
+            tokens: None,
         })
     }
 }
@@ -310,42 +313,53 @@ impl VolcengineProvider {
         query: &str,
         body: serde_json::Value,
     ) -> Result<String, ProviderError> {
-        let body_bytes = serde_json::to_vec(&body).unwrap_or_else(|_| Vec::new());
-        let signed = signing::sign(
-            access_key,
-            secret_key,
-            "POST",
-            HOST,
-            "/",
-            query,
-            "application/json",
-            &body_bytes,
-            Utc::now(),
-        );
-        let resp = self
-            .http
-            .post(format!("{BASE_URL}?{query}"))
-            .header("Host", &signed.host)
-            .header("X-Date", &signed.x_date)
-            .header("X-Content-Sha256", &signed.x_content_sha256)
-            .header("Authorization", &signed.authorization)
-            .header("Content-Type", "application/json")
-            .body(body_bytes)
-            .send()
-            .await?;
-        let status = resp.status();
-        let text = resp.text().await?;
-        let envelope: ErrorEnvelope = serde_json::from_str(&text).unwrap_or_default();
-        let has_error = envelope
-            .response_metadata
-            .as_ref()
-            .and_then(|m| m.error.as_ref())
-            .is_some();
-        if !status.is_success() || has_error {
-            return Err(map_api_error(status, &text));
-        }
-        Ok(text)
+        signed_post(&self.http, access_key, secret_key, query, body).await
     }
+}
+
+/// Sign and send a POST request to Volcengine Ark, shared by the AFP
+/// (AgentPlan) provider and the pay-as-you-go `volcengine_api` variant.
+pub(crate) async fn signed_post(
+    client: &Client,
+    access_key: &str,
+    secret_key: &str,
+    query: &str,
+    body: serde_json::Value,
+) -> Result<String, ProviderError> {
+    let body_bytes = serde_json::to_vec(&body).unwrap_or_else(|_| Vec::new());
+    let signed = signing::sign(
+        access_key,
+        secret_key,
+        "POST",
+        HOST,
+        "/",
+        query,
+        "application/json",
+        &body_bytes,
+        Utc::now(),
+    );
+    let resp = client
+        .post(format!("{BASE_URL}?{query}"))
+        .header("Host", &signed.host)
+        .header("X-Date", &signed.x_date)
+        .header("X-Content-Sha256", &signed.x_content_sha256)
+        .header("Authorization", &signed.authorization)
+        .header("Content-Type", "application/json")
+        .body(body_bytes)
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await?;
+    let envelope: ErrorEnvelope = serde_json::from_str(&text).unwrap_or_default();
+    let has_error = envelope
+        .response_metadata
+        .as_ref()
+        .and_then(|m| m.error.as_ref())
+        .is_some();
+    if !status.is_success() || has_error {
+        return Err(map_api_error(status, &text));
+    }
+    Ok(text)
 }
 
 #[async_trait]

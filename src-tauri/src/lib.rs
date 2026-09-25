@@ -9,8 +9,12 @@
 //! - Tauri plugins + IPC command handlers
 //! - Periodic scheduler that emits `usage-updated` events
 
+pub mod exchange;
 pub mod ipc;
+pub mod hub;
+pub mod local;
 pub mod notify;
+pub mod pricing;
 pub mod providers;
 pub mod scheduler;
 pub mod settings;
@@ -19,8 +23,6 @@ pub mod storage;
 
 use providers::{
     AccountMeta, Credentials, ProviderRegistry, SharedProviderState,
-    deepseek::DeepSeekProvider, minimax::MiniMaxProvider, openai::OpenAIProvider,
-    volcengine::VolcengineProvider,
 };
 use notify::SharedNotifyState;
 use reqwest::Client;
@@ -28,7 +30,7 @@ use scheduler::SharedBurnTracker;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tokio::sync::{watch, RwLock};
@@ -72,6 +74,9 @@ pub struct AppState {
     /// construction.
     #[allow(dead_code)]
     pub _tray: TrayIcon,
+    /// Cache for aggregated local-tool usage (Claude Code logs). Short TTL so
+    /// the tool view isn't re-parsing hundreds of session files on every poll.
+    pub local: local::SharedLocalCache,
 }
 
 /// Build a live provider instance for one account. Each account gets its own
@@ -82,17 +87,13 @@ pub fn build_account_provider(
     http: Client,
     storage: Arc<crate::storage::Storage>,
 ) -> Option<Arc<dyn providers::Provider>> {
-    let kind = account.provider_kind.as_str();
-    let label = account.label.clone();
-    let instance_id = account.instance_id.clone();
-    let p: Arc<dyn providers::Provider> = match kind {
-        "minimax" => Arc::new(MiniMaxProvider::new(http, storage, instance_id, label)),
-        "deepseek" => Arc::new(DeepSeekProvider::new(http, storage, instance_id, label)),
-        "volcengine" => Arc::new(VolcengineProvider::new(http, storage, instance_id, label)),
-        "openai" => Arc::new(OpenAIProvider::new(http, storage, instance_id, label)),
-        _ => return None,
-    };
-    Some(p)
+    providers::build_provider(
+        &account.provider_kind,
+        http,
+        storage,
+        account.instance_id.clone(),
+        account.label.clone(),
+    )
 }
 
 /// Build the provider registry from the user's configured accounts. Only known
@@ -125,6 +126,24 @@ fn load_credentials_into_cache(
         }
     }
     map
+}
+
+/// Total local-tool tokens from the in-memory scan cache (0 if not yet cached).
+async fn cached_tool_tokens(local: &local::SharedLocalCache) -> f64 {
+    if let Some(p) = local.cached().await {
+        p.tools.iter().flat_map(|t| t.daily.iter()).map(|d| d.total).sum()
+    } else {
+        0.0
+    }
+}
+
+/// Number of local tools from the in-memory scan cache.
+async fn cached_tool_count(local: &local::SharedLocalCache) -> u64 {
+    if let Some(p) = local.cached().await {
+        p.tools.len() as u64
+    } else {
+        0
+    }
 }
 
 pub fn run() {
@@ -186,6 +205,107 @@ pub fn run() {
                 Arc::new(tokio::sync::Mutex::new(Default::default()));
             let notify_state: SharedNotifyState =
                 Arc::new(tokio::sync::Mutex::new(Default::default()));
+            // Local-tool usage cache (Claude Code logs).
+            let local: local::SharedLocalCache =
+                Arc::new(local::LocalCache::new());
+            // Pre-warm the local-tool cache in the background right after startup
+            // (delayed slightly so it doesn't compete with launch), so the first
+            // time the user opens the tools view it's served from cache instead of
+            // blocking on a multi-hundred-file disk scan.
+            {
+                let warm = local.clone();
+                let store_for_warm = store.clone();
+                tauri::async_runtime::spawn(async move {
+                    // 延迟放宽：避免和启动争抢，但要尽快热好缓存以减少首开等待。
+                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                    if warm.cached().await.is_none() {
+                        let tools = local::scan_all(&store_for_warm);
+                        // 与 get_local_tools 同：全量扫描后重建 jsonl 工具续读指针。
+                        local::delta::record_tool_offsets(&store_for_warm, "claude-code");
+                        local::delta::record_tool_offsets(&store_for_warm, "codex");
+                        let sessions: u64 = tools.iter().map(|t| t.session_count).sum();
+                        // 一并把 MiniMax token 用量写入 DB，供卡片热力图快速读取。
+                        local::persist_minimax(&store_for_warm, &tools);
+                        let payload = local::LocalToolsPayload {
+                            tools,
+                            sessions_parsed: sessions,
+                        };
+                        warm.store(payload.clone()).await;
+                        // 持久化到二级缓存，应用重启后首个工具页也能秒开（无源变化时）。
+                        let _ = store_for_warm.save_local_scan_cache(
+                            &local::cache::src_fingerprint(),
+                            &serde_json::to_string(&payload).unwrap_or_default(),
+                        );
+                    }
+                });
+            }
+
+            // 多端同步 hub（B8）：hub 模式在本机端口提供 ingest/devices 服务；
+            // agent 模式定期把本机用量上报到远端 hub。
+            {
+                let start = settings_store.read_blocking();
+                if start.hub_mode == "hub" {
+                    hub::spawn_hub_server(store.clone(), start.hub_port, start.hub_token.clone());
+                }
+                if start.hub_mode == "agent" && start.report_on {
+                    let store_reporter = store.clone();
+                    let local_reporter = local.clone();
+                    let settings_reporter = settings_store.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        loop {
+                            let s = settings_reporter.read_blocking();
+                            if s.report_on && s.hub_mode == "agent" && !s.hub_base.is_empty() {
+                                let base = s.hub_base.clone();
+                                let token = s.hub_token.clone();
+                                let tool_tokens = cached_tool_tokens(&local_reporter).await;
+                                let tool_count = cached_tool_count(&local_reporter).await;
+                                let daily = hub::tool_daily_from_cache(&local_reporter).await;
+                                let provider_count = s.accounts.len() as u64;
+                                let (id, host, os, arch, ver) = hub::machine_info();
+                                let device = hub::build_device_usage(
+                                    &id, &host, &os, &arch, &ver,
+                                    tool_tokens, provider_count, tool_count, daily,
+                                );
+                                let _ = hub::report_to_hub(&base, &device, &token).await;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        }
+                    });
+                }
+            }
+
+            // 工具日志 watch + 增量扫描：3s 指纹轮询，只重扫变化的工具并广播
+            // tools-updated，让工具/模型/设备页近实时反映新增用量。
+            local::watch::spawn_tool_watcher(
+                app.handle().clone(),
+                local.clone(),
+                store.clone(),
+            );
+
+            // 汇率定时拉取（B.6）：启动后稍作延迟抓一次，之后每 6 小时检查一次
+            // 陈旧状态（缓存超过 24h 才真正打网络），失败静默回落缓存/默认值。
+            {
+                let store_fx = store.clone();
+                let settings_fx = settings_store.clone();
+                let http_fx = http.clone();
+                let app_fx = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    loop {
+                        let s = settings_fx.read_blocking();
+                        let snap = exchange::refresh_rates(&store_fx, &s, &http_fx, false).await;
+                        match snap.warning {
+                            // 数据有效（新拉取或缓存仍新鲜）→ 广播，让所有窗口同步生效表
+                            None => {
+                                let _ = app_fx.emit("rates-updated", &snap);
+                            }
+                            Some(w) => tracing::warn!("exchange rate refresh: {w}"),
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+                    }
+                });
+            }
 
             // Pause broadcast (initial value false = polling normally). The
             // initial receiver is dropped: tasks subscribe later, and a
@@ -253,6 +373,7 @@ pub fn run() {
                 close_to_tray,
                 edge_snap,
                 _tray: tray,
+                local,
             };
 
             app.manage(state);
@@ -326,6 +447,8 @@ pub fn run() {
             ipc::set_window_mode,
             ipc::open_settings,
             ipc::close_settings,
+            ipc::open_trend_window,
+            ipc::open_tool_window,
             ipc::get_settings,
             ipc::save_settings,
             ipc::save_credentials,
@@ -333,6 +456,11 @@ pub fn run() {
             ipc::upsert_account,
             ipc::remove_account,
             ipc::test_provider,
+            ipc::get_local_tools,
+            ipc::get_device_report,
+            ipc::get_hub_devices,
+            ipc::get_exchange_rates,
+            ipc::refresh_exchange_rates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -348,7 +476,7 @@ pub fn run() {
 /// project's windows-gnu toolchain rebuilds are expensive (dlltool/as).
 /// dwmapi.dll is resolved at runtime so no import library is needed.
 #[cfg(windows)]
-mod dwm_corner {
+pub(crate) mod dwm_corner {
     use std::ffi::c_void;
     use std::sync::OnceLock;
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getHeatmap, forceRefresh } from "../api";
+  import { estimateCostUsd, formatCost } from "../currency";
   import {
     formatUsage,
     hexToRgb,
@@ -159,6 +160,17 @@
       };
     });
   });
+
+  // Estimated cost: base it on the most critical window's token split, else the
+  // monthly window (covers pay-as-you-go providers like volcano API). Renders
+  // only when the window reports tokens for a known model; never guesses.
+  let costLabel = $derived.by(() => {
+    const src = (critical?.window ?? snapshot.windows.monthly) as
+      | WindowUsage
+      | undefined;
+    const usd = src?.tokens ? estimateCostUsd(src.tokens) : null;
+    return usd === null ? null : formatCost(usd, "CNY", true);
+  });
 </script>
 
 <div class="detail" style={accentStyle} data-tauri-drag-region={false}>
@@ -190,6 +202,13 @@
   {/if}
 
   <dl class="detail__rows">
+    {#if costLabel}
+      <dt>估算成本</dt>
+      <dd>
+        <span class="detail__cost">{costLabel}</span>
+        <span class="detail__tag">估算</span>
+      </dd>
+    {/if}
     <dt>燃烧率</dt>
     <dd>{burnLabel}</dd>
     <dt>预计耗尽</dt>
@@ -368,6 +387,23 @@
     color: var(--tum-text-secondary);
     font-variant-numeric: tabular-nums;
     text-align: right;
+  }
+
+  .detail__cost {
+    color: var(--acct-accent, var(--tum-accent));
+  }
+
+  .detail__tag {
+    margin-left: 4px;
+    padding: 0 3px;
+    font-family: var(--tum-font);
+    font-size: 8px;
+    line-height: 1.4;
+    color: var(--tum-text-muted);
+    background: var(--tum-surface);
+    border: 1px solid var(--tum-border);
+    border-radius: 3px;
+    letter-spacing: 0.3px;
   }
 
   .detail__chart {

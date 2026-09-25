@@ -206,6 +206,8 @@ impl Provider for OpenAIProvider {
             unit: UsageUnit::Usd,
             reset_at: Some(next_month_start.and_hms_opt(0, 0, 0).unwrap().and_utc()),
             over_quota: quota > 0.0 && month_used > quota,
+            cost_source: crate::providers::CostSource::ProviderReported,
+            tokens: None,
         });
 
         let heatmap: Option<Vec<HeatmapCell>> = self

@@ -2,11 +2,12 @@
 // defined in `src-tauri/src/ipc.rs`.
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AccountMeta,
   BurnInfo,
   Credentials,
+  DeviceInfo,
   HeatmapCell,
   ProviderCatalog,
   ProviderError,
@@ -72,6 +73,16 @@ export async function setWindowMode(mode: WindowMode): Promise<void> {
 
 export async function openSettings(): Promise<void> {
   await invoke<void>("open_settings");
+}
+
+/** Open (or focus) the standalone, resizable trend window. */
+export async function openTrendWindow(): Promise<void> {
+  await invoke<void>("open_trend_window");
+}
+
+/** Open (or focus) the standalone, resizable local-tool window. */
+export async function openToolWindow(): Promise<void> {
+  await invoke<void>("open_tool_window");
 }
 
 export async function closeSettings(): Promise<void> {
@@ -153,4 +164,55 @@ export function onSettingsChanged(
   cb: (settings: Settings) => void,
 ): Promise<UnlistenFn> {
   return listen<Settings>("settings-changed", (e) => cb(e.payload));
+}
+
+/** 页签显隐开关变更：设置窗口写入 localStorage 后广播，让主面板重读。 */
+export function onTabsChanged(cb: () => void): Promise<UnlistenFn> {
+  return listen("tabs-changed", () => cb());
+}
+export function emitTabsChanged(): Promise<void> {
+  return emit("tabs-changed");
+}
+
+/** 本地工具日志增量扫描完成（watch 触发）→ 让工具/模型/设备页重载。 */
+export function onToolsUpdated(cb: () => void): Promise<UnlistenFn> {
+  return listen("tools-updated", () => cb());
+}
+
+import type { LocalToolsPayload } from "./types";
+
+/** Aggregated local-tool usage (Claude Code logs). `force` re-scans on disk. */
+export async function getLocalTools(force = false): Promise<LocalToolsPayload> {
+  return invoke<LocalToolsPayload>("get_local_tools", { force });
+}
+
+/** Local device metadata for the Devices view (B8, multi-device sync later). */
+export async function getDeviceReport(): Promise<DeviceInfo> {
+  return invoke<DeviceInfo>("get_device_report");
+}
+
+/** Devices known to the hub (self first), plus an optional refresh warning. */
+export async function getHubDevices(): Promise<HubDevicesResult> {
+  return invoke<HubDevicesResult>("get_hub_devices");
+}
+
+import type { HubDevicesResult } from "./types";
+
+import type { RatesSnapshot } from "./types";
+
+/** 当前生效的汇率快照（覆盖 > 缓存 > 内置默认）；缓存陈旧时后端顺带刷新。 */
+export async function getExchangeRates(): Promise<RatesSnapshot> {
+  return invoke<RatesSnapshot>("get_exchange_rates");
+}
+
+/** 强制重新拉取汇率并落库，返回刷新后的合并快照。 */
+export async function refreshExchangeRates(): Promise<RatesSnapshot> {
+  return invoke<RatesSnapshot>("refresh_exchange_rates");
+}
+
+/** 后端汇率刷新（定时任务 / 设置页手动刷新）→ 各窗口同步生效表。 */
+export function onRatesUpdated(
+  cb: (snapshot: RatesSnapshot) => void,
+): Promise<UnlistenFn> {
+  return listen<RatesSnapshot>("rates-updated", (e) => cb(e.payload));
 }

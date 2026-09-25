@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     mostCriticalWindow,
+    payAsYouGoLabel,
     percent,
     providerShortName,
     remainingPercent,
@@ -30,6 +31,7 @@
     {@const critical = mostCriticalWindow(s)}
     {@const usedPct = critical ? percent(critical.window) : 0}
     {@const remain = remainingPercent(s)}
+    {@const money = payAsYouGoLabel(s, countdown)}
     {@const tone = usedPct >= 0.95 ? "crit" : usedPct >= 0.8 ? "warn" : "ok"}
     <div class="mini__row" role="listitem">
       <PulseDot active={!!actives[s.provider_id]} {tone} size={7} />
@@ -43,7 +45,7 @@
         ></span>
       </span>
       <span class="mini__pct">
-        {Math.round((countdown ? remain : usedPct) * 100)}%
+        {money ?? `${Math.round((countdown ? remain : usedPct) * 100)}%`}
       </span>
     </div>
   {:else}

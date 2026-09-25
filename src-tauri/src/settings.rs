@@ -9,6 +9,7 @@
 use crate::providers::{preset_display_name, AccountMeta, Credentials};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -60,6 +61,45 @@ pub struct Settings {
     /// *remaining* position (countdown). Display-only, read by the frontend.
     #[serde(default = "default_countdown_mode")]
     pub countdown_mode: bool,
+    /// Currency code used to render estimated costs (USD/CNY/...). Display-only.
+    #[serde(default = "default_display_currency")]
+    pub display_currency: String,
+    /// Multi-device hub role: "off" | "hub" | "agent". "hub" listens on
+    /// `hub_port` for other instances to report; "agent" reports up to
+    /// `hub_base`. Default off.
+    #[serde(default = "default_hub_mode")]
+    pub hub_mode: String,
+    /// Local port the hub listener binds to when `hub_mode == "hub"`.
+    #[serde(default = "default_hub_port")]
+    pub hub_port: u16,
+    /// Base URL of the remote hub to report to when `hub_mode == "agent"`
+    /// (e.g. `http://192.168.1.20:43210`).
+    #[serde(default)]
+    pub hub_base: String,
+    /// Whether an agent actually reports its own usage (in addition to being
+    /// configured). `false` disables reporting.
+    #[serde(default)]
+    pub report_on: bool,
+    /// Shared secret that hub requires (`Authorization: Bearer <token>`) on
+    /// `/ingest` and `/devices`. Empty disables auth (trusted LAN only).
+    #[serde(default)]
+    pub hub_token: String,
+    /// 用户手动覆盖的汇率（币种代码 → 每 1 USD 兑该币种数值）。覆盖值优先于
+    /// 网络拉取值；键须为受支持币种（USD/CNY/TWD/HKD/JPY/EUR/GBP），非法值忽略。
+    #[serde(default)]
+    pub rate_overrides: HashMap<String, f64>,
+}
+
+fn default_hub_port() -> u16 {
+    43210
+}
+
+fn default_hub_mode() -> String {
+    "off".to_string()
+}
+
+fn default_display_currency() -> String {
+    "auto".to_string()
 }
 
 fn default_countdown_mode() -> bool {
@@ -107,6 +147,13 @@ impl Default for Settings {
             ring_window: default_ring_window(),
             edge_snap: default_edge_snap(),
             countdown_mode: default_countdown_mode(),
+            display_currency: default_display_currency(),
+            hub_mode: default_hub_mode(),
+            hub_port: default_hub_port(),
+            hub_base: String::new(),
+            report_on: false,
+            hub_token: String::new(),
+            rate_overrides: HashMap::new(),
         }
     }
 }
@@ -255,6 +302,7 @@ autostart_hint_shown = false
         assert!(parsed.close_to_tray);
         assert_eq!(parsed.notify_warn_percent, 80);
         assert_eq!(parsed.notify_crit_percent, 95);
+        assert!(parsed.rate_overrides.is_empty());
     }
 
     #[test]

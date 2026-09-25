@@ -1,0 +1,277 @@
+//! Lightweight token → cost pricing module (inspired by tokscale's `pricing/`).
+//!
+//! Provides an in-repo price table for common models (USD per 1M tokens,
+//! matching the LiteLLM convention tokscale uses), a model-alias normalizer,
+//! and `compute_cost` which turns a [`crate::providers::TokenBreakdown`] into an
+//! estimated USD cost.
+//!
+//! Design notes (mirroring tokscale's safeguards):
+//! - Prices are keyed by a *prefix* so a model runs e.g. `"claude-3-5-sonnet"` match.
+//! - Bare brand tokens (`claude`, `gemini`) and generic words are NOT matched —
+//!   they carry no model identity and would mis-price.
+//! - Unknown models return `None` (unpriced) rather than guessing, so callers
+//!   can fall back to "cost unknown" instead of a wrong number.
+//! - Subscriptions / token plans are intentionally absent: they bill a fixed
+//!   quota, not per token, so pay-per-token estimation must not apply.
+//!
+//! Prices here are reasonable public list rates (USD / 1M tokens) and should be
+//! treated as an approximation (`cost_source = Estimated`); they are not
+//! guaranteed current. A full multi-source lookup (LiteLLM / OpenRouter) is a
+//! future extension.
+
+/// A single pricing row: whether the model's input or output costs.
+#[derive(Debug, Clone, Copy)]
+struct Tier {
+    input_per_1m: f64,
+    output_per_1m: f64,
+}
+
+/// (model-prefix, tier). Ordered longest-prefix-ish; the first prefix a model
+/// starts with wins. Keep affordable defaults; adjust as models change.
+const PRICE_TABLE: &[(&str, Tier)] = &[
+    // Claude
+    (
+        "claude-3-7-sonnet",
+        Tier { input_per_1m: 3.0, output_per_1m: 15.0 },
+    ),
+    (
+        "claude-3-5-sonnet",
+        Tier { input_per_1m: 3.0, output_per_1m: 15.0 },
+    ),
+    (
+        "claude-3-5-haiku",
+        Tier { input_per_1m: 0.8, output_per_1m: 4.0 },
+    ),
+    (
+        "claude-3-opus",
+        Tier { input_per_1m: 15.0, output_per_1m: 75.0 },
+    ),
+    (
+        "claude-sonnet",
+        Tier { input_per_1m: 3.0, output_per_1m: 15.0 },
+    ),
+    (
+        "claude-haiku",
+        Tier { input_per_1m: 0.8, output_per_1m: 4.0 },
+    ),
+    // OpenAI
+    (
+        "gpt-5",
+        Tier { input_per_1m: 1.25, output_per_1m: 10.0 },
+    ),
+    (
+        "gpt-4o",
+        Tier { input_per_1m: 2.5, output_per_1m: 10.0 },
+    ),
+    (
+        "gpt-4.1",
+        Tier { input_per_1m: 2.0, output_per_1m: 8.0 },
+    ),
+    (
+        "gpt-4",
+        Tier { input_per_1m: 30.0, output_per_1m: 60.0 },
+    ),
+    (
+        "o3",
+        Tier { input_per_1m: 2.0, output_per_1m: 8.0 },
+    ),
+    (
+        "o1",
+        Tier { input_per_1m: 15.0, output_per_1m: 60.0 },
+    ),
+    // DeepSeek
+    (
+        "deepseek-reasoner",
+        Tier { input_per_1m: 0.55, output_per_1m: 2.19 },
+    ),
+    (
+        "deepseek-chat",
+        Tier { input_per_1m: 0.27, output_per_1m: 1.10 },
+    ),
+    ("deepseek", Tier { input_per_1m: 0.27, output_per_1m: 1.10 }),
+    // MiniMax
+    (
+        "minimax-m3",
+        Tier { input_per_1m: 5.0, output_per_1m: 20.0 },
+    ),
+    (
+        "minimax",
+        Tier { input_per_1m: 2.0, output_per_1m: 8.0 },
+    ),
+    // Qwen
+    (
+        "qwen3",
+        Tier { input_per_1m: 0.6, output_per_1m: 2.4 },
+    ),
+    (
+        "qwen",
+        Tier { input_per_1m: 0.5, output_per_1m: 2.0 },
+    ),
+    // Alibaba / Doubao
+    (
+        "doubao",
+        Tier { input_per_1m: 0.3, output_per_1m: 1.2 },
+    ),
+    // xAI
+    (
+        "grok-4",
+        Tier { input_per_1m: 2.0, output_per_1m: 12.0 },
+    ),
+    (
+        "grok-3",
+        Tier { input_per_1m: 3.0, output_per_1m: 15.0 },
+    ),
+    // MiniMax MiMo (Xiaomi)
+    (
+        "mimo-v2.6-pro",
+        Tier { input_per_1m: 0.43, output_per_1m: 0.86 },
+    ),
+    (
+        "mimo-v2.6-flash",
+        Tier { input_per_1m: 0.14, output_per_1m: 0.29 },
+    ),
+    ("mimo", Tier { input_per_1m: 0.3, output_per_1m: 0.6 }),
+    // Gemini
+    (
+        "gemini-2.5-pro",
+        Tier { input_per_1m: 1.25, output_per_1m: 10.0 },
+    ),
+    (
+        "gemini-2.5-flash",
+        Tier { input_per_1m: 0.30, output_per_1m: 2.50 },
+    ),
+    (
+        "gemini",
+        Tier { input_per_1m: 0.5, output_per_1m: 1.5 },
+    ),
+];
+
+/// Model aliases: normalize vendor-specific spellings to a shared prefix that
+/// appears in [`PRICE_TABLE`]. These run *before* prefix matching.
+const MODEL_ALIASES: &[(&str, &str)] = &[
+    // Anthropic aliases used by proxies / routers
+    ("anthropic/claude", "claude-"),
+    ("anthropic/claude-3", "claude-3"),
+    // OpenAI router-style prefixes
+    ("openai/gpt-4", "gpt-4"),
+    ("openai/gpt-4o", "gpt-4o"),
+    ("openai/gpt-5", "gpt-5"),
+    // DeepSeek openrouter style
+    ("deepseek/deepseek-chat", "deepseek-chat"),
+    ("deepseek/deepseek-reasoner", "deepseek-reasoner"),
+    // Moonshot / Kimi (commonly mislabeled)
+    ("moonshotai/kimi", "kimi"),
+    ("moonshot/kimi", "kimi"),
+];
+
+/// Strip a decision-affecting suffix that carries no price info (reasoning
+/// tier, provider namespace tail, etc.). Kept deliberately conservative.
+fn strip_noise(model: &str) -> &str {
+    // CLIProxy-style `(level)` reasoning tier, e.g. `gpt-5(high)`.
+    if let Some(i) = model.find('(') {
+        return &model[..i];
+    }
+    model
+}
+
+/// Normalize the model id through the alias table, lowercasing for matching.
+fn normalize(model: &str) -> String {
+    let stripped = strip_noise(model);
+    let lower = stripped.trim().to_ascii_lowercase();
+    for (alias, canonical) in MODEL_ALIASES {
+        if lower == *alias || lower.starts_with(alias) {
+            return canonical.to_string();
+        }
+    }
+    lower
+}
+
+/// Look up the price tier for a model, or `None` if unknown/unmatchable.
+///
+/// Guards:
+/// - Generic / bare tokens never match (avoids mis-pricing on an eroding id).
+fn tier_for(model: &str) -> Option<Tier> {
+    let normalized = normalize(model);
+    // Refuse bare brand words and generic tokens — no model identity.
+    let is_generic = matches!(
+        normalized.as_str(),
+        "claude"
+            | "gpt"
+            | "gemini"
+            | "deepseek"
+            | "minimax"
+            | "qwen"
+            | "mimo"
+            | "grok"
+            | "kimi"
+            | "model"
+            | "default"
+            | "router"
+    );
+    if normalized.is_empty() || is_generic {
+        return None;
+    }
+    PRICE_TABLE
+        .iter()
+        .find(|(prefix, _)| normalized.starts_with(prefix))
+        .map(|(_, tier)| *tier)
+}
+
+/// Estimate the USD cost of a token breakdown. Returns `None` when the model is
+/// unknown/unpriced. `cache_read` tokens are billed at the input rate (a common
+/// approximation — cache-read discounts are model-specific and often ~0.1×).
+pub fn compute_cost(breakdown: &crate::providers::TokenBreakdown) -> Option<f64> {
+    let model = breakdown.model_id.as_deref()?;
+    let tier = tier_for(model)?;
+    let input_tokens = breakdown.input;
+    let output_tokens = breakdown.output;
+    let input_cost = input_tokens / 1_000_000.0 * tier.input_per_1m;
+    let output_cost = output_tokens / 1_000_000.0 * tier.output_per_1m;
+    Some(input_cost + output_cost)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::TokenBreakdown;
+
+    fn bd(model: &str, input: f64, output: f64) -> TokenBreakdown {
+        TokenBreakdown {
+            input,
+            cache_read: 0.0,
+            output,
+            model_id: Some(model.to_string()),
+        }
+    }
+
+    #[test]
+    fn costs_known_models() {
+        let c = compute_cost(&bd("claude-3-5-sonnet", 1_000_000.0, 500_000.0)).unwrap();
+        // 1M input @ 3.0 + 0.5M output @ 15.0 = 3.0 + 7.5 = 10.5
+        assert!((c - 10.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unknown_model_is_none() {
+        assert!(compute_cost(&bd("totally-unknown-model-xyz", 100.0, 100.0)).is_none());
+    }
+
+    #[test]
+    fn bare_brand_does_not_price() {
+        // "claude" alone must not hit a tier.
+        assert!(tier_for("claude").is_none());
+        assert!(tier_for("gemini").is_none());
+    }
+
+    #[test]
+    fn alias_normalizes_openrouter_style() {
+        assert!(tier_for("openai/gpt-4o").is_some());
+        assert!(tier_for("deepseek/deepseek-chat").is_some());
+    }
+
+    #[test]
+    fn output_only_is_billed_at_output_rate() {
+        let c = compute_cost(&bd("gpt-4o", 0.0, 1_000_000.0)).unwrap();
+        assert!((c - 10.0).abs() < 1e-6);
+    }
+}

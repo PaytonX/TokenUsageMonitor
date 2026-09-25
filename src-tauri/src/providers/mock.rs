@@ -60,6 +60,8 @@ impl Provider for MockProvider {
                     unit: UsageUnit::Tokens,
                     reset_at: Some(now + Duration::hours(2)),
                     over_quota: false,
+                    cost_source: crate::providers::CostSource::ProviderReported,
+                    tokens: None,
                 }),
                 daily: Some(WindowUsage {
                     used: 9_000_000.0 * seed,
@@ -67,6 +69,8 @@ impl Provider for MockProvider {
                     unit: UsageUnit::Tokens,
                     reset_at: Some(now + Duration::hours(10)),
                     over_quota: false,
+                    cost_source: crate::providers::CostSource::ProviderReported,
+                    tokens: None,
                 }),
                 weekly: Some(WindowUsage {
                     used: 45_000_000.0 * seed,
@@ -74,6 +78,8 @@ impl Provider for MockProvider {
                     unit: UsageUnit::Tokens,
                     reset_at: Some(now + Duration::days(4)),
                     over_quota: false,
+                    cost_source: crate::providers::CostSource::ProviderReported,
+                    tokens: None,
                 }),
                 monthly: Some(WindowUsage {
                     used: 180_000_000.0 * seed,
@@ -81,6 +87,8 @@ impl Provider for MockProvider {
                     unit: UsageUnit::Tokens,
                     reset_at: Some(now + Duration::days(18)),
                     over_quota: false,
+                    cost_source: crate::providers::CostSource::ProviderReported,
+                    tokens: None,
                 }),
                 balance: Some(BalanceInfo {
                     total: 92.50 * seed,

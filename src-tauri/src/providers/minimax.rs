@@ -176,6 +176,8 @@ fn interval_window(row: &ModelRemains) -> WindowUsage {
         unit: UsageUnit::Percent,
         reset_at: at_millis(row.end_time),
         over_quota: used > 100.0,
+        cost_source: crate::providers::CostSource::ProviderReported,
+        tokens: None,
     }
 }
 
@@ -188,6 +190,8 @@ fn weekly_window(row: &ModelRemains) -> WindowUsage {
         unit: UsageUnit::Percent,
         reset_at: at_millis(row.weekly_end_time),
         over_quota: used > 100.0,
+        cost_source: crate::providers::CostSource::ProviderReported,
+        tokens: None,
     }
 }
 

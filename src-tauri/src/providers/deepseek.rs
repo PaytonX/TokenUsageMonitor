@@ -171,6 +171,9 @@ impl DeepSeekProvider {
             unit: UsageUnit::Cny,
             reset_at: None,
             over_quota: false,
+            // 余额差推算的本月消费为估算值（非官方逐笔账单）。
+            cost_source: crate::providers::CostSource::Estimated,
+            tokens: None,
         })
     }
 }

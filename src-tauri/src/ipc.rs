@@ -3,11 +3,14 @@
 //! Naming convention: snake_case in Rust, frontend calls via `invoke('get_usage')`.
 
 use crate::build_account_provider;
+use crate::hub::HubDevice;
+use crate::local::LocalToolsPayload;
 use crate::providers::{
     AccountMeta, Credentials, HeatmapCell, PRESETS, Preset, ProviderState, UsageSnapshot,
 };
 use crate::settings::Settings;
 use crate::AppState;
+use serde::Serialize;
 use std::collections::HashMap;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewWindow, WebviewWindowBuilder};
 
@@ -85,6 +88,18 @@ pub async fn get_heatmap(
     provider_id: String,
     days: u32,
 ) -> Result<Vec<HeatmapCell>, String> {
+    // MiniMax 账户卡片：优先读取持久化到 DB 的本机 MiniMax Code token 热力图
+    // （由 get_local_tools 写入 minimax-code 键），避免重新扫描大库；无数据时
+    // 回退到该账户自身（百分比）热力图。
+    if provider_id.starts_with("minimax") {
+        let cells = state
+            .storage
+            .load_heatmap("minimax-code", days)
+            .unwrap_or_default();
+        if !cells.is_empty() {
+            return Ok(cells);
+        }
+    }
     {
         let guard = state.state.read().await;
         if let Some(ps) = guard.get(&provider_id) {
@@ -97,6 +112,169 @@ pub async fn get_heatmap(
         .storage
         .load_heatmap(&provider_id, days)
         .map_err(|e| e.to_string())
+}
+
+///
+
+/// Return the aggregated local-tool usage (C8). Scans the supported local AI
+/// tools' logs/DBs (Claude Code JSONL + Cherry Studio + MiniMax Code SQLite),
+/// then serves a short-lived cache; `force` bypasses the cache for a rescan.
+#[tauri::command]
+pub async fn get_local_tools(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+) -> Result<LocalToolsPayload, String> {
+    if !force.unwrap_or(false) {
+        if let Some(cached) = state.local.cached().await {
+            return Ok(cached);
+        }
+        // Second-level (disk) cache: cheap metadata fingerprint; if the sources
+        // are unchanged since the last scan, replay the persisted result
+        // instead of re-parsing every log file.
+        let fp = crate::local::cache::src_fingerprint();
+        if let Some((stored_fp, payload_json)) = state.storage.load_local_scan_cache() {
+            if stored_fp == fp {
+                if let Ok(payload) = serde_json::from_str::<LocalToolsPayload>(&payload_json) {
+                    state.local.store(payload.clone()).await;
+                    return Ok(payload);
+                }
+            }
+        }
+    }
+
+    let tools = crate::local::scan_all(&state.storage);
+    // 全量重扫后重建 jsonl 工具的续读指针，保证后续 watch 增量从新增处读、不重复计数。
+    crate::local::delta::record_tool_offsets(&state.storage, "claude-code");
+    crate::local::delta::record_tool_offsets(&state.storage, "codex");
+    let sessions_parsed: u64 = tools.iter().map(|t| t.session_count).sum();
+    let payload = LocalToolsPayload {
+        tools: tools.clone(),
+        sessions_parsed,
+    };
+    state.local.store(payload.clone()).await;
+
+    // 把本地 MiniMax token 用量持久化到 DB（键 minimax-code），供 MiniMax 账户
+    // 卡片日历热力图快速读取，无需每次重新扫描 ~/.minimax 的大 SQLite。
+    crate::local::persist_minimax(&state.storage, &tools);
+
+    // Persist the result + source fingerprint for the second-level cache.
+    let _ = state.storage.save_local_scan_cache(
+        &crate::local::cache::src_fingerprint(),
+        &serde_json::to_string(&payload).unwrap_or_default(),
+    );
+    Ok(payload)
+}
+
+/// Metadata for the local device, shown by the Devices view (B8 placeholder).
+/// Multi-device sync (hub) is a later phase; for now the page renders this
+/// machine as the single "device". Only std env info is used — no new deps.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceInfo {
+    pub device_id: String,
+    pub hostname: String,
+    pub os: String,
+    pub arch: String,
+    pub version: String,
+    pub pid: u32,
+}
+
+#[tauri::command]
+pub fn get_device_report() -> DeviceInfo {
+    let (device_id, hostname, os, arch, version) = crate::hub::machine_info();
+    DeviceInfo {
+        device_id,
+        hostname,
+        os,
+        arch,
+        version,
+        pid: std::process::id(),
+    }
+}
+
+/// 设备页拉取结果：设备列表 + 可选的刷新/拉取失败原因。
+#[derive(Serialize, Clone)]
+pub struct HubDevicesResult {
+    pub devices: Vec<HubDevice>,
+    pub warning: Option<String>,
+}
+
+/// All devices known to the hub this instance participates in (self first).
+/// Hub/off mode: reads the local hub store (filled by peers via `/ingest`).
+/// Agent mode: additionally pulls the remote hub's device list via `GET /devices`
+/// so the devices view shows every peer even when this machine only reports up.
+/// Wire failures / 401s on the remote fetch are surfaced as `warning` instead of
+/// failing the whole request.
+#[tauri::command]
+pub async fn get_hub_devices(
+    state: State<'_, AppState>,
+) -> Result<HubDevicesResult, String> {
+    let (id, host, os, arch, ver) = crate::hub::machine_info();
+    let mut tool_tokens = 0.0;
+    let mut tool_count = 0u64;
+    if let Some(payload) = state.local.cached().await {
+        tool_tokens = payload.tools.iter().flat_map(|t| t.daily.iter()).map(|d| d.total).sum();
+        tool_count = payload.tools.len() as u64;
+    }
+    let provider_count = state.settings.get().await.accounts.len() as u64;
+    let daily = crate::hub::tool_daily_from_cache(&state.local).await;
+    let self_device = crate::hub::build_device_usage(
+        &id, &host, &os, &arch, &ver, tool_tokens, provider_count, tool_count, daily,
+    );
+
+    // 候选设备：agent 模式下优先拉远端 hub 列表，其次本地存储。
+    let s = state.settings.get().await;
+    let mut warning: Option<String> = None;
+    let mut sources: Vec<Vec<HubDevice>> = Vec::new();
+    if s.hub_mode == "agent" && !s.hub_base.is_empty() {
+        match crate::hub::fetch_devices(&s.hub_base, &s.hub_token).await {
+            Ok(remote) => sources.push(remote),
+            Err(e) => warning = Some(format!("远端 hub 拉取失败：{e}")),
+        }
+    }
+    if let Ok(local) = state.storage.list_hub_devices() {
+        sources.push(local);
+    }
+
+    // 去重合并：本机恒在首位，余下按来源顺序去重（避免重复 device_id）。
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(self_device.device_id.clone());
+    let mut devices = vec![self_device];
+    for list in sources {
+        for device in list {
+            if !seen.contains(&device.device_id) {
+                seen.insert(device.device_id.clone());
+                devices.push(device);
+            }
+        }
+    }
+    Ok(HubDevicesResult { devices, warning })
+}
+
+/// 当前生效的汇率快照（覆盖 > 缓存 > 内置默认）。缓存陈旧时顺带触发一次
+/// 后台刷新；网络失败以 `warning` 返回，不影响快照本身。
+#[tauri::command]
+pub async fn get_exchange_rates(
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<crate::exchange::RatesSnapshot, String> {
+    let settings = state.settings.get().await;
+    let snap = crate::exchange::refresh_rates(&state.storage, &settings, &state.http, false).await;
+    // 合并结果（含刚保存的覆盖值）广播给其它窗口，实现跨窗口即时同步
+    let _ = app.emit("rates-updated", &snap);
+    Ok(snap)
+}
+
+/// 强制重新拉取汇率并落库，返回刷新后的合并快照。
+#[tauri::command]
+pub async fn refresh_exchange_rates(
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<crate::exchange::RatesSnapshot, String> {
+    let settings = state.settings.get().await;
+    let snap = crate::exchange::refresh_rates(&state.storage, &settings, &state.http, true).await;
+    // 广播给其它窗口同步（设置窗口自己直接消费返回值）
+    let _ = app.emit("rates-updated", &snap);
+    Ok(snap)
 }
 
 /// Trigger an immediate refresh for one provider (or all enabled providers
@@ -247,7 +425,7 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
     match mode.as_str() {
         "dashboard" => {
             window
-                .set_size(LogicalSize::new(360u32, 600u32))
+                .set_size(LogicalSize::new(400u32, 680u32))
                 .map_err(|e| e.to_string())?;
         }
         "compact" => {
@@ -284,12 +462,16 @@ pub async fn open_settings(app: AppHandle) -> Result<(), String> {
     .resizable(true)
     .min_inner_size(540.0, 600.0)
     .visible(false)
-    .decorations(true)
+    .decorations(false)
+    .transparent(true)
     .always_on_top(false)
     .skip_taskbar(false)
     .center()
     .build()
     .map_err(|e| e.to_string())?;
+
+    #[cfg(windows)]
+    crate::dwm_corner::disable_corner_artifacts(&window);
 
     // Restore previous position/size if the window-state plugin has saved it.
     let _ = window.show();
@@ -304,6 +486,78 @@ pub async fn close_settings(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("settings") {
         window.hide().map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+/// Open the standalone, resizable trend window (C7). It loads `trend.html`,
+/// which mounts a full-window stacked-bar trend view the user can enlarge by
+/// resizing the window. If it already exists, just show + focus it.
+#[tauri::command]
+pub async fn open_trend_window(app: AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("trend") {
+        existing.show().map_err(|e| e.to_string())?;
+        existing.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(
+        &app,
+        "trend",
+        tauri::WebviewUrl::App("trend.html".into()),
+    )
+    .title("TokenUsageMonitor · 用量趋势")
+    .inner_size(760.0, 480.0)
+    .resizable(true)
+    .min_inner_size(520.0, 360.0)
+    .visible(false)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(false)
+    .skip_taskbar(false)
+    .center()
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    #[cfg(windows)]
+    crate::dwm_corner::disable_corner_artifacts(&window);
+    let _ = window.show();
+    let _ = window.set_focus();
+    Ok(())
+}
+
+/// Open the standalone, resizable local-tool window (C8). It loads
+/// `toolwindow.html`, which mounts a full-window stacked-bar view of local AI
+/// tool usage. If it already exists, just show + focus it.
+#[tauri::command]
+pub async fn open_tool_window(app: AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("tools") {
+        existing.show().map_err(|e| e.to_string())?;
+        existing.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(
+        &app,
+        "tools",
+        tauri::WebviewUrl::App("toolwindow.html".into()),
+    )
+    .title("TokenUsageMonitor · 工具用量")
+    .inner_size(760.0, 480.0)
+    .resizable(true)
+    .min_inner_size(520.0, 360.0)
+    .visible(false)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(false)
+    .skip_taskbar(false)
+    .center()
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    #[cfg(windows)]
+    crate::dwm_corner::disable_corner_artifacts(&window);
+    let _ = window.show();
+    let _ = window.set_focus();
     Ok(())
 }
 

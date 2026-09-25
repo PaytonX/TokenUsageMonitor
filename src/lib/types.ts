@@ -10,7 +10,27 @@ export interface WindowUsage {
   unit: UsageUnit;
   reset_at?: string; // ISO8601 UTC
   over_quota: boolean;
+  /** Provenance of the reported value. Mirrors Rust `CostSource`. */
+  cost_source?: CostSource;
+  /** Detailed token split (input/cache/output) when the provider reports it. */
+  tokens?: TokenBreakdown;
 }
+
+/** Per-window token usage split. Mirrors Rust `TokenBreakdown`. */
+export interface TokenBreakdown {
+  /** Input tokens consumed (cache-read reuse counted at input rate). */
+  input: number;
+  /** Input tokens served from the provider's prompt cache ("cache hit"). */
+  cache_read: number;
+  /** Output (completion) tokens generated. */
+  output: number;
+  /** Which model this breakdown pertains to, when known. */
+  model_id?: string;
+}
+
+/** Where a usage/cost figure comes from. `estimated` lets UI label it as an
+ * approximation rather than presenting it as exact. */
+export type CostSource = "unknown" | "provider_reported" | "estimated";
 
 export interface BalanceInfo {
   total: number;
@@ -32,6 +52,42 @@ export interface HeatmapCell {
   date: string; // YYYY-MM-DD
   value: number;
   unit: UsageUnit;
+}
+
+/** Mirrors Rust `ipc::DeviceInfo` (B8 device view, multi-device sync later). */
+export interface DeviceInfo {
+  device_id: string;
+  hostname: string;
+  os: string;
+  arch: string;
+  version: string;
+  pid: number;
+}
+
+/** Mirrors Rust `hub::HubDay`: one day of a device's token series. */
+export interface HubDay {
+  date: string; // YYYY-MM-DD
+  total: number;
+}
+
+/** Mirrors Rust `hub::HubDevice`: one device's report to the hub. */
+export interface HubDevice {
+  device_id: string;
+  hostname: string;
+  os: string;
+  arch: string;
+  version: string;
+  reported_at: string;
+  tool_tokens: number;
+  provider_count: number;
+  tool_count: number;
+  daily: HubDay[];
+}
+
+/** Mirrors Rust `ipc::HubDevicesResult`: device list + optional refresh warning. */
+export interface HubDevicesResult {
+  devices: HubDevice[];
+  warning: string | null;
 }
 
 export interface UsageSnapshot {
@@ -72,13 +128,25 @@ export interface AccountMeta {
   note?: string;
 }
 
-/** Mirrors Rust `Preset`. A built-in provider kind the user can add accounts
- * from. */
+/** Mirrors Rust `PresetSubMode` (providers/mod.rs): a billable mode selectable
+ * under a multi-mode preset. Maps to an account `kind`. */
+export interface PresetSubMode {
+  kind: string;
+  label: string;
+  note?: string;
+  /** true = skeleton / not-yet-implemented (UI greys it out + tags it). */
+  limited?: boolean;
+}
+
+/** Mirrors Rust `Preset` (providers/mod.rs): a built-in provider the user can
+ * add an account from. When `sub_modes` is present, the UI shows a chooser;
+ * otherwise the preset adds directly. */
 export interface Preset {
   kind: string;
   display_name: string;
   auth_kind: "bearer_key" | "access_key_secret";
   default_accent: string;
+  sub_modes?: PresetSubMode[];
 }
 
 /** Mirrors Rust `AccountWithInfo` (ipc.rs): an account plus its credential
@@ -109,6 +177,46 @@ export interface ProviderError {
   RateLimited?: Record<string, never>;
   NotConfigured?: Record<string, never>;
   Internal?: { message: string };
+}
+
+/** Mirrors Rust `LocalDay` (local/mod.rs): one day of aggregated tool usage. */
+export interface LocalDay {
+  date: string; // YYYY-MM-DD (local)
+  input: number;
+  cache_read: number;
+  output: number;
+  total: number;
+}
+
+/** Mirrors Rust `LocalModelUsage` (local/mod.rs): per-model usage for a tool. */
+export interface LocalModelUsage {
+  model: string;
+  total_tokens: number;
+  /** Provider-reported cost when the tool records it (0 if unknown). */
+  cost: number;
+  currency: string;
+  /** True when `cost` was estimated from the pricing table (not provider-reported). */
+  cost_estimated: boolean;
+  /** Per-day token series (ascending by date). */
+  daily: LocalDay[];
+}
+
+/** Mirrors Rust `LocalToolReport` (local/mod.rs). */
+export interface LocalToolReport {
+  id: string;
+  name: string;
+  daily: LocalDay[];
+  total_tokens: number;
+  session_count: number;
+  project_count: number;
+  scanned_at: string; // ISO8601 UTC
+  models: LocalModelUsage[];
+}
+
+/** Mirrors Rust `LocalToolsPayload`. */
+export interface LocalToolsPayload {
+  tools: LocalToolReport[];
+  sessions_parsed: number;
 }
 
 export type WindowMode = "dashboard" | "compact";
@@ -142,6 +250,40 @@ export interface Settings {
   /** Ring gauge display mode: false = show `used`; true = show `remaining`
    * (countdown). */
   countdown_mode: boolean;
+  /** Currency used to render estimated costs: "auto" | "USD" | "CNY" | ... */
+  display_currency: string;
+  /** Multi-device hub role: "off" | "hub" | "agent". */
+  hub_mode: string;
+  /** Local port the hub listener binds to when `hub_mode == "hub"`. */
+  hub_port: number;
+  /** Remote hub base URL to report to when `hub_mode == "agent"`. */
+  hub_base: string;
+  /** Whether an agent actually reports its own usage. */
+  report_on: boolean;
+  /** Shared secret the hub requires (Bearer). Empty = no auth. */
+  hub_token: string;
+  /** 用户手动覆盖的汇率（币种代码 → 每 1 USD 兑该币种数值）。非法值后端忽略。 */
+  rate_overrides: Record<string, number>;
+}
+
+/** One effective exchange-rate row (backend `exchange::RateRow`). `source`:
+ * "override" = manual value, "live" = fetched from the rate source,
+ * "default" = built-in offline fallback. */
+export interface RateRow {
+  code: string;
+  rate: number;
+  /** ISO8601 of when this value was captured; "" for override/default rows. */
+  updated_at: string;
+  source: "override" | "live" | "default";
+}
+
+/** Full snapshot of effective rates (backend `exchange::RatesSnapshot`). */
+export interface RatesSnapshot {
+  rates: RateRow[];
+  /** ISO8601 of the most recent successful network fetch; "" when never. */
+  fetched_at: string;
+  /** Set when the refresh failed (offline etc.) — snapshot is still valid. */
+  warning: string | null;
 }
 
 /** Tagged union mirroring Rust `Credentials`. The `kind` field discriminates. */
@@ -160,11 +302,14 @@ export type TestResult =
 
 /** Short display name for compact surfaces (capsule pill / quick rows).
  * `provider_id` is an `instance_id` shaped like `"<kind>-<ts>-<n>"`, so the
- * kind is the prefix before the first `-`. Falls back to the account label. */
+ * kind is the whole `-`-free leading segment (`minimax_api`, `minimax`, ...).
+ * Falls back to the account label. */
 const SHORT_KIND_NAMES: Record<string, string> = {
   minimax: "MiniMax",
+  minimax_api: "MiniMax API",
   deepseek: "DeepSeek",
   volcengine: "Volcano",
+  volcengine_api: "Volcano API",
   openai: "OpenAI",
   gemini: "Gemini",
   anthropic: "Anthropic",
@@ -172,11 +317,14 @@ const SHORT_KIND_NAMES: Record<string, string> = {
   kimi: "Kimi",
   doubao: "豆包",
   spark: "Spark",
+  xiaomi_plan: "MiMo Plan",
+  xiaomi_api: "MiMo API",
 };
 
 export function providerShortName(providerId: string, displayName: string): string {
-  const dash = providerId.indexOf("-");
-  const kind = dash > 0 ? providerId.slice(0, dash) : providerId;
+  // kind never contains `-`, so the leading segment is the full kind (even
+  // when it contains `_` like `minimax_api`).
+  const [kind] = providerId.split("-");
   return SHORT_KIND_NAMES[kind] ?? displayName;
 }
 
@@ -301,4 +449,32 @@ export function mostCriticalWindow(
     }
   }
   return best;
+}
+
+/** 是否为按量付费（非配额制）：没有任何 quota>0 的窗口。 */
+export function isPayAsYouGo(snap: UsageSnapshot): boolean {
+  return mostCriticalWindow(snap) === null;
+}
+
+/**
+ * 按量付费 provider 的圆环/数值标签。
+ * countdown=true → 账户余额；false → 当月消费。
+ * 配额制 provider 或缺少对应数据时返回 null（调用方回退到原百分比）。
+ */
+export function payAsYouGoLabel(
+  snap: UsageSnapshot,
+  countdown: boolean,
+): string | null {
+  if (!isPayAsYouGo(snap)) return null;
+  if (countdown) {
+    const b = snap.windows.balance;
+    if (b && b.is_available && b.total != null) {
+      const unit: UsageUnit = b.currency?.toLowerCase() === "cny" ? "cny" : "usd";
+      if (unit === "cny" || unit === "usd") return formatUsage(b.total, unit);
+    }
+  } else {
+    const m = snap.windows.monthly;
+    if (m && m.used > 0) return formatUsage(m.used, m.unit);
+  }
+  return null;
 }

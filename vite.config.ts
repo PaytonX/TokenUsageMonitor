@@ -7,9 +7,9 @@ const port = process.env.TAURI_DEV_PORT
   ? Number(process.env.TAURI_DEV_PORT)
   : 5173;
 
-// Multi-page build: dashboard (index.html) + settings window (settings.html).
-// Both share the same src/lib/ modules - only the entry Svelte component
-// differs.
+// Multi-page build: dashboard (index.html) + settings window (settings.html)
+// + standalone full-window trend view (trend.html). All share src/lib/ modules;
+// only the entry Svelte component differs.
 export default defineConfig({
   plugins: [svelte()],
   clearScreen: false,
@@ -27,6 +27,8 @@ export default defineConfig({
       input: {
         dashboard: resolve(__dirname, "index.html"),
         settings: resolve(__dirname, "settings.html"),
+        trend: resolve(__dirname, "trend.html"),
+        tools: resolve(__dirname, "toolwindow.html"),
       },
     },
   },

@@ -2,6 +2,7 @@
   import {
     formatUsage,
     hexToRgb,
+    isPayAsYouGo,
     percent,
     remainingPercent,
     type BurnInfo,
@@ -61,6 +62,8 @@
       : `${Math.round(usedPct * 100)}%`,
   );
   let ringValue = $derived(countdown ? remaining : usedPct);
+  // 按量付费 provider：无配额窗口，百分比无意义，不渲染圆环（余额已由
+  // 头部 balance 展示，本月消费由底部 UsageBar 展示，避免信息重复）。
   let tone = $derived<"ok" | "warn" | "crit">(
     usedPct >= 0.95 ? "crit" : usedPct >= 0.8 ? "warn" : "ok",
   );
@@ -144,14 +147,16 @@
       <span class="card__tier">{snapshot.plan_tier}</span>
     {/if}
     <div class="card__head-right">
-      {#if balanceLabel}
+      {#if balanceLabel && !isPayAsYouGo(snapshot)}
         <span class="card__balance" title="账户余额">{balanceLabel}</span>
       {/if}
       <span class="card__ring" title={useDual ? dualLegend : undefined}>
-        {#if useDual}
-          <ProgressRing value={countdown ? shortRemain! : 1 - shortRemain!} outerValue={countdown ? longRemain! : 1 - longRemain!} label={ringLabel} size={36} stroke={4} {countdown} {accent} />
-        {:else}
-          <ProgressRing value={ringValue} label={ringLabel} size={36} stroke={4} {countdown} {accent} />
+        {#if !isPayAsYouGo(snapshot)}
+          {#if useDual}
+            <ProgressRing value={countdown ? shortRemain! : 1 - shortRemain!} outerValue={countdown ? longRemain! : 1 - longRemain!} label={ringLabel} size={36} stroke={4} {countdown} {accent} />
+          {:else}
+            <ProgressRing value={ringValue} label={ringLabel} size={36} stroke={4} {countdown} {accent} />
+          {/if}
         {/if}
       </span>
     </div>
@@ -165,19 +170,35 @@
   {/if}
 
   <div class="card__bars">
-    {#if w.five_hour}
+    {#if isPayAsYouGo(snapshot)}
+      <!-- 按量付费：统一对齐金额块（账户余额 / 本月消费），等宽右对齐。
+           替代头部的余额与底部的月度条，避免信息重复。 -->
+      {#if balanceLabel}
+        <div class="card__money-row">
+          <span class="card__money-label">账户余额</span>
+          <span class="card__money-value" title="账户余额">{balanceLabel}</span>
+        </div>
+      {/if}
+      {#if w.monthly}
+        <div class="card__money-row">
+          <span class="card__money-label">本月消费</span>
+          <span class="card__money-value">{formatUsage(w.monthly.used, w.monthly.unit)}</span>
+        </div>
+      {/if}
+    {/if}
+    {#if !isPayAsYouGo(snapshot) && w.five_hour}
       <UsageBar usage={w.five_hour} label="5 小时" />
       {#if w.five_hour.reset_at}
         <ResetCountdown resetAt={w.five_hour.reset_at} label="5h" />
       {/if}
     {/if}
-    {#if w.weekly}
+    {#if !isPayAsYouGo(snapshot) && w.weekly}
       <UsageBar usage={w.weekly} label="周用量" />
       {#if w.weekly.reset_at}
         <ResetCountdown resetAt={w.weekly.reset_at} label="周" />
       {/if}
     {/if}
-    {#if w.monthly}
+    {#if !isPayAsYouGo(snapshot) && w.monthly}
       <UsageBar usage={w.monthly} label={w.monthly.quota > 0 ? "月度总量" : "本月消费"} />
       {#if w.monthly.reset_at}
         <ResetCountdown resetAt={w.monthly.reset_at} label="月" />
@@ -290,6 +311,30 @@
     display: flex;
     flex-direction: column;
     gap: var(--tum-space-2);
+  }
+
+  /* 按量付费统一对齐金额块：两行 label/value 右对齐，等宽数字 */
+  .card__money-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--tum-space-2);
+  }
+
+  .card__money-label {
+    font-family: var(--tum-font-mono);
+    font-size: var(--tum-font-size-xs);
+    color: var(--tum-text-muted);
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+  }
+
+  .card__money-value {
+    font-family: var(--tum-font-mono);
+    font-size: var(--tum-font-size-sm);
+    color: var(--tum-text-primary);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.3px;
   }
 
   .card__error {

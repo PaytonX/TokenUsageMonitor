@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import {
     getProviders,
     getSettings,
@@ -11,13 +12,23 @@
     removeAccount,
     closeSettings,
     forceRefresh,
+    getDeviceReport,
+    getExchangeRates,
+    refreshExchangeRates,
     type ProviderCatalog,
     type Preset,
+    type PresetSubMode,
     type AccountMeta,
     type Settings,
     type Credentials,
     type TestResult,
+    type RatesSnapshot,
+    emitTabsChanged,
+    readHiddenTabs,
+    setTabEnabled,
+    type PageTab,
   } from "./lib";
+  import { CURRENCIES, USD_RATES, applyRatesSnapshot, type Currency } from "./lib/currency";
 
   type Tab = "general" | "accounts" | "interaction" | "about";
 
@@ -44,6 +55,8 @@
   let catalog = $state<ProviderCatalog | null>(null);
   let settings = $state<Settings | null>(null);
   let forms = $state<AccountForm[]>([]);
+  /** Current preset whose choice menu is expanded (null = none). */
+  let presetMenuFor = $state<Preset | null>(null);
   let pollInterval = $state<number>(0);
   let ringWindow = $state<string>("auto");
   let edgeSnap = $state(true);
@@ -51,6 +64,30 @@
   let notifyWarn = $state<number>(80);
   let notifyCrit = $state<number>(95);
   let countdownMode = $state(false);
+  let displayCurrency = $state("auto");
+  // 页签显隐：趋势/工具/模型可关闭（总量恒常驻）。立即持久化到 localStorage 并
+  // 广播 tabs-changed，让主面板重读。
+  let hiddenTabs = $state<PageTab[]>(readHiddenTabs());
+  function tabEnabled(t: PageTab): boolean {
+    return !hiddenTabs.includes(t);
+  }
+  function toggleTab(t: PageTab, enabled: boolean) {
+    setTabEnabled(t, enabled);
+    hiddenTabs = readHiddenTabs();
+    void emitTabsChanged();
+  }
+  let hubMode = $state("off");
+  let hubPort = $state(43210);
+  let hubBase = $state("");
+  let reportOn = $state(false);
+  let hubToken = $state("");
+  // 汇率（B.6/C6）：编辑态覆盖值 + 最近一次生效快照（供 placeholder/更新时间展示）。
+  let rateOverrides = $state<Record<string, number | undefined>>({});
+  let ratesSnapshot = $state<RatesSnapshot | null>(null);
+  let rateRefreshing = $state(false);
+  /** 可覆盖币种（USD 恒为 1，不提供覆盖输入）。 */
+  const OVERRIDE_CODES = CURRENCIES.filter((c) => c.code !== "USD");
+  let appVersion = $state("");
   let saving = $state(false);
   let savedFlash = $state(false);
   let busy = $state<string | null>(null);
@@ -107,7 +144,25 @@
       notifyWarn = s.notify_warn_percent ?? 80;
       notifyCrit = s.notify_crit_percent ?? 95;
       countdownMode = s.countdown_mode ?? false;
+      displayCurrency = s.display_currency ?? "auto";
+      hubMode = s.hub_mode ?? "off";
+      hubPort = s.hub_port ?? 43210;
+      hubBase = s.hub_base ?? "";
+      reportOn = s.report_on ?? false;
+      hubToken = s.hub_token ?? "";
+      rateOverrides = { ...(s.rate_overrides ?? {}) };
       forms = buildForms();
+      // 生效汇率快照（更新时间 / 告警展示用），并让本窗口立即采用。
+      getExchangeRates()
+        .then((snap) => {
+          ratesSnapshot = snap;
+          applyRatesSnapshot(snap);
+        })
+        .catch(() => {});
+      // 拉取后端版本号用于"关于"展示（失败时静默保留空）。
+      getDeviceReport()
+        .then((d) => (appVersion = d.version))
+        .catch(() => {});
     } catch (e) {
       genericError = String(e);
     }
@@ -142,6 +197,7 @@
   // --- Account lifecycle ----------------------------------------------------
 
   async function addAccount(preset: Preset) {
+    presetMenuFor = null;
     busy = `add-${preset.kind}`;
     genericError = null;
     try {
@@ -159,6 +215,21 @@
     } finally {
       busy = null;
     }
+  }
+
+  /** 多模式预设卡片 → 弹子模式选择菜单；单模式预设直接添加。 */
+  function onPresetClick(preset: Preset) {
+    if (preset.sub_modes?.length) {
+      presetMenuFor = presetMenuFor?.kind === preset.kind ? null : preset;
+    } else {
+      void addAccount(preset);
+    }
+  }
+
+  /** 从已展开菜单的预设，按选定子模式派生 account kind 后添加。 */
+  function addSubMode(mode: PresetSubMode) {
+    if (!presetMenuFor) return;
+    void addAccount({ ...presetMenuFor, kind: mode.kind, display_name: mode.label });
   }
 
   async function deleteAccount(f: AccountForm) {
@@ -252,9 +323,46 @@
     return Math.max(0, Math.min(100, Math.round(n)));
   }
 
-  async function handleSaveAll() {
-    if (!settings) return;
-    saving = true;
+  /** 把编辑态覆盖值整理为后端格式：未填 / 非法（≤0、NaN）的项剔除。 */
+  function buildRateOverrides(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const { code } of OVERRIDE_CODES) {
+      const v = rateOverrides[code];
+      if (v !== undefined && Number.isFinite(v) && v > 0) out[code] = v;
+    }
+    return out;
+  }
+
+  /** 覆盖留空时展示的"自动值"提示：live 缓存 > 内置默认。 */
+  function autoRateFor(code: string): string {
+    const row = ratesSnapshot?.rates.find(
+      (r) => r.code === code && r.source !== "override",
+    );
+    return row ? String(row.rate) : String(USD_RATES[code as Currency]);
+  }
+
+  function formatRateTime(iso: string): string {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  }
+
+  /** 手动强制拉取一次汇率并落库；结果经后端广播同步到所有窗口。 */
+  async function handleRateRefresh() {
+    rateRefreshing = true;
+    try {
+      const snap = await refreshExchangeRates();
+      ratesSnapshot = snap;
+      applyRatesSnapshot(snap);
+      genericError = null;
+    } catch (e) {
+      genericError = String(e);
+    } finally {
+      rateRefreshing = false;
+    }
+  }
+
+  async function persistSettings(): Promise<boolean> {
+    if (!settings) return true;
     genericError = null;
     try {
       const next: Settings = {
@@ -267,22 +375,59 @@
         notify_warn_percent: clampPercent(notifyWarn),
         notify_crit_percent: clampPercent(notifyCrit),
         countdown_mode: countdownMode,
+        display_currency: displayCurrency,
+        hub_mode: hubMode,
+        hub_port: hubPort,
+        hub_base: hubBase,
+        report_on: reportOn,
+        hub_token: hubToken,
+        rate_overrides: buildRateOverrides(),
       };
       await saveSettings(next);
+      // Mirror the display-currency choice into localStorage so every window
+      // (model panel, detail cards) resolves it instantly without an IPC read.
+      try {
+        localStorage.setItem("tum.currency", displayCurrency);
+      } catch {
+        /* ignore */
+      }
       settings = next;
-      savedFlash = true;
-      setTimeout(() => (savedFlash = false), 2000);
-      // Trigger a refresh so the dashboard picks up newly-enabled accounts.
-      await forceRefresh();
+      // 汇率：合并新覆盖值并广播其它窗口（force=false，离线不阻塞）；失败忽略。
+      // 放在 persistSettings 里，让"保存"与"保存并关闭"两条路径都覆盖。
+      try {
+        const snap = await getExchangeRates();
+        ratesSnapshot = snap;
+        applyRatesSnapshot(snap);
+      } catch {
+        /* ignore */
+      }
+      return true;
     } catch (e) {
       genericError = String(e);
-    } finally {
-      saving = false;
+      return false;
     }
   }
 
+  async function handleSaveAll() {
+    saving = true;
+    const ok = await persistSettings();
+    if (ok) {
+      savedFlash = true;
+      setTimeout(() => (savedFlash = false), 2000);
+      // 触发一次刷新，让主面板立即反映新启用的账户；失败不阻塞保存。
+      try {
+        await forceRefresh();
+      } catch (e) {
+        genericError = String(e);
+      }
+    }
+    saving = false;
+  }
+
   async function handleClose() {
-    await handleSaveAll();
+    // 关闭只做快速持久化并立即隐藏窗口，不等待网络轮询（save_settings 后端
+    // 已发 settings_wake，主面板会自动重新轮询），避免"保存中"卡顿假死感。
+    await persistSettings();
     await closeSettings();
   }
 
@@ -307,6 +452,12 @@
   onMount(() => {
     refreshAll();
   });
+async function handleMinimize() {
+    await getCurrentWindow().minimize();
+  }
+  async function handleToggleMaximize() {
+    await getCurrentWindow().toggleMaximize();
+  }
 </script>
 
 <main class="settings" oncontextmenu={(e) => e.preventDefault()}>
@@ -315,9 +466,13 @@
       <span class="settings__dot"></span>
       <span class="settings__title">TokenUsageMonitor</span>
     </div>
-    <button class="settings__close" onclick={handleClose} aria-label="保存并关闭">
-      ✕
-    </button>
+    <div class="settings__win">
+      <button type="button" class="settings__win-btn" aria-label="最小化" onclick={handleMinimize} onpointerdown={(e) => e.stopPropagation()}>—</button>
+      <button type="button" class="settings__win-btn" aria-label="最大化/还原" onclick={handleToggleMaximize} onpointerdown={(e) => e.stopPropagation()}>▢</button>
+      <button class="settings__close" onclick={handleClose} aria-label="保存并关闭">
+        ✕
+      </button>
+    </div>
   </header>
 
   <div class="settings__body">
@@ -398,6 +553,86 @@
               </label>
             </div>
           </div>
+
+          <div class="section">
+            <h3 class="section__title">展示币种</h3>
+            <p class="hint">模型页签与详情卡中估算成本的显示币种。“自动”默认人民币（CNY）。</p>
+            <label class="interval">
+              <select class="interval-select" bind:value={displayCurrency}>
+                <option value="auto">自动（人民币 CNY）</option>
+                <option value="CNY">人民币 (CNY)</option>
+                <option value="USD">美元 (USD)</option>
+                <option value="TWD">新台币 (TWD)</option>
+                <option value="HKD">港币 (HKD)</option>
+                <option value="JPY">日元 (JPY)</option>
+                <option value="EUR">欧元 (EUR)</option>
+                <option value="GBP">英镑 (GBP)</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="section">
+            <h3 class="section__title">汇率覆盖</h3>
+            <p class="hint">应用每 6 小时检查一次自动汇率（缓存 24 小时）；在此可将某币种固定为手动值（每 1 USD 兑该币种），留空使用自动值，离线时回退内置默认。</p>
+            <div class="rate-grid">
+              {#each OVERRIDE_CODES as c (c.code)}
+                <label class="field">
+                  <span class="field__label">{c.label}</span>
+                  <input
+                    class="field__input"
+                    type="number"
+                    step="any"
+                    min="0"
+                    placeholder={autoRateFor(c.code)}
+                    bind:value={rateOverrides[c.code]}
+                  />
+                </label>
+              {/each}
+            </div>
+            <div class="behavior-row">
+              <div class="behavior-info">
+                <span class="behavior-label">
+                  {#if ratesSnapshot?.fetched_at}
+                    自动汇率更新于 {formatRateTime(ratesSnapshot.fetched_at)}
+                  {:else}
+                    尚未拉取自动汇率（使用内置默认值）
+                  {/if}
+                </span>
+                <span class="behavior-hint">
+                  {ratesSnapshot?.warning ?? "覆盖值在保存设置后生效，并同步到所有窗口。"}
+                </span>
+              </div>
+              <button class="btn btn--ghost" type="button" disabled={rateRefreshing} onclick={handleRateRefresh}>
+                {rateRefreshing ? "刷新中…" : "立即刷新"}
+              </button>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3 class="section__title">页签显示</h3>
+            <p class="hint">「总量」页签始终显示；其余页签可在此关闭，关闭后该页签不显示、相关功能不启用。</p>
+            {#each [
+              { key: "trend", label: "趋势", hint: "跨 Provider 逐日用量看板" },
+              { key: "tools", label: "工具", hint: "本机 AI 工具（Claude Code / MiniMax Code / Hermes…）用量" },
+              { key: "models", label: "模型", hint: "按模型维度聚合的 token / 成本统计" },
+              { key: "devices", label: "设备", hint: "本机设备信息与多端同步" },
+            ] as t (t.key)}
+              <div class="behavior-row">
+                <div class="behavior-info">
+                  <span class="behavior-label">{t.label}</span>
+                  <span class="behavior-hint">{t.hint}</span>
+                </div>
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    checked={tabEnabled(t.key as PageTab)}
+                    onchange={(e) => toggleTab(t.key as PageTab, (e.currentTarget as HTMLInputElement).checked)}
+                  />
+                  <span class="toggle__track"><span class="toggle__thumb"></span></span>
+                </label>
+              </div>
+            {/each}
+          </div>
         </div>
 
       {:else if tab === "accounts"}
@@ -412,28 +647,62 @@
             <h3 class="section__title">添加账户</h3>
             <div class="preset-grid">
               {#each catalog?.presets ?? [] as preset (preset.kind)}
-                <button
-                  class="preset-card"
-                  style="--preset-accent: {preset.default_accent}"
-                  disabled={busy?.startsWith("add-")}
-                  onclick={() => addAccount(preset)}
-                >
-                  <span class="preset-card__swatch" aria-hidden="true"></span>
-                  <span class="preset-card__text">
-                    <span class="preset-card__name">{preset.display_name}</span>
-                    <span class="preset-card__auth">
-                      {preset.auth_kind === "access_key_secret"
-                        ? "Access Key + Secret"
-                        : "Bearer API Key"}
+                <div class="preset-card-wrap">
+                  <button
+                    class="preset-card"
+                    class:preset-card--menu-open={presetMenuFor?.kind === preset.kind}
+                    style="--preset-accent: {preset.default_accent}"
+                    disabled={busy?.startsWith("add-")}
+                    onclick={() => onPresetClick(preset)}
+                  >
+                    <span class="preset-card__swatch" aria-hidden="true"></span>
+                    <span class="preset-card__text">
+                      <span class="preset-card__name">{preset.display_name}</span>
+                      <span class="preset-card__auth">
+                        {preset.auth_kind === "access_key_secret"
+                          ? "Access Key + Secret"
+                          : "Bearer API Key"}
+                      </span>
                     </span>
-                  </span>
-                  <span class="preset-card__add">
-                    {busy === `add-${preset.kind}` ? "添加中…" : "＋ 添加"}
-                  </span>
-                </button>
+                    <span class="preset-card__add">
+                      {busy === `add-${preset.kind}`
+                        ? "添加中…"
+                        : preset.sub_modes?.length
+                          ? "选择计费方式 ▾"
+                          : "＋ 添加"}
+                    </span>
+                  </button>
+                  {#if presetMenuFor?.kind === preset.kind && preset.sub_modes?.length}
+                    <div class="preset-menu" role="menu" aria-label={`选择 ${preset.display_name} 计费方式`}>
+                      {#each preset.sub_modes as m (m.kind)}
+                        <button
+                          class="preset-menu__item"
+                          class:is-limited={m.limited}
+                          role="menuitem"
+                          title={m.note || m.label}
+                          disabled={m.limited || busy?.startsWith("add-")}
+                          onclick={() => addSubMode(m)}
+                        >
+                          <span class="preset-menu__label">{m.label}</span>
+                          {#if m.limited}
+                            <span class="preset-menu__badge">未实装</span>
+                          {/if}
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
               {/each}
             </div>
           </div>
+
+          {#if presetMenuFor}
+            <div
+              class="preset-menu-backdrop"
+              onclick={() => (presetMenuFor = null)}
+              aria-hidden="true"
+            ></div>
+          {/if}
 
           <div class="section">
             <h3 class="section__title">
@@ -633,6 +902,50 @@
           </div>
 
           <div class="section">
+            <h3 class="section__title">多端同步</h3>
+            <p class="hint">本机作为 hub 接收其它设备上报；或以 agent 把本机用量上报到指定 hub。改动需重启应用生效。</p>
+            <label class="interval">
+              <select class="interval-select" bind:value={hubMode}>
+                <option value="off">关闭</option>
+                <option value="hub">本机作为 hub（接收上报）</option>
+                <option value="agent">作为 agent（上报到远端 hub）</option>
+              </select>
+            </label>
+            {#if hubMode === "hub"}
+              <label class="interval">
+                <input type="number" min="1024" max="65535" bind:value={hubPort} />
+                <span class="interval__hint">监听端口（默认 43210）</span>
+              </label>
+            {/if}
+            {#if hubMode === "agent"}
+              <label class="interval">
+                <input type="text" placeholder="http://192.168.1.20:43210" bind:value={hubBase} />
+                <span class="interval__hint">hub 地址</span>
+              </label>
+              <div class="behavior-row">
+                <div class="behavior-info">
+                  <span class="behavior-label">上报本机用量</span>
+                  <span class="behavior-hint">每 30 秒向 hub 上报本机工具 token 与 Provider 数量。</span>
+                </div>
+                <label class="toggle">
+                  <input type="checkbox" bind:checked={reportOn} />
+                  <span class="toggle__track"><span class="toggle__thumb"></span></span>
+                </label>
+              </div>
+            {/if}
+            {#if hubMode !== "off"}
+              <label class="interval">
+                <input
+                  type="password"
+                  placeholder="（留空则不鉴权）"
+                  bind:value={hubToken}
+                />
+                <span class="interval__hint">共享密钥 · hub 与 agent 两端须一致，Bearer 鉴权</span>
+              </label>
+            {/if}
+          </div>
+
+          <div class="section">
             <h3 class="section__title">用量告急通知</h3>
             <div class="behavior-row">
               <div class="behavior-info">
@@ -675,7 +988,9 @@
           <h2 class="pane__title">关于与诊断</h2>
 
           <div class="section">
-            <h3 class="section__title">TokenUsageMonitor</h3>
+            <h3 class="section__title">
+              TokenUsageMonitor {#if appVersion}<span class="about-ver">v{appVersion}</span>{/if}
+            </h3>
             <p class="hint">
               一个轻量的透明桌面 AI 用量监控面板。边栏小窗 + 热力图 + 消耗速率估算，
               让你在开发 AI 应用时随时掌握各家的额度余量。支持 MiniMax Token
@@ -686,7 +1001,24 @@
               <li>支持多账户：同一来源可添加多个独立账户</li>
               <li>凭证由 Windows 凭据管理器（DPAPI）加密保存</li>
               <li>热力图历史数据存储于本地 SQLite</li>
+              <li>本地工具用量采集 + 多端同步（hub）</li>
             </ul>
+          </div>
+
+          <div class="section">
+            <h3 class="section__title">开源致谢</h3>
+            <p class="hint">本项目建立在以下优秀开源项目之上，衷心感谢各项目与维护者的贡献：</p>
+            <ul class="about-list">
+              <li><b>Tauri</b> —— 桌面应用框架（Rust 后端 + Web 前端）</li>
+              <li><b>Svelte</b> —— 响应式前端框架</li>
+              <li><b>tokio</b> —— 异步运行时</li>
+              <li><b>serde</b> —— 序列化框架</li>
+              <li><b>chrono</b> —— 时间与日期处理</li>
+              <li><b>reqwest / rustls</b> —— HTTP 客户端与 TLS</li>
+              <li><b>rusqlite</b> —— SQLite 绑定</li>
+              <li><b>keyring</b> —— 基于 Windows DPAPI 的安全凭证存储</li>
+            </ul>
+            <p class="hint">用量监控与多端同步的思路借鉴自 tokscale。</p>
           </div>
 
           <div class="section">
@@ -719,7 +1051,15 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    background: var(--tum-bg-solid);
+    /* 与主界面一致的分层玻璃：强调色径向光晕 + 半透明暗底 + 背景模糊。 */
+    background:
+      radial-gradient(120% 120% at 0% 0%, rgba(76, 194, 255, 0.07), transparent 42%),
+      rgba(24, 26, 30, 0.82);
+    border: 1px solid var(--tum-border);
+    border-radius: var(--tum-radius-lg);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-sizing: border-box;
     color: var(--tum-text-primary);
     font-family: var(--tum-font);
     overflow: hidden;
@@ -773,6 +1113,32 @@
   .settings__close:hover {
     color: var(--tum-danger);
     background: var(--tum-danger-fill);
+  }
+
+  .settings__win {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    -webkit-app-region: no-drag;
+  }
+
+  .settings__win-btn {
+    all: unset;
+    cursor: pointer;
+    color: var(--tum-text-muted);
+    width: 26px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--tum-radius-xs);
+    font-size: 12px;
+    line-height: 1;
+    transition: color 0.15s ease, background 0.15s ease;
+  }
+
+  .settings__win-btn:hover {
+    color: var(--tum-text-primary);
+    background: var(--tum-surface-hover);
   }
 
   .settings__body {
@@ -910,6 +1276,16 @@
     line-height: 1.5;
   }
 
+  .about-ver {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--tum-accent, #4cc2ff);
+    background: rgba(76, 194, 255, 0.12);
+    border-radius: 999px;
+    padding: 1px 8px;
+    vertical-align: middle;
+  }
+
   /* --- Interval / select ------------------------------------------------ */
   .interval {
     display: flex;
@@ -1003,6 +1379,16 @@
     max-width: 120px;
   }
 
+  .rate-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: var(--tum-space-3);
+  }
+
+  .rate-grid .field__input {
+    width: 100%;
+  }
+
   /* --- Preset cards ------------------------------------------------------ */
   .preset-grid {
     display: grid;
@@ -1036,6 +1422,90 @@
   .preset-card:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  /* 单卡片容器：撑满网格格，作为其下方弹出菜单的相对定位锚点 */
+  .preset-card-wrap {
+    position: relative;
+  }
+
+  .preset-card--menu-open {
+    border-color: var(--preset-accent);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--preset-accent) 35%, transparent);
+  }
+
+  /* xiaomi 下拉二选一菜单 */
+  .preset-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    padding: 4px;
+    gap: 2px;
+    border: 1px solid var(--tum-border-strong);
+    border-radius: var(--tum-radius-md);
+    background: rgba(30, 32, 36, 0.98);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+  }
+
+  .preset-menu__item {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 8px 10px;
+    border-radius: var(--tum-radius-sm);
+    color: var(--tum-text-primary);
+    font-size: var(--tum-font-size-base);
+    font-family: var(--tum-font);
+    -webkit-app-region: no-drag;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .preset-menu__item:hover:not(:disabled) {
+    background: var(--tum-accent-fill);
+    color: var(--tum-accent);
+  }
+
+  .preset-menu__item:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* 骨架 / 未实装模式：整体更暗淡 */
+  .preset-menu__item.is-limited {
+    color: var(--tum-text-muted);
+  }
+
+  .preset-menu__label {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  /* “未实装”警示徽标 */
+  .preset-menu__badge {
+    flex: none;
+    margin-left: 8px;
+    padding: 0 6px;
+    font-size: var(--tum-font-size-xs);
+    line-height: 16px;
+    color: var(--tum-warning);
+    border: 1px solid color-mix(in srgb, var(--tum-warning) 45%, transparent);
+    border-radius: var(--tum-radius-pill);
+    letter-spacing: 0.3px;
+  }
+
+  /* 点击菜单外任意处关闭（透明遮罩） */
+  .preset-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
   }
 
   .preset-card__swatch {

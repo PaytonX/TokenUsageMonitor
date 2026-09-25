@@ -15,10 +15,11 @@
       {
         "label": "dashboard",
         "title": "TokenUsageMonitor",
-        "width": 360,
-        "height": 600,
+        "width": 400,
+        "height": 680,
         "decorations": false,
         "transparent": true,
+        "dragDropEnabled": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "resizable": false,
