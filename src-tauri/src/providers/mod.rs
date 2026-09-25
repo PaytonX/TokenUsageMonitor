@@ -13,6 +13,7 @@ pub mod mock;
 pub mod openai;
 pub mod volcengine;
 pub mod volcengine_api;
+pub mod xai;
 pub mod xiaomi;
 
 use async_trait::async_trait;
