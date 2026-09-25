@@ -7,11 +7,13 @@ import type {
   AccountMeta,
   BurnInfo,
   Credentials,
+  DetectedCodexToken,
   DeviceInfo,
   HeatmapCell,
   ProviderCatalog,
   ProviderError,
   ProviderState,
+  ProxyTestResult,
   Settings,
   TestResult,
   UsageSnapshot,
@@ -131,6 +133,19 @@ export async function testProvider(
   } catch (e) {
     return { ok: false, message: String(e) };
   }
+}
+
+/** Test an HTTP/SOCKS proxy without persisting it. Always resolves to a
+ * structured result; only rejects if the backend itself fails to build a
+ * client (e.g. unsupported proxy scheme). */
+export async function testProxy(url: string): Promise<ProxyTestResult> {
+  return invoke<ProxyTestResult>("test_proxy", { url });
+}
+
+/** Read the local ChatGPT Codex login (`~/.codex/auth.json`). Resolves to
+ * null when the file is absent; rejects only on an unreadable/invalid file. */
+export async function detectCodexToken(): Promise<DetectedCodexToken | null> {
+  return invoke<DetectedCodexToken | null>("detect_codex_token");
 }
 
 // Event listeners ----------------------------------------------------------

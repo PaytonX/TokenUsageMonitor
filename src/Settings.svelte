@@ -102,7 +102,9 @@
   const canSave = $derived(settings !== null);
 
   function authKindFor(kind: string): "bearer_key" | "access_key_secret" {
-    return presetMap.get(kind)?.auth_kind ?? "bearer_key";
+    return (presetMap.get(kind)?.auth_kind ?? "bearer_key") as
+      | "bearer_key"
+      | "access_key_secret";
   }
 
   function isAccessKey(kind: string): boolean {

@@ -144,9 +144,12 @@ export interface PresetSubMode {
 export interface Preset {
   kind: string;
   display_name: string;
-  auth_kind: "bearer_key" | "access_key_secret";
+  auth_kind: "bearer_key" | "access_key_secret" | "local_token";
   default_accent: string;
   sub_modes?: PresetSubMode[];
+  /** True for providers that are not billing-stable / are best-effort. The
+   * UI tags these "实验性" and may auto-detect local credentials. */
+  experimental?: boolean;
 }
 
 /** Mirrors Rust `AccountWithInfo` (ipc.rs): an account plus its credential
@@ -264,6 +267,9 @@ export interface Settings {
   hub_token: string;
   /** 用户手动覆盖的汇率（币种代码 → 每 1 USD 兑该币种数值）。非法值后端忽略。 */
   rate_overrides: Record<string, number>;
+  /** Optional outbound proxy (http/https/socks5). Null/empty/blank = direct.
+   * Changing this rebuilds the shared HTTP client and the provider registry. */
+  proxy_url?: string | null;
 }
 
 /** One effective exchange-rate row (backend `exchange::RateRow`). `source`:
@@ -293,12 +299,30 @@ export type Credentials =
       kind: "access_key_secret";
       access_key: string;
       secret_key: string;
-    };
+    }
+  | { kind: "local_token"; token: string };
 
 /** Result of `test_provider` IPC: either a snapshot preview or error string. */
 export type TestResult =
   | { ok: true; snapshot: UsageSnapshot }
   | { ok: false; message: string };
+
+/** Result of `test_proxy` IPC (Rust `ProxyTestResult`, camelCase wire).
+ * `status` is null when the request never got a response (transport error). */
+export interface ProxyTestResult {
+  ok: boolean;
+  status: number | null;
+  error: string | null;
+}
+
+/** Detected ChatGPT Codex local login (Rust `DetectedCodexToken`, camelCase
+ * wire), read from `~/.codex/auth.json`. `token` maps the Rust
+ * `access_token`; empty strings mean the field was absent on disk. */
+export interface DetectedCodexToken {
+  token: string;
+  accountId: string;
+  lastRefresh: string;
+}
 
 /** Short display name for compact surfaces (capsule pill / quick rows).
  * `provider_id` is an `instance_id` shaped like `"<kind>-<ts>-<n>"`, so the
@@ -315,6 +339,9 @@ const SHORT_KIND_NAMES: Record<string, string> = {
   anthropic: "Anthropic",
   qwen: "Qwen",
   kimi: "Kimi",
+  kimi_global: "Kimi Global",
+  xai: "xAI",
+  codex: "Codex",
   doubao: "豆包",
   spark: "Spark",
   xiaomi_plan: "MiMo Plan",
