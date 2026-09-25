@@ -45,6 +45,12 @@ fn fmt_f64(v: f64) -> String {
     format!("{v:.6}")
 }
 
+/// Parse a float, rejecting `NaN` / infinity so a corrupted KV row can
+/// neither freeze delta accounting nor leak into snapshots.
+fn parse_finite(s: &str) -> Option<f64> {
+    s.trim().parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
 /// Billing unit of a site: CNY on the CN host, USD on the global one.
 fn site_usage_unit(base: &str) -> UsageUnit {
     if base == GLOBAL_BASE {
@@ -70,6 +76,8 @@ fn site_currency(base: &str) -> &'static str {
 struct BalanceResponse {
     #[serde(default)]
     code: i32,
+    #[serde(default)]
+    msg: Option<String>,
     #[serde(default)]
     data: BalanceData,
 }
@@ -129,7 +137,7 @@ impl KimiProvider {
             .kv_get(self.self_id(), KV_LAST_BALANCE)
             .ok()
             .flatten()
-            .and_then(|s| s.trim().parse::<f64>().ok());
+            .and_then(|s| parse_finite(&s));
 
         match baseline {
             None => {
@@ -154,7 +162,7 @@ impl KimiProvider {
                         .kv_get(self.self_id(), KV_MONTH_TOPUP)
                         .ok()
                         .flatten()
-                        .and_then(|s| s.trim().parse::<f64>().ok())
+                        .and_then(|s| parse_finite(&s))
                         .unwrap_or(0.0);
                     let _ = self.storage.kv_set(
                         self.self_id(),
@@ -187,7 +195,7 @@ impl KimiProvider {
                 .kv_get(self.self_id(), KV_MONTH_START_BALANCE)
                 .ok()
                 .flatten()
-                .and_then(|s| s.trim().parse::<f64>().ok())
+                .and_then(|s| parse_finite(&s))
                 .unwrap_or(current)
         };
 
@@ -196,7 +204,7 @@ impl KimiProvider {
             .kv_get(self.self_id(), KV_MONTH_TOPUP)
             .ok()
             .flatten()
-            .and_then(|s| s.trim().parse::<f64>().ok())
+            .and_then(|s| parse_finite(&s))
             .unwrap_or(0.0);
 
         let used = (month_start + topup - current).max(0.0);
@@ -261,22 +269,30 @@ impl Provider for KimiProvider {
         }
         let parsed: BalanceResponse = resp.json().await?;
 
-        // Only run the delta accounting when the API reports success;
-        // otherwise a zero/empty body would corrupt the baselines.
-        let mut balance = None;
-        let mut monthly = None;
-        if parsed.code == 0 {
-            let current = parsed.data.available_balance;
-            self.record_balance_delta(current);
-            monthly = self.month_spend_window(current);
-            balance = Some(BalanceInfo {
-                total: parsed.data.available_balance,
-                granted: parsed.data.voucher_balance,
-                topped_up: parsed.data.cash_balance,
-                currency: site_currency(self.base).to_string(),
-                is_available: true,
+        // Moonshot reports business errors as HTTP 200 with a non-zero
+        // `code`; surface them instead of returning an empty snapshot.
+        if parsed.code != 0 {
+            let detail = parsed.msg.map(|m| format!(": {m}")).unwrap_or_default();
+            return Err(ProviderError::Network {
+                message: format!("Kimi balance code {}{}", parsed.code, detail),
             });
         }
+        if !parsed.data.available_balance.is_finite() {
+            return Err(ProviderError::Network {
+                message: "Kimi balance returned non-finite value".into(),
+            });
+        }
+
+        let current = parsed.data.available_balance;
+        self.record_balance_delta(current);
+        let monthly = self.month_spend_window(current);
+        let balance = Some(BalanceInfo {
+            total: parsed.data.available_balance,
+            granted: parsed.data.voucher_balance,
+            topped_up: parsed.data.cash_balance,
+            currency: site_currency(self.base).to_string(),
+            is_available: true,
+        });
 
         let heatmap: Option<Vec<HeatmapCell>> = self
             .storage
@@ -328,5 +344,116 @@ mod tests {
         assert_eq!(site_usage_unit(GLOBAL_BASE), UsageUnit::Usd);
         assert_eq!(site_currency(CN_BASE), "CNY");
         assert_eq!(site_currency(GLOBAL_BASE), "USD");
+    }
+
+    fn temp_storage(tag: &str) -> Arc<Storage> {
+        let path = std::env::temp_dir().join(format!(
+            "pulse_kimi_test_{}_{}_{}.db",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        Arc::new(Storage::open(&path).unwrap())
+    }
+
+    #[test]
+    fn balance_error_code_surfaces_as_network_error() {
+        let parsed: BalanceResponse =
+            serde_json::from_str(r#"{"code":-1,"msg":"invalid api key"}"#)
+                .expect("parse error fixture");
+        assert_eq!(parsed.code, -1);
+        assert_eq!(parsed.msg, Some("invalid api key".to_string()));
+    }
+
+    #[test]
+    fn first_poll_establishes_baseline_only() {
+        let storage = temp_storage("baseline");
+        let provider =
+            KimiProvider::new(Client::new(), storage.clone(), "k1".into(), "Kimi".into());
+        provider.record_balance_delta(100.0);
+        assert_eq!(
+            storage.kv_get("k1", KV_LAST_BALANCE).unwrap(),
+            Some("100.000000".to_string())
+        );
+        assert!(storage.load_heatmap("k1", 200).unwrap().is_empty());
+    }
+
+    #[test]
+    fn balance_drop_records_spend() {
+        let storage = temp_storage("drop");
+        let provider =
+            KimiProvider::new(Client::new(), storage.clone(), "k1".into(), "Kimi".into());
+        provider.record_balance_delta(100.0);
+        provider.record_balance_delta(90.0);
+        let cells = storage.load_heatmap("k1", 200).unwrap();
+        assert_eq!(cells.len(), 1);
+        assert!((cells[0].value - 10.0).abs() < 1e-9);
+        assert!(matches!(cells[0].unit, UsageUnit::Cny));
+        assert_eq!(
+            storage.kv_get("k1", KV_LAST_BALANCE).unwrap(),
+            Some("90.000000".to_string())
+        );
+    }
+
+    #[test]
+    fn balance_rise_tracks_topup_without_spend() {
+        let storage = temp_storage("rise");
+        let provider =
+            KimiProvider::new(Client::new(), storage.clone(), "k1".into(), "Kimi".into());
+        provider.record_balance_delta(90.0);
+        provider.record_balance_delta(100.0);
+        assert!(storage.load_heatmap("k1", 200).unwrap().is_empty());
+        assert_eq!(
+            storage.kv_get("k1", KV_MONTH_TOPUP).unwrap(),
+            Some("10.000000".to_string())
+        );
+        assert_eq!(
+            storage.kv_get("k1", KV_LAST_BALANCE).unwrap(),
+            Some("100.000000".to_string())
+        );
+    }
+
+    #[test]
+    fn tiny_delta_leaves_baseline_untouched() {
+        let storage = temp_storage("tiny");
+        let provider =
+            KimiProvider::new(Client::new(), storage.clone(), "k1".into(), "Kimi".into());
+        provider.record_balance_delta(100.0);
+        provider.record_balance_delta(100.0000005);
+        assert_eq!(
+            storage.kv_get("k1", KV_LAST_BALANCE).unwrap(),
+            Some("100.000000".to_string())
+        );
+        assert!(storage.load_heatmap("k1", 200).unwrap().is_empty());
+        assert_eq!(storage.kv_get("k1", KV_MONTH_TOPUP).unwrap(), None);
+    }
+
+    #[test]
+    fn corrupted_nan_baseline_is_ignored() {
+        let storage = temp_storage("nan");
+        let provider =
+            KimiProvider::new(Client::new(), storage.clone(), "k1".into(), "Kimi".into());
+        provider.record_balance_delta(100.0);
+        storage
+            .kv_set("k1", KV_LAST_BALANCE, "NaN")
+            .unwrap();
+        provider.record_balance_delta(90.0);
+        assert_eq!(
+            storage.kv_get("k1", KV_LAST_BALANCE).unwrap(),
+            Some("90.000000".to_string())
+        );
+        assert!(storage.load_heatmap("k1", 200).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_finite_rejects_non_finite() {
+        assert_eq!(parse_finite("1.5"), Some(1.5));
+        assert!(parse_finite("NaN").is_none());
+        assert!(parse_finite("inf").is_none());
+        assert!(parse_finite("x").is_none());
     }
 }
