@@ -126,10 +126,6 @@ impl CodexProvider {
             label,
         }
     }
-
-    fn self_id(&self) -> &str {
-        &self.instance_id
-    }
 }
 
 #[async_trait]
