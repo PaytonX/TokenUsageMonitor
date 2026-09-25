@@ -165,9 +165,13 @@ fn authorized(authorization: Option<&str>, token: &str) -> bool {
 }
 
 /// 作为 agent 把本机用量上报到远端 hub。`token` 非空时附 `Authorization: Bearer`。
-pub async fn report_to_hub(base: &str, device: &HubDevice, token: &str) -> Result<(), String> {
+pub async fn report_to_hub(
+    client: &reqwest::Client,
+    base: &str,
+    device: &HubDevice,
+    token: &str,
+) -> Result<(), String> {
     let url = format!("{}/ingest", base.trim_end_matches('/'));
-    let client = reqwest::Client::new();
     let body = serde_json::to_vec(device).map_err(|e| e.to_string())?;
     let mut req = client
         .post(&url)
@@ -189,9 +193,12 @@ pub async fn report_to_hub(base: &str, device: &HubDevice, token: &str) -> Resul
 }
 
 /// 作为 client 拉取 hub 的设备列表。`token` 非空时附 `Authorization: Bearer`。
-pub async fn fetch_devices(base: &str, token: &str) -> Result<Vec<HubDevice>, String> {
+pub async fn fetch_devices(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+) -> Result<Vec<HubDevice>, String> {
     let url = format!("{}/devices", base.trim_end_matches('/'));
-    let client = reqwest::Client::new();
     let mut req = client
         .get(&url)
         .timeout(std::time::Duration::from_secs(8));

@@ -267,6 +267,7 @@ pub fn run() {
                     let store_reporter = store.clone();
                     let local_reporter = local.clone();
                     let settings_reporter = settings_store.clone();
+                    let http_reporter = http.clone();
                     tauri::async_runtime::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         loop {
@@ -283,7 +284,13 @@ pub fn run() {
                                     &id, &host, &os, &arch, &ver,
                                     tool_tokens, provider_count, tool_count, daily,
                                 );
-                                let _ = hub::report_to_hub(&base, &device, &token).await;
+                                let _ = hub::report_to_hub(
+                                    &http_reporter,
+                                    &base,
+                                    &device,
+                                    &token,
+                                )
+                                .await;
                             }
                             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                         }

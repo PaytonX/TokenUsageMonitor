@@ -226,7 +226,7 @@ pub async fn get_hub_devices(
     let mut warning: Option<String> = None;
     let mut sources: Vec<Vec<HubDevice>> = Vec::new();
     if s.hub_mode == "agent" && !s.hub_base.is_empty() {
-        match crate::hub::fetch_devices(&s.hub_base, &s.hub_token).await {
+        match crate::hub::fetch_devices(&state.http, &s.hub_base, &s.hub_token).await {
             Ok(remote) => sources.push(remote),
             Err(e) => warning = Some(format!("远端 hub 拉取失败：{e}")),
         }
