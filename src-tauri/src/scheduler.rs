@@ -186,6 +186,28 @@ pub fn spawn_one(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
     });
 }
 
+/// Pure core of `still_registered`: a loop is live only while `provider` is
+/// still the instance registered under `id`. A removed account (no entry) or
+/// a rebuilt/replaced instance (different `Arc`, e.g. after a proxy change
+/// or an account edit) makes this loop stale.
+fn is_current(
+    registry: &crate::providers::ProviderRegistry,
+    provider: &Arc<dyn Provider>,
+    id: &str,
+) -> bool {
+    registry
+        .get(id)
+        .map(|current| Arc::ptr_eq(&current, provider))
+        .unwrap_or(false)
+}
+
+/// `AppHandle` flavour of [`is_current`] used by `poll_loop`.
+async fn still_registered(app: &AppHandle, provider: &Arc<dyn Provider>, id: &str) -> bool {
+    let state = app.state::<AppState>();
+    let registry = state.registry.read().await;
+    is_current(&registry, provider, id)
+}
+
 /// Per-provider polling loop.
 ///
 /// - `tick`: fires on the effective interval (Settings override > per-provider
@@ -213,6 +235,9 @@ async fn poll_loop(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
                 if *pause_rx.borrow() {
                     continue;
                 }
+                if !still_registered(&app, &provider, &id).await {
+                    break;
+                }
                 let enabled = account_enabled(
                     &app.state::<AppState>().settings.get().await,
                     &id,
@@ -228,6 +253,9 @@ async fn poll_loop(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
                 // Sender lives in AppState for the whole app lifetime; if it
                 // is gone the app is tearing down, so end this task.
                 if changed.is_err() {
+                    break;
+                }
+                if !still_registered(&app, &provider, &id).await {
                     break;
                 }
                 let (enabled, new_period) = {
@@ -450,5 +478,41 @@ mod interval_tests {
             effective_interval("minimax", 0),
             Duration::from_secs(DEFAULT_INTERVAL_MINIMAX)
         );
+    }
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+    use crate::providers::mock::MockProvider;
+    use crate::providers::ProviderRegistry;
+
+    fn provider(id: &'static str) -> Arc<dyn Provider> {
+        Arc::new(MockProvider::new(id, id, 1.0))
+    }
+
+    #[test]
+    fn current_instance_is_live() {
+        let p = provider("acct-a");
+        let mut registry = ProviderRegistry::new();
+        registry.insert(p.clone());
+        assert!(is_current(&registry, &p, "acct-a"));
+    }
+
+    #[test]
+    fn replaced_instance_is_stale() {
+        let p = provider("acct-a");
+        let mut registry = ProviderRegistry::new();
+        registry.insert(p.clone());
+        // Same id, different instance: what a registry rebuild produces.
+        registry.insert(provider("acct-a"));
+        assert!(!is_current(&registry, &p, "acct-a"));
+    }
+
+    #[test]
+    fn unknown_id_is_stale() {
+        let p = provider("acct-a");
+        let registry = ProviderRegistry::new();
+        assert!(!is_current(&registry, &p, "acct-a"));
     }
 }
