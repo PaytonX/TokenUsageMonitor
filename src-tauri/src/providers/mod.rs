@@ -35,6 +35,8 @@ pub enum AuthKind {
     /// Access Key + Secret Key, signed with HMAC-SHA256.
     /// (Volcano / Volcengine)
     AccessKeySecret,
+    /// Local token-file credential (e.g. ChatGPT Codex `~/.codex/auth.json`).
+    LocalToken,
 }
 
 /// Credentials container - one variant per [`AuthKind`].
@@ -46,6 +48,8 @@ pub enum Credentials {
         access_key: String,
         secret_key: String,
     },
+    /// Token read from a local file on this machine (no keyring entry needed).
+    LocalToken { token: String },
 }
 
 /// A user-configurable account bound to one provider kind. Multiple accounts
@@ -154,6 +158,9 @@ pub struct Preset {
     pub default_accent: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sub_modes: Option<&'static [PresetSubMode]>,
+    /// Experimental providers show an「实验」badge in Settings and are opt-in.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub experimental: bool,
 }
 
 /// The fixed catalogue of built-in provider kinds. Keep in sync with the
@@ -178,6 +185,7 @@ pub const PRESETS: &[Preset] = &[
                 limited: true,
             },
         ]),
+        experimental: false,
     },
     Preset {
         kind: "deepseek",
@@ -185,6 +193,7 @@ pub const PRESETS: &[Preset] = &[
         auth_kind: AuthKind::BearerKey,
         default_accent: "#10b981",
         sub_modes: None,
+        experimental: false,
     },
     Preset {
         kind: "volcengine",
@@ -205,6 +214,7 @@ pub const PRESETS: &[Preset] = &[
                 limited: false,
             },
         ]),
+        experimental: false,
     },
     Preset {
         kind: "openai",
@@ -212,6 +222,7 @@ pub const PRESETS: &[Preset] = &[
         auth_kind: AuthKind::BearerKey,
         default_accent: "#10a37f",
         sub_modes: None,
+        experimental: false,
     },
     Preset {
         kind: "xiaomi",
@@ -232,6 +243,7 @@ pub const PRESETS: &[Preset] = &[
                 limited: true,
             },
         ]),
+        experimental: false,
     },
 ];
 
