@@ -6,6 +6,7 @@
 //!
 //! Adding a new provider = one new module + one line in the registry.
 
+pub mod codex;
 pub mod deepseek;
 pub mod kimi;
 pub mod minimax;
