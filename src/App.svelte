@@ -1365,8 +1365,6 @@
     padding: 0 10px;
     border-radius: 22px;
     background: var(--tum-glass);
-    backdrop-filter: var(--tum-glass-filter);
-    -webkit-backdrop-filter: var(--tum-glass-filter);
     border: 1px solid var(--tum-border-strong);
     box-shadow: var(--tum-glass-shadow);
     overflow: hidden;

@@ -77,9 +77,11 @@
   /* Acrylic-style blur for floating cards (DetailCard in B3) */
   --tum-blur-card: 24px;
 
-  /* 贴边胶囊与把手的玻璃材质（spec 决策 15）+ 两档动画曲线（决策 6/7） */
-  --tum-glass: rgba(48, 52, 56, 0.68);
-  --tum-glass-filter: blur(32px) saturate(115%);
+  /* 贴边胶囊与把手的表面材质（spec 决策 15）+ 两档动画曲线（决策 6/7）。
+     注：透明窗里 CSS backdrop-filter 采不到桌面、只会留下未按圆角裁剪的矩形
+     绘制层，因此不在这里做模糊；表面改为高不透明度的深色，保证任意壁纸下
+     正文（#e6e8ea）对比度充足。 */
+  --tum-glass: rgba(22, 25, 31, 0.92);
   --tum-glass-shadow: 0 22px 55px rgba(0, 0, 0, 0.36);
   --tum-ease-spring: cubic-bezier(0.33, 1, 0.68, 1);
   --tum-ease-ring: cubic-bezier(0.2, 0.8, 0.2, 1);

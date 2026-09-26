@@ -30,9 +30,9 @@ if (host) {
       display: flex;
       align-items: center;
       justify-content: center;
-      background: rgba(48, 52, 56, 0.68);
-      backdrop-filter: blur(32px) saturate(115%);
-      -webkit-backdrop-filter: blur(32px) saturate(115%);
+      /* 与 --tum-glass 保持一致：透明窗里 backdrop-filter 采不到桌面，
+         只用高不透明度深色保证对比度。 */
+      background: rgba(22, 25, 31, 0.92);
       border: 1px solid rgba(255, 255, 255, 0.16);
       transition: opacity 110ms ease;
       cursor: default;
