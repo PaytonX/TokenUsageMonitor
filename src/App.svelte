@@ -3,7 +3,7 @@
   import { flip } from "svelte/animate";
   import { fly } from "svelte/transition";
   import { LogicalSize } from "@tauri-apps/api/dpi";
-  import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import {
     getUsage,
     getProviderStates,
@@ -12,6 +12,10 @@
     onProviderError,
     onSettingsChanged,
     setWindowMode,
+    syncPeekWindow,
+    emitPeekShow,
+    onPeekHover,
+    onPeekLeave,
     forceRefresh,
     openSettings,
     onTabsChanged,
@@ -24,12 +28,12 @@
     type ProviderError,
     type Settings,
     type BurnInfo,
+    type PeekSide,
     ringWindowRemaining,
     providerShortName,
     payAsYouGoLabel,
     isPayAsYouGo,
     hexToRgb,
-    lightenHex,
   } from "./lib";
   import ProviderCard from "./lib/components/ProviderCard.svelte";
   import ProgressRing from "./lib/components/ProgressRing.svelte";
@@ -42,6 +46,7 @@
   import ModelPanel from "./lib/components/ModelPanel.svelte";
   import DevicePanel from "./lib/components/DevicePanel.svelte";
   import PillsOrSelect from "./lib/components/PillsOrSelect.svelte";
+  import { brandColorFor, EXPERIMENTAL_KINDS } from "./lib/brand-glyphs";
 
   type Mode = "dashboard" | "compact";
 
@@ -111,12 +116,6 @@
   let actives = $state<Record<string, boolean>>({});
   let mode = $state<Mode>("dashboard");
   let heatmapTabId = $state<string | null>(null);
-  const PROVIDER_COLORS: Record<string, string> = {
-    minimax: "#ff5c5c",
-    deepseek: "#4d6bfe",
-    volcengine: "#12b76a",
-    openai: "#10a37f",
-  };
   const FOCUS_FALLBACK_COLOR = "#8a8f98";
   const FOCUS_KEY = "tum.focus";
   const HEATMAP_VIEW_KEY = "tum.heatmapView";
@@ -285,8 +284,22 @@
     dragOrder = [];
   }
   const PILL_DRAG_THRESHOLD_PX = 4;
-  const PILL_FADE_DELAY_MS = 2500;
-  const PILL_EDGE_THRESHOLD_PX = 24;
+
+  // ---- 贴边 peek 双窗（spec §2 决策 1-5 / §3.2 时序）----
+  const PILL_COLLAPSED_W = 168; // 与 Rust set_window_mode 的 LogicalSize 保持一致
+  const PILL_COLLAPSED_H = 56;
+  const PILL_MINI_PAD_TOP = 2;
+  const PILL_MINI_PAD_BOTTOM = 8;
+  const PILL_MINI_ROW = 24;
+  const PILL_MINI_GAP = 6;
+  // 展开高度 = 56 + (2 + 30n + 6(n-1) + 8) = 60 + 30n；同 MiniPanel 的 CSS。
+  const PILL_EXPANDED_ROW = PILL_MINI_ROW + PILL_MINI_GAP; // 30
+  const PILL_EXPANDED_BASE =
+    PILL_COLLAPSED_H + PILL_MINI_PAD_TOP + PILL_MINI_PAD_BOTTOM - PILL_MINI_GAP; // 60
+  const PILL_SLIDE_MS = 150; // 与 .pill-layer 的 transition 时长一致
+  const PILL_PEEK_BACK_MS = 90; // 滑出完成后把手复现的延迟
+  const PILL_REVEAL_MINI_MS = 120; // 滑入开始后展开明细的延迟
+  const PILL_DOCK_DELAY_MS = 320; // 指针离开后停留多久才收起
   let settings = $state<Settings | null>(null);
 
   // Per-account accent map (instance_id -> #RRGGBB), derived from settings.
@@ -300,9 +313,9 @@
       {} as Record<string, string>,
     ),
   );
-  // Resolve a provider's emphasis colour with the legacy fallback chain.
+  // 解析某个 provider 的强调色：账户自定义色优先，否则用品牌注册表的品牌色。
   const colorOf = (id: string) =>
-    accentById[id] ?? PROVIDER_COLORS[id] ?? FOCUS_FALLBACK_COLOR;
+    accentById[id] ?? brandColorFor(id.split("-")[0]);
 
   // Countdown mode: false = show USED, true = show REMAINING (1 - used).
   let displayRemaining = $derived(settings?.countdown_mode ?? false);
@@ -365,6 +378,9 @@
         lastRefreshAt = Date.now();
       }),
     );
+
+    unlistenFns.push(await onPeekHover(() => void revealPill()));
+    unlistenFns.push(await onPeekLeave(() => scheduleDockPill()));
 
     // 1-second clock tick for the timestamp header.
     const tick = setInterval(() => (now = new Date()), 1000);
@@ -479,27 +495,134 @@
   const badgeStyle = $derived.by(() => {
     const rgb = hexToRgb(focusedColor);
     if (!rgb) {
-      return "background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.2); color: var(--tum-text-primary);";
+      return "background: rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,.2); color:var(--tum-text-primary);";
     }
     return [
       `background: rgba(${rgb}, 0.16)`,
       `border: 1px solid rgba(${rgb}, 0.45)`,
-      `color: ${lightenHex(focusedColor, 0.18)}`,
+      `color: ${focusedColor}`,
     ].join("; ");
   });
   const providerFullName = $derived(
     focusedSnapshot ? focusedSnapshot.provider_display_name : "全部来源",
   );
 
-  // Pill fade machine (spec §3.4): fade to 22% after 2.5s while parked near
-  // a screen edge in compact mode; pointer enter / leaving the edge /
-  // dashboard mode restores full opacity.
-  let pillHovered = $state(false);
-  let pillFaded = $state(false);
-  let pillFadeTimer: ReturnType<typeof setTimeout> | null = null;
   let pillDragStart: { x: number; y: number; fromControl: boolean } | null = null;
   let pillDidDrag = false;
-  let pillFadeGen = 0;
+
+  // peek 双窗状态：pillRevealed = 胶囊已滑入（占满窗口）；pillSide = 贴靠边。
+  let pillSide = $state<PeekSide>("right");
+  let pillRevealed = $state(false);
+  let pillExpanded = $state(false);
+  let pillResizeGen = 0;
+  let peekGen = 0;
+  let dockTimer: ReturnType<typeof setTimeout> | null = null;
+  let miniTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // 聚焦账户是否正在上报（驱动圆环的 2600ms 呼吸 halo）。
+  let pillActive = $derived(
+    !!(focusedSnapshot && actives[focusedSnapshot.provider_id]),
+  );
+
+  function clearDockTimer() {
+    if (dockTimer !== null) {
+      clearTimeout(dockTimer);
+      dockTimer = null;
+    }
+  }
+
+  function clearMiniTimer() {
+    if (miniTimer !== null) {
+      clearTimeout(miniTimer);
+      miniTimer = null;
+    }
+  }
+
+  /** 与后端同步「谁捕获鼠标 + 胶囊贴哪一边」。收起态 = docked。 */
+  async function syncPeek(): Promise<void> {
+    if (mode !== "compact") return;
+    try {
+      pillSide = await syncPeekWindow(!pillRevealed);
+    } catch {
+      // 窗口正在切换模式 / 已被关闭：保持当前状态即可。
+    }
+  }
+
+  async function expandPill() {
+    if (mode !== "compact" || snapshots.length === 0) return;
+    const gen = ++pillResizeGen;
+    const height = PILL_EXPANDED_BASE + snapshots.length * PILL_EXPANDED_ROW;
+    try {
+      await getCurrentWindow().setSize(
+        new LogicalSize(PILL_COLLAPSED_W, height),
+      );
+      if (gen === pillResizeGen) pillExpanded = true;
+    } catch {
+      // IPC 失败：保持折叠。
+    }
+  }
+
+  async function collapsePill(): Promise<void> {
+    const gen = ++pillResizeGen;
+    pillExpanded = false;
+    try {
+      await getCurrentWindow().setSize(
+        new LogicalSize(PILL_COLLAPSED_W, PILL_COLLAPSED_H),
+      );
+    } catch {
+      // 忽略：窗口可能正处于模式切换中。
+    }
+  }
+
+  /** 把手（或已滑入的胶囊）被唤醒：解除穿透 → 滑入 → 120ms 后展开明细。 */
+  async function revealPill() {
+    if (mode !== "compact") return;
+    const gen = ++peekGen;
+    clearDockTimer();
+    clearMiniTimer();
+    pillRevealed = true;
+    await syncPeek(); // docked=false：主窗接管鼠标，把手退出交互
+    if (gen !== peekGen) return;
+    miniTimer = setTimeout(() => {
+      miniTimer = null;
+      if (gen !== peekGen) return;
+      void expandPill();
+    }, PILL_REVEAL_MINI_MS);
+  }
+
+  /** 指针离开：停留 320ms 未被唤醒则收起。 */
+  function scheduleDockPill() {
+    if (mode !== "compact") return;
+    clearDockTimer();
+    const gen = peekGen;
+    dockTimer = setTimeout(() => {
+      dockTimer = null;
+      if (gen !== peekGen) return;
+      void dockPill();
+    }, PILL_DOCK_DELAY_MS);
+  }
+
+  /** 折叠 → 滑出 150ms → 再 90ms 后把手复现、主窗恢复穿透。
+   *
+   *  ⚠️ 不要在这里加 `if (!pillRevealed) return` 之类的短路：即使胶囊从未滑入
+   *  （指针 60ms 内刷过把手就离开，把手已把自己隐去，而 peek-hover 被防抖抑制
+   *  或被随后的 peek-leave 取代），也必须照常走到 emitPeekShow —— 这是把手唯一
+   *  的「复活」路径。少了它，把手会永久停在 opacity:0 + pointer-events:none，
+   *  胶囊再也无法被唤醒（等于应用不可达）。 */
+  async function dockPill() {
+    const gen = ++peekGen;
+    clearMiniTimer();
+    await collapsePill();
+    pillRevealed = false;
+    setTimeout(async () => {
+      if (gen !== peekGen) return;
+      // 先取回最新贴靠边（用户可能刚把胶囊拖到屏幕另一侧），再把边随
+      // peek-show 发给把手页，让它纠正圆角朝向并复现自己。
+      await syncPeek(); // docked=true：把手接回鼠标
+      if (gen !== peekGen) return;
+      void emitPeekShow(pillSide).catch(() => {});
+    }, PILL_SLIDE_MS + PILL_PEEK_BACK_MS);
+  }
 
   // Compact pill three-state tone (spec §5.2): ringPercent is aggregate
   // REMAINING, so used = 1 - ringPercent. <80 silent / 80-95 amber / >=95 red.
@@ -513,91 +636,6 @@
           ? "warn"
           : "ok",
   );
-
-  // The compact OS window is physically 150x44 (ipc::set_window_mode). The
-  // hover MiniPanel grows it downward via setSize; top-left anchor is kept.
-  // B4 switches the collapsed height 44 -> 40: update PILL_COLLAPSED_H there
-  // together with the Rust LogicalSize.
-  const PILL_COLLAPSED_W = 150;
-  const PILL_COLLAPSED_H = 44;
-  const PILL_EXPANDED_BASE = 48; // 44 main row + MiniPanel vertical padding
-  const PILL_EXPANDED_ROW = 24; // 18px row + 6px gap
-  let pillExpanded = $state(false);
-  let pillResizeGen = 0;
-
-  async function expandPill() {
-    if (mode !== "compact" || snapshots.length === 0) return;
-    const gen = ++pillResizeGen;
-    const height =
-      PILL_EXPANDED_BASE + snapshots.length * PILL_EXPANDED_ROW;
-    try {
-      await getCurrentWindow().setSize(
-        new LogicalSize(PILL_COLLAPSED_W, height),
-      );
-      if (gen === pillResizeGen) pillExpanded = true;
-    } catch {
-      // IPC failed — leave the pill collapsed.
-    }
-  }
-
-  async function collapsePill(): Promise<void> {
-    const gen = ++pillResizeGen;
-    pillExpanded = false;
-    try {
-      await getCurrentWindow().setSize(
-        new LogicalSize(PILL_COLLAPSED_W, PILL_COLLAPSED_H),
-      );
-    } catch {
-      // Ignore — window may be mid mode-switch.
-    }
-  }
-
-  function clearPillFadeTimer() {
-    if (pillFadeTimer !== null) {
-      clearTimeout(pillFadeTimer);
-      pillFadeTimer = null;
-    }
-  }
-
-  async function pillNearEdge(): Promise<boolean> {
-    const win = getCurrentWindow();
-    const [pos, size, monitor] = await Promise.all([
-      win.outerPosition(),
-      win.outerSize(),
-      currentMonitor(),
-    ]);
-    if (!monitor) return false;
-    const threshold = PILL_EDGE_THRESHOLD_PX * monitor.scaleFactor;
-    const area = monitor.workArea ?? { position: monitor.position, size: monitor.size };
-    const left = pos.x - area.position.x;
-    const top = pos.y - area.position.y;
-    const right = area.position.x + area.size.width - (pos.x + size.width);
-    const bottom = area.position.y + area.size.height - (pos.y + size.height);
-    return Math.min(left, top, right, bottom) < threshold;
-  }
-
-  async function refreshPillFade() {
-    // Superseded calls must not assign stale timers.
-    const gen = ++pillFadeGen;
-    clearPillFadeTimer();
-    try {
-      if (mode !== "compact" || pillHovered) {
-        pillFaded = false;
-        return;
-      }
-      if (!(await pillNearEdge())) {
-        if (gen !== pillFadeGen) return;
-        pillFaded = false;
-        return;
-      }
-      if (gen !== pillFadeGen) return;
-      pillFadeTimer = setTimeout(() => {
-        pillFaded = !pillHovered;
-      }, PILL_FADE_DELAY_MS);
-    } catch {
-      // IPC failed (e.g. window closing) — keep current fade state.
-    }
-  }
 
   function onPillPointerDown(event: PointerEvent) {
     if (event.button !== 0) return;
@@ -618,8 +656,6 @@
     const dy = event.clientY - pillDragStart.y;
     if (!pillDidDrag && Math.hypot(dx, dy) > PILL_DRAG_THRESHOLD_PX) {
       pillDidDrag = true;
-      clearPillFadeTimer();
-      pillFaded = false;
       void getCurrentWindow().startDragging();
     }
   }
@@ -632,29 +668,11 @@
     pillDidDrag = false;
     if (!didDrag && !fromControl) {
       void toggleMode();
-    } else {
-      void refreshPillFade();
+    } else if (didDrag) {
+      // 拖拽可能越过了屏幕中线：重新确认贴靠边并让把手对齐。
+      void syncPeek();
     }
   }
-
-  // Window moved (OS drag or external) → re-evaluate the pill fade state.
-  $effect(() => {
-    const win = getCurrentWindow();
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void win
-      .onMoved(() => {
-        void refreshPillFade();
-      })
-      .then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
-      });
-    return () => {
-      disposed = true;
-      if (unlisten) unlisten();
-    };
-  });
 
   let timeLabel = $derived(
     now.toLocaleTimeString("zh-CN", {
@@ -686,14 +704,15 @@
     const next: Mode = mode === "dashboard" ? "compact" : "dashboard";
     await setWindowMode(next);
     mode = next;
-    pillHovered = false;
-    pillFaded = false;
+    pillRevealed = false;
     pillExpanded = false;
     pillResizeGen++;
-    clearPillFadeTimer();
-    if (next === "compact") {
-      void refreshPillFade();
-    }
+    peekGen++;
+    clearDockTimer();
+    clearMiniTimer();
+    // compact：重建把手（Rust 侧建窗 + 定位 + 交出/接管鼠标）并取回贴靠边；
+    // dashboard：set_window_mode 已在 Rust 里销毁把手并恢复鼠标交互。
+    await syncPeek();
   }
 
   async function refresh() {
@@ -728,78 +747,83 @@
 <main class="shell" class:shell--compact={mode === "compact"} data-tauri-drag-region oncontextmenu={(e) => e.preventDefault()}>
   {#if mode === "compact"}
     <div
-      class="pill"
-      class:is-faded={pillFaded}
-      class:pill--expanded={pillExpanded}
-      data-tone={pillTone}
-      onpointerenter={() => {
-        pillHovered = true;
-        clearPillFadeTimer();
-        pillFaded = false;
-        void expandPill();
-      }}
-      onpointerleave={() => {
-        pillHovered = false;
-        // Restore the physical size FIRST so the edge-fade check measures
-        // the 150x44 pill, not the transient expanded rectangle.
-        void collapsePill().then(() => refreshPillFade());
-      }}
-      onpointerdown={onPillPointerDown}
-      onpointermove={onPillPointerMove}
-      onpointerup={onPillPointerUp}
-      oncontextmenu={(e) => e.preventDefault()}
-      role="group"
-      aria-label="迷你用量面板"
+      class="pill-layer"
+      class:is-docked={!pillRevealed}
+      data-side={pillSide}
+      onpointerenter={() => clearDockTimer()}
+      onpointerleave={() => scheduleDockPill()}
     >
-      <div class="pill__main">
-        <button
-          type="button"
-          class="pill__restore"
-          aria-label="恢复主面板"
-          onclick={(e) => {
-            e.stopPropagation();
-            void toggleMode();
-          }}
-        >
-          <span class="pill__ring">
-            {#if headerIsPayAsYouGo && focusedSnapshot}
-              <span class="pill__avatar" title={providerFullName}>
-                <ProviderLogo
-                  kind={focusedSnapshot.provider_id.split("-")[0]}
-                  size={16}
+      <div
+        class="pill"
+        class:pill--expanded={pillExpanded}
+        data-tone={pillTone}
+        onpointerdown={onPillPointerDown}
+        onpointermove={onPillPointerMove}
+        onpointerup={onPillPointerUp}
+        oncontextmenu={(e) => e.preventDefault()}
+        role="group"
+        aria-label="迷你用量面板"
+      >
+        <div class="pill__main">
+          <button
+            type="button"
+            class="pill__restore"
+            aria-label="恢复主面板"
+            onclick={(e) => {
+              e.stopPropagation();
+              void toggleMode();
+            }}
+          >
+            <span class="pill__ring">
+              {#if headerIsPayAsYouGo && focusedSnapshot}
+                <span class="pill__avatar" title={providerFullName}>
+                  <ProviderLogo
+                    kind={focusedSnapshot.provider_id.split("-")[0]}
+                    size={22}
+                    accent={focusedColor}
+                  />
+                </span>
+              {:else}
+                <ProgressRing
+                  value={ringArcValue}
+                  label=""
+                  size={38}
+                  stroke={3.5}
+                  idle={snapshots.length === 0}
+                  countdown={displayRemaining}
+                  markKind={focusedSnapshot
+                    ? focusedSnapshot.provider_id.split("-")[0]
+                    : null}
+                  running={pillActive}
                   accent={focusedColor}
                 />
-              </span>
-            {:else}
-              <ProgressRing value={ringArcValue} label="" size={24} stroke={3} idle={snapshots.length === 0} countdown={displayRemaining} />
-            {/if}
-            <span
-              class="pill__percent"
-              class:pill__percent--crit={pillTone === "crit"}
-            >{headerMoney ?? ringArcLabel}</span>
-          </span>
-          <span class="pill__divider"></span>
-          <span
-            class="pill__badge"
-            style={badgeStyle}
-            title={providerFullName}
-          >{focusedName}</span>
-        </button>
-        <button
-          type="button"
-          class="pill__close"
-          title="关闭应用"
-          aria-label="关闭应用"
-          onpointerdown={(e) => e.stopPropagation()}
-          onclick={(e) => {
-            e.stopPropagation();
-            void closeApp();
-          }}
-        >✕</button>
+              {/if}
+              <span
+                class="pill__percent"
+                class:pill__percent--crit={pillTone === "crit"}
+              >{headerMoney ?? ringArcLabel}</span>
+            </span>
+            <span class="pill__divider"></span>
+            <span class="pill__badge" style={badgeStyle} title={providerFullName}
+              >{focusedName}</span
+            >
+          </button>
+          <button
+            type="button"
+            class="pill__close"
+            title="关闭应用"
+            aria-label="关闭应用"
+            onpointerdown={(e) => e.stopPropagation()}
+            onclick={(e) => {
+              e.stopPropagation();
+              void closeApp();
+            }}
+          >✕</button>
+        </div>
+        {#if pillExpanded}
+          <MiniPanel {snapshots} {actives} countdown={displayRemaining} />
+        {/if}
       </div>
-      {#if pillExpanded}
-        <MiniPanel {snapshots} {actives} countdown={displayRemaining} />
-      {/if}
     </div>
   {:else}
     <header class="shell__header" data-tauri-drag-region>
@@ -847,6 +871,14 @@
             focus = id;
           }}
           dotFor={(id) => (id === "all" ? undefined : colorOf(id))}
+          brandFor={(id) =>
+            id === "all"
+              ? null
+              : {
+                  color: colorOf(id),
+                  kind: id.split("-")[0],
+                  experimental: EXPERIMENTAL_KINDS.has(id.split("-")[0]),
+                }}
         />
       </div>
     {/if}
@@ -1020,9 +1052,10 @@
     cursor: grab;
   }
 
-  /* In compact mode, remove the shell's padding and gap so the mini pill
-     gets the full window area (150x44). */
+  /* compact 模式：去掉外壳自身的玻璃与内边距，把整窗交给胶囊层。
+     overflow:hidden 负责把滑出窗外的胶囊层裁掉。 */
   .shell--compact {
+    position: relative;
     padding: 0;
     gap: 0;
     border: none;
@@ -1030,6 +1063,24 @@
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     background: transparent;
+  }
+
+  /* 胶囊整体平移：收起时滑出窗外，唤醒时滑回 (0,0)。
+     贴左边时方向镜像。 */
+  .pill-layer {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    transition: transform 150ms var(--tum-ease-spring);
+  }
+
+  .pill-layer.is-docked[data-side="right"] {
+    transform: translateX(100%);
+  }
+
+  .pill-layer.is-docked[data-side="left"] {
+    transform: translateX(-100%);
   }
 
   .shell:active {
@@ -1308,29 +1359,22 @@
      red breathe (>=95%, spec §5.2 CompactPill). */
   .pill {
     height: 100%;
-    position: relative;
     display: flex;
     flex-direction: column;
-    padding: 0 8px;
+    padding: 0 10px;
     border-radius: 22px;
-    background: rgba(10, 14, 26, 0.92);
-    border: 1px solid var(--tum-border);
-    transition:
-      opacity 0.35s ease,
-      transform 0.35s ease,
-      border-color 0.3s ease,
-      border-radius 0.2s ease,
-      box-shadow 0.3s ease;
-    cursor: default;
+    background: var(--tum-glass);
+    backdrop-filter: var(--tum-glass-filter);
+    -webkit-backdrop-filter: var(--tum-glass-filter);
+    border: 1px solid var(--tum-border-strong);
+    box-shadow: var(--tum-glass-shadow);
     overflow: hidden;
-  }
-
-  .pill--expanded {
-    border-radius: var(--tum-radius-lg);
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    cursor: default;
   }
 
   .pill[data-tone="warn"] {
-    border-color: rgba(255, 200, 61, 0.55);
+    border-color: rgba(255, 200, 61, 0.5);
   }
 
   .pill[data-tone="crit"] {
@@ -1338,32 +1382,23 @@
     animation: pill-breathe 1.6s ease-in-out infinite;
   }
 
-  .pill.is-faded {
-    opacity: 0.22;
-    transform: scale(0.9);
-    animation: none;
-  }
-
   @keyframes pill-breathe {
     0%,
     100% {
-      border-color: rgba(255, 95, 86, 0.55);
       box-shadow:
-        0 0 0 0 rgba(255, 95, 86, 0),
+        var(--tum-glass-shadow),
         inset 0 0 0 1px rgba(255, 95, 86, 0.4);
     }
     50% {
-      border-color: rgba(255, 95, 86, 0.95);
-      /* blur 大、spread 0 的柔和外发光 + 贴合圆角的内描边：
-         避免旧版 `14px 2px` 的硬边外扩在透明窗口里呈矩形块状光晕 */
       box-shadow:
+        var(--tum-glass-shadow),
         0 0 16px 0 rgba(255, 95, 86, 0.5),
         inset 0 0 0 1px rgba(255, 95, 86, 0.85);
     }
   }
 
   .pill__main {
-    height: 44px;
+    height: 56px;
     flex: none;
     display: flex;
     align-items: center;
@@ -1396,7 +1431,7 @@
   .pill__ring {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     flex-shrink: 0;
   }
 
@@ -1414,7 +1449,7 @@
   }
 
   .pill__percent {
-    font-size: var(--tum-font-size-xs);
+    font-size: 11px;
     font-family: var(--tum-font-mono);
     color: var(--tum-text-primary);
     letter-spacing: 0.3px;
@@ -1426,7 +1461,7 @@
 
   .pill__divider {
     width: 1px;
-    height: 20px;
+    height: 24px;
     background: var(--tum-border-strong);
     flex-shrink: 0;
   }
@@ -1436,13 +1471,13 @@
        展示完整 Provider 短名；底色/描边/文字色由内联 style 注入。 */
     flex: 1;
     min-width: 0;
-    height: 20px;
+    height: 22px;
     padding: 0 6px;
-    border-radius: 10px;
+    border-radius: 11px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 10px;
+    font-size: 10.5px;
     font-weight: 600;
     font-family: var(--tum-font);
     letter-spacing: 0.2px;
@@ -1467,7 +1502,10 @@
     line-height: 1;
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.2s ease, background 0.2s ease, color 0.2s ease;
+    transition:
+      opacity 0.2s ease,
+      background 0.2s ease,
+      color 0.2s ease;
   }
 
   .pill:hover .pill__close {
