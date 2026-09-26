@@ -568,6 +568,12 @@ pub async fn sync_peek_window(app: AppHandle, docked: bool) -> Result<String, St
         return Err("dashboard window has no monitor".to_string());
     };
 
+    // 只在 compact 胶囊态才有把手；dashboard 态（可能是模式切换竞态）直接
+    // 返回所在边，不重建刚被 set_window_mode 关掉的窗口。
+    if !app.state::<AppState>().compact_mode.load(Ordering::SeqCst) {
+        return Ok(if is_right { "right" } else { "left" }.to_string());
+    }
+
     let peek = match app.get_webview_window("peek") {
         Some(existing) => existing,
         None => {
@@ -587,7 +593,7 @@ pub async fn sync_peek_window(app: AppHandle, docked: bool) -> Result<String, St
             .skip_taskbar(true)
             .shadow(false)
             .focused(false)
-            .visible(true)
+            .visible(false)
             .initialization_script(format!("window.__PEEK_SIDE__ = {side};"))
             .build()
             .map_err(|e| e.to_string())?;
@@ -598,8 +604,15 @@ pub async fn sync_peek_window(app: AppHandle, docked: bool) -> Result<String, St
     };
 
     let _ = peek.set_position(pos);
-    peek.set_ignore_cursor_events(!docked).map_err(|e| e.to_string())?;
-    dash.set_ignore_cursor_events(docked).map_err(|e| e.to_string())?;
+    let _ = peek.show();
+    // 鼠标捕获走 best-effort：两个窗口必须一致切换，任何一侧失败都不该让
+    // 调用方拿到半途而废的错误（下次状态切换会重新对齐）。
+    if let Err(e) = peek.set_ignore_cursor_events(!docked) {
+        tracing::warn!("peek set_ignore_cursor_events failed: {e}");
+    }
+    if let Err(e) = dash.set_ignore_cursor_events(docked) {
+        tracing::warn!("dashboard set_ignore_cursor_events failed: {e}");
+    }
 
     Ok(if is_right { "right" } else { "left" }.to_string())
 }
