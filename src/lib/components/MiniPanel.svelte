@@ -3,11 +3,11 @@
     mostCriticalWindow,
     payAsYouGoLabel,
     percent,
-    providerShortName,
     remainingPercent,
     type UsageSnapshot,
   } from "../types";
   import PulseDot from "./PulseDot.svelte";
+  import ProviderLogo from "./ProviderLogo.svelte";
 
   interface Props {
     snapshots: UsageSnapshot[];
@@ -33,10 +33,14 @@
     {@const remain = remainingPercent(s)}
     {@const money = payAsYouGoLabel(s, countdown)}
     {@const tone = usedPct >= 0.95 ? "crit" : usedPct >= 0.8 ? "warn" : "ok"}
-    <div class="mini__row" role="listitem">
+    <div
+      class="mini__row"
+      role="listitem"
+      aria-label={`${s.provider_display_name} ${money ?? `${Math.round((countdown ? remain : usedPct) * 100)}%`}`}
+    >
       <PulseDot active={!!actives[s.provider_id]} {tone} size={7} />
-      <span class="mini__name">
-        {providerShortName(s.provider_id, s.provider_display_name)}
+      <span class="mini__logo" title={s.provider_display_name}>
+        <ProviderLogo kind={s.provider_id.split("-")[0]} size={13} />
       </span>
       <span class="mini__track">
         <span
@@ -73,14 +77,12 @@
     height: 18px;
   }
 
-  .mini__name {
-    max-width: 52px;
-    min-width: 0;
-    font-size: var(--tum-font-size-xs);
-    color: var(--tum-text-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .mini__logo {
+    width: 15px;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .mini__track {
