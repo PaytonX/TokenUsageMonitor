@@ -77,6 +77,13 @@
   /* Acrylic-style blur for floating cards (DetailCard in B3) */
   --tum-blur-card: 24px;
 
+  /* 贴边胶囊与把手的玻璃材质（spec 决策 15）+ 两档动画曲线（决策 6/7） */
+  --tum-glass: rgba(48, 52, 56, 0.68);
+  --tum-glass-filter: blur(32px) saturate(115%);
+  --tum-glass-shadow: 0 22px 55px rgba(0, 0, 0, 0.36);
+  --tum-ease-spring: cubic-bezier(0.33, 1, 0.68, 1);
+  --tum-ease-ring: cubic-bezier(0.2, 0.8, 0.2, 1);
+
   /* Kept for compatibility; no component currently references it */
   --tum-scanline: none;
 }
@@ -113,4 +120,16 @@ input[type="number"],
   font-family: var(--tum-font-mono);
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+/* spec 决策 16：系统开启「减弱动态效果」时所有过渡/动画瞬时完成，
+   交互与显隐功能保持不变（只是不再有过程动画）。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }
