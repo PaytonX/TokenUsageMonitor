@@ -412,6 +412,66 @@ pub fn clamp_window_to_work_area(window: &WebviewWindow, margin_logical: f64) ->
     changed
 }
 
+/// 把窗口横向贴死到最近的左/右边缘，纵向夹在工作区内。compact 胶囊专用。
+pub fn dock_window(window: &WebviewWindow) -> bool {
+    let Ok(pos) = window.outer_position() else { return false; };
+    let Ok(size) = window.outer_size() else { return false; };
+    let Ok(Some(monitor)) = window.current_monitor() else { return false; };
+    let area = monitor.work_area();
+    let (nx, ny) = dock_rect(
+        f64::from(pos.x),
+        f64::from(pos.y),
+        f64::from(size.width),
+        f64::from(size.height),
+        f64::from(area.position.x),
+        f64::from(area.position.y),
+        f64::from(area.size.width),
+        f64::from(area.size.height),
+    );
+    let changed = nx != f64::from(pos.x) || ny != f64::from(pos.y);
+    if changed {
+        let _ = window.set_position(PhysicalPosition::new(
+            nx.round() as i32,
+            ny.round() as i32,
+        ));
+    }
+    changed
+}
+
+/// 贴边把手的物理位置 + 所在边（true = 右侧）。窗口无监视器时返回 None。
+fn peek_placement(window: &WebviewWindow) -> Option<(bool, PhysicalPosition<i32>)> {
+    let Ok(pos) = window.outer_position() else { return None; };
+    let Ok(size) = window.outer_size() else { return None; };
+    let Ok(Some(monitor)) = window.current_monitor() else { return None; };
+    let area = monitor.work_area();
+    let scale = f64::from(monitor.scale_factor());
+    let is_right = dock_side(
+        f64::from(pos.x),
+        f64::from(size.width),
+        f64::from(area.position.x),
+        f64::from(area.size.width),
+    );
+    let (px, py) = peek_rect(
+        f64::from(pos.y),
+        PILL_ROW_H * scale,
+        is_right,
+        f64::from(area.position.x),
+        f64::from(area.position.y),
+        f64::from(area.size.width),
+        f64::from(area.size.height),
+        PEEK_W * scale,
+        PEEK_H * scale,
+    );
+    Some((is_right, PhysicalPosition::new(px.round() as i32, py.round() as i32)))
+}
+
+/// 让把手跟随 Dashboard 胶囊的纵向位置。把手尚未创建时为空操作。
+pub fn reposition_peek(window: &WebviewWindow) {
+    let Some(peek) = window.app_handle().get_webview_window("peek") else { return; };
+    let Some((_, pos)) = peek_placement(window) else { return; };
+    let _ = peek.set_position(pos);
+}
+
 /// Snap the window to the nearest screen edge when it is dragged within
 /// `margin_logical` of one. Called from the dashboard's `Moved` window event.
 pub fn snap_to_edges(window: &WebviewWindow, margin_logical: f64) -> bool {

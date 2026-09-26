@@ -30,7 +30,7 @@ use scheduler::SharedBurnTracker;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tokio::sync::{watch, RwLock};
@@ -77,6 +77,9 @@ pub struct AppState {
     /// Cached `Settings::edge_snap`, mirrored for the synchronous `Moved`
     /// handler. Kept in sync by `ipc::save_settings`.
     pub edge_snap: Arc<AtomicBool>,
+    /// 缓存「Dashboard 处于 compact 胶囊态」。供同步的 `Moved` 处理器选择
+    /// 停靠策略（贴边 vs 四向吸附），以及托盘恢复时重新拉起把手。
+    pub compact_mode: Arc<AtomicBool>,
     /// Holds the tray icon alive for the app lifetime. Never referenced after
     /// construction.
     #[allow(dead_code)]
@@ -166,6 +169,20 @@ async fn cached_tool_count(local: &local::SharedLocalCache) -> u64 {
         p.tools.len() as u64
     } else {
         0
+    }
+}
+
+/// 从托盘恢复主面板：显示 + 聚焦；若此前处于 compact 胶囊态，把贴边把手
+/// 一并拉起并对齐（close-to-tray 会把把手一起隐藏，否则胶囊无法被唤醒）。
+fn show_dashboard(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("dashboard") else { return; };
+    let _ = window.show();
+    let _ = window.set_focus();
+    if app.state::<AppState>().compact_mode.load(Ordering::SeqCst) {
+        ipc::reposition_peek(&window);
+        if let Some(peek) = app.get_webview_window("peek") {
+            let _ = peek.show();
+        }
     }
 }
 
@@ -379,19 +396,11 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        if let Some(w) = tray.app_handle().get_webview_window("dashboard") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
+                        show_dashboard(tray.app_handle());
                     }
                 })
                 .on_menu_event(|app_handle, event| match event.id().as_ref() {
-                    "show" => {
-                        if let Some(w) = app_handle.get_webview_window("dashboard") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
+                    "show" => show_dashboard(app_handle),
                     "quit" => app_handle.exit(0),
                     _ => {}
                 })
@@ -411,6 +420,7 @@ pub fn run() {
                 poll_locks: Arc::new(RwLock::new(HashMap::new())),
                 close_to_tray,
                 edge_snap,
+                compact_mode: Arc::new(AtomicBool::new(false)),
                 _tray: tray,
                 local,
             };
@@ -443,20 +453,32 @@ pub fn run() {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     if close_to_tray_flag.load(Ordering::SeqCst) {
                         api.prevent_close();
+                        // 把手一起收起：胶囊被隐藏后把手无法唤醒任何东西。
+                        if let Some(peek) =
+                            close_flag_inner.app_handle().get_webview_window("peek")
+                        {
+                            let _ = peek.hide();
+                        }
                         let _ = close_flag_inner.hide();
                     }
                 }
             });
 
-            // Edge snap: while the user drags the dashboard, when it comes near
-            // a screen edge snap to that edge. Reads the cached flag synchronously.
+            // 拖动时的贴边策略：compact 胶囊始终横向贴死最近的左/右边缘
+            // （7px 把手就画在那里），纵向保留并夹在屏内，同时让把手跟随；
+            // dashboard 全窗保持原有 14px 四向吸附。
             let snap_dash = dash.clone();
             let snap_dash_inner = snap_dash.clone();
             let edge_snap_flag = app.state::<AppState>().edge_snap.clone();
+            let compact_flag = app.state::<AppState>().compact_mode.clone();
             snap_dash.on_window_event(move |event| {
-                if matches!(event, tauri::WindowEvent::Moved(_))
-                    && edge_snap_flag.load(Ordering::SeqCst)
-                {
+                if !matches!(event, tauri::WindowEvent::Moved(_)) {
+                    return;
+                }
+                if compact_flag.load(Ordering::SeqCst) {
+                    ipc::dock_window(&snap_dash_inner);
+                    ipc::reposition_peek(&snap_dash_inner);
+                } else if edge_snap_flag.load(Ordering::SeqCst) {
                     ipc::snap_to_edges(&snap_dash_inner, 14.0);
                 }
             });
