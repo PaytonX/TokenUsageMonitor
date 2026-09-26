@@ -48,7 +48,11 @@ if (host) {
       transition: transform 110ms ease;
     }
     .peek:hover .grip { transform: scaleY(1.3); }
-    .peek.is-hidden { opacity: 0; pointer-events: none; }
+    /* 只做视觉隐藏：绝不在这里改 pointer-events —— 在指针仍位于把手上时翻转它，
+       会让浏览器改判 hover 目标并派发一次假的 pointerleave，于是主窗收到
+       peek-leave、刚滑入的胶囊 320ms 后就被收回（表现为「弹出即收回」）。
+       把手能否接收鼠标由 Rust 的 set_ignore_cursor_events 在窗口级托管。 */
+    .peek.is-hidden { opacity: 0; }
     @media (prefers-reduced-motion: reduce) {
       .peek, .grip { transition-duration: 0.001ms; }
     }
