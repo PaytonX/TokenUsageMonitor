@@ -158,7 +158,7 @@
       <span class="card__status">
         <PulseDot {active} {tone} size={8} />
         <span class="card__logo-badge">
-          <ProviderLogo {kind} size={11} accent={accent ?? null} />
+          <ProviderLogo {kind} size={10} accent={accent ?? null} />
         </span>
       </span>
       <span class="card__name">{snapshot.provider_display_name}</span>
@@ -290,10 +290,10 @@
 
   .card__logo-badge {
     position: absolute;
-    right: -7px;
-    bottom: -7px;
-    width: 16px;
-    height: 16px;
+    right: -6px;
+    bottom: -6px;
+    width: 14px;
+    height: 14px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
