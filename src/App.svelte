@@ -302,6 +302,7 @@
   const PILL_PEEK_BACK_MS = 90; // 滑出完成后把手复现的延迟
   const PILL_REVEAL_MINI_MS = 120; // 滑入开始后展开明细的延迟
   const PILL_DOCK_DELAY_MS = 320; // 指针离开后停留多久才收起
+  const PILL_HOVER_ARM_MS = 800; // 贴边收起后把手重新可唤回的兜底延迟
   // 模式恢复判定阈值（逻辑像素）：介于 compact(168) 与 dashboard(400) 之间。
   const PILL_RESTORE_MAX_W = 200;
   let settings = $state<Settings | null>(null);
@@ -386,12 +387,12 @@
     // 把手只存在于贴边态（浮动态没有把手窗口），因此这两个全局事件只在贴边时生效。
     unlistenFns.push(
       await onPeekHover(() => {
-        if (pillDocked) void revealPill();
+        if (pillDocked && peekHoverArmed) void revealPill();
       }),
     );
     unlistenFns.push(
       await onPeekLeave(() => {
-        if (pillDocked) scheduleDockPill();
+        armPeekHover(); scheduleDockPill();
       }),
     );
     unlistenFns.push(await onPeekReveal(() => void revealPill()));
@@ -547,6 +548,11 @@
   let pillSide = $state<PeekSide>("right");
   let pillRevealed = $state(false);
   let pillDocked = $state(false);
+  // 把手 hover 的「已布防」闩锁：拖到边缘松手时指针还压在刚出现的把手上，
+  // 若立刻响应 hover，胶囊刚滑出就被唤回（看起来像没隐藏）。因此贴边时先解除
+  // 布防，等指针离开把手一次（peek-leave）或超时兜底后再重新布防。
+  let peekHoverArmed = $state(true);
+  let peekArmTimer: ReturnType<typeof setTimeout> | null = null;
   let pillExpanded = $state(false);
   let pillResizeGen = 0;
   let peekGen = 0;
@@ -570,6 +576,24 @@
       clearTimeout(miniTimer);
       miniTimer = null;
     }
+  }
+
+  function armPeekHover() {
+    if (peekArmTimer !== null) {
+      clearTimeout(peekArmTimer);
+      peekArmTimer = null;
+    }
+    peekHoverArmed = true;
+  }
+
+  /** 进入贴边收起态时解除布防；指针离开把手或 800ms 后兜底恢复。 */
+  function disarmPeekHover() {
+    peekHoverArmed = false;
+    if (peekArmTimer !== null) clearTimeout(peekArmTimer);
+    peekArmTimer = setTimeout(() => {
+      peekArmTimer = null;
+      peekHoverArmed = true;
+    }, PILL_HOVER_ARM_MS);
   }
 
   /** 与后端同步「谁捕获鼠标 + 胶囊贴哪一边」。三态由 pillDocked/pillRevealed 推出。 */
@@ -769,17 +793,20 @@
         // 随后进入正常收起链路滑出，因此胶囊滑出时窗口已经贴边。
         pillDocked = true;
         pillRevealed = false;
+        disarmPeekHover();
         void syncPeek().then(() => dockPill());
       } else {
         // 浮动：层保持可见、主窗接管鼠标，把手窗口由 Rust 销毁。
         pillDocked = false;
         pillRevealed = true;
+        armPeekHover();
         void syncPeek();
       }
     } catch {
       // 读不到窗口几何：按浮动处理，至少保证胶囊可交互。
       pillDocked = false;
       pillRevealed = true;
+      armPeekHover();
       void syncPeek();
     }
   }
@@ -818,6 +845,7 @@
     // dashboard：两者复位（set_window_mode 已在 Rust 里销毁把手并恢复鼠标交互）。
     pillDocked = false;
     pillRevealed = next === "compact";
+    armPeekHover();
     pillExpanded = false;
     pillResizeGen++;
     peekGen++;
