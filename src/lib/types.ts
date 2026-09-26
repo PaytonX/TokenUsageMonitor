@@ -227,6 +227,9 @@ export type WindowMode = "dashboard" | "compact";
 /** 贴边把手所在的水平边。 */
 export type PeekSide = "left" | "right";
 
+/** 贴边把手的三种会话状态：浮动（无把手）/ 贴边但胶囊已滑入 / 贴边且把手可唤回。 */
+export type PeekState = "floating" | "revealed" | "docked";
+
 /** User-facing settings persisted in config.toml. Mirrors Rust `Settings`. */
 export interface Settings {
   /** Legacy enable list (pre multi-account). Seeded into `accounts` on first

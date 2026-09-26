@@ -3,7 +3,7 @@
   import { flip } from "svelte/animate";
   import { fly } from "svelte/transition";
   import { LogicalSize } from "@tauri-apps/api/dpi";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
   import {
     getUsage,
     getProviderStates,
@@ -383,8 +383,17 @@
       }),
     );
 
-    unlistenFns.push(await onPeekHover(() => void revealPill()));
-    unlistenFns.push(await onPeekLeave(() => scheduleDockPill()));
+    // 把手只存在于贴边态（浮动态没有把手窗口），因此这两个全局事件只在贴边时生效。
+    unlistenFns.push(
+      await onPeekHover(() => {
+        if (pillDocked) void revealPill();
+      }),
+    );
+    unlistenFns.push(
+      await onPeekLeave(() => {
+        if (pillDocked) scheduleDockPill();
+      }),
+    );
     unlistenFns.push(await onPeekReveal(() => void revealPill()));
 
     // 前端可能刚被重载（HMR / WebView 崩溃恢复）：Rust 侧的窗口尺寸与 compact 标志
@@ -396,6 +405,9 @@
       const [size, scale] = await Promise.all([win.innerSize(), win.scaleFactor()]);
       if (size.width / scale <= PILL_RESTORE_MAX_W) {
         mode = "compact";
+        // 启动恢复：Rust setup 只把窗口拉回屏内（未贴边），故为常态浮动且层可见。
+        pillDocked = false;
+        pillRevealed = true;
         await syncPeek();
       }
     } catch {
@@ -530,9 +542,11 @@
   let pillDragStart: { x: number; y: number; fromControl: boolean } | null = null;
   let pillDidDrag = false;
 
-  // peek 双窗状态：pillRevealed = 胶囊已滑入（占满窗口）；pillSide = 贴靠边。
+  // peek 双窗状态：pillDocked = 胶囊贴边（把手窗口存在）；pillRevealed = 层可见
+  // （滑入态/浮动态）。浮动态：pillDocked=false 且 pillRevealed=true（层恒可见、无把手）。
   let pillSide = $state<PeekSide>("right");
   let pillRevealed = $state(false);
+  let pillDocked = $state(false);
   let pillExpanded = $state(false);
   let pillResizeGen = 0;
   let peekGen = 0;
@@ -558,15 +572,17 @@
     }
   }
 
-  /** 与后端同步「谁捕获鼠标 + 胶囊贴哪一边」。收起态 = docked。 */
+  /** 与后端同步「谁捕获鼠标 + 胶囊贴哪一边」。三态由 pillDocked/pillRevealed 推出。 */
   async function syncPeek(): Promise<void> {
     if (mode !== "compact") return;
     try {
-      pillSide = await syncPeekWindow(!pillRevealed);
-      // 收起态顺带让把手显形自愈：把手页只在收到 peek-show 时清除自己的
+      pillSide = await syncPeekWindow(
+        pillDocked ? (pillRevealed ? "revealed" : "docked") : "floating",
+      );
+      // 贴边收起态顺带让把手显形自愈：把手页只在收到 peek-show 时清除自己的
       // is-hidden，若之前因异常时序（例如重载、模式竞态）停在隐藏态，它就
       // 既看不见也点不到 —— 那样胶囊再也唤不出来。这里与停靠状态一并纠正。
-      if (!pillRevealed) void emitPeekShow(pillSide).catch(() => {});
+      if (pillDocked && !pillRevealed) void emitPeekShow(pillSide).catch(() => {});
     } catch {
       // 窗口正在切换模式 / 已被关闭：保持当前状态即可。
     }
@@ -598,6 +614,18 @@
     }
   }
 
+  /** 层可见时延迟展开明细（与滑入/悬浮动画错开 120ms）。 */
+  function scheduleExpandPill() {
+    if (mode !== "compact" || pillExpanded) return;
+    clearMiniTimer();
+    const gen = peekGen;
+    miniTimer = setTimeout(() => {
+      miniTimer = null;
+      if (gen !== peekGen) return;
+      void expandPill();
+    }, PILL_REVEAL_MINI_MS);
+  }
+
   /** 把手（或已滑入的胶囊）被唤醒：解除穿透 → 滑入 → 120ms 后展开明细。 */
   async function revealPill() {
     if (mode !== "compact") return;
@@ -605,13 +633,9 @@
     clearDockTimer();
     clearMiniTimer();
     pillRevealed = true;
-    await syncPeek(); // docked=false：主窗接管鼠标，把手退出交互
+    await syncPeek(); // 贴边滑入态：主窗接管鼠标，把手退出交互
     if (gen !== peekGen) return;
-    miniTimer = setTimeout(() => {
-      miniTimer = null;
-      if (gen !== peekGen) return;
-      void expandPill();
-    }, PILL_REVEAL_MINI_MS);
+    scheduleExpandPill();
   }
 
   /** 指针离开：停留 320ms 未被唤醒则收起。 */
@@ -661,6 +685,30 @@
           : "ok",
   );
 
+  /** 指针进入胶囊层：取消待收起的停靠计时；层可见时安排明细展开（浮动态也生效）。 */
+  function onPillPointerEnter() {
+    if (mode !== "compact") return;
+    clearDockTimer();
+    if (!pillDocked || pillRevealed) scheduleExpandPill();
+  }
+
+  /** 指针离开胶囊层：贴边态沿用 320ms 收起链路；浮动态只收明细、不隐藏窗口。 */
+  function onPillPointerLeave() {
+    if (mode !== "compact") return;
+    if (pillDocked) {
+      scheduleDockPill();
+      return;
+    }
+    // 浮动态层恒可见：延迟后仅把明细收回，窗口留在原地。
+    clearDockTimer();
+    const gen = peekGen;
+    dockTimer = setTimeout(() => {
+      dockTimer = null;
+      if (gen !== peekGen) return;
+      void collapsePill();
+    }, PILL_DOCK_DELAY_MS);
+  }
+
   function onPillPointerDown(event: PointerEvent) {
     if (event.button !== 0) return;
     pillDragStart = {
@@ -693,10 +741,46 @@
     if (!didDrag && !fromControl) {
       void toggleMode();
     } else if (didDrag) {
-      // 拖拽结束即收边：compact 胶囊在拖动过程中就被 Rust 贴死到最近的左/右边缘，
-      // 所以松手就代表「拖到边缘了」—— 立刻滑出，而不是等指针离开 320ms。
-      // 先取回最新贴靠边（可能刚被拖到另一侧），再走与自动收起相同的链路。
-      void syncPeek().then(() => dockPill());
+      void settlePillAfterDrag();
+    }
+  }
+
+  /** 拖拽结束：贴近左/右边缘（24 逻辑 px 内）→ 贴边收起；否则恢复常态浮动。 */
+  async function settlePillAfterDrag() {
+    if (mode !== "compact") return;
+    clearDockTimer();
+    try {
+      const win = getCurrentWindow();
+      const [pos, size, monitor] = await Promise.all([
+        win.outerPosition(),
+        win.outerSize(),
+        currentMonitor(),
+      ]);
+      const nearEdge =
+        monitor !== null &&
+        Math.min(
+          pos.x - monitor.workArea.position.x,
+          monitor.workArea.position.x +
+            monitor.workArea.size.width -
+            (pos.x + size.width),
+        ) <= 24 * monitor.scaleFactor;
+      if (nearEdge) {
+        // 贴边：先置收起态并同步 docked —— Rust 立刻贴死边缘 + 建把手 + 主窗穿透，
+        // 随后进入正常收起链路滑出，因此胶囊滑出时窗口已经贴边。
+        pillDocked = true;
+        pillRevealed = false;
+        void syncPeek().then(() => dockPill());
+      } else {
+        // 浮动：层保持可见、主窗接管鼠标，把手窗口由 Rust 销毁。
+        pillDocked = false;
+        pillRevealed = true;
+        void syncPeek();
+      }
+    } catch {
+      // 读不到窗口几何：按浮动处理，至少保证胶囊可交互。
+      pillDocked = false;
+      pillRevealed = true;
+      void syncPeek();
     }
   }
 
@@ -730,16 +814,17 @@
     const next: Mode = mode === "dashboard" ? "compact" : "dashboard";
     await setWindowMode(next);
     mode = next;
-    pillRevealed = false;
+    // compact：常态浮动且层可见（Rust 侧不建把手，只把鼠标交回主窗）；
+    // dashboard：两者复位（set_window_mode 已在 Rust 里销毁把手并恢复鼠标交互）。
+    pillDocked = false;
+    pillRevealed = next === "compact";
     pillExpanded = false;
     pillResizeGen++;
     peekGen++;
     clearDockTimer();
     clearMiniTimer();
-    // compact：重建把手（Rust 侧建窗 + 定位 + 交出/接管鼠标）并取回贴靠边；
-    // dashboard：set_window_mode 已在 Rust 里销毁把手并恢复鼠标交互。
     await syncPeek();
-    // 记住显示形态：Rust 下次启动会在显示窗口前按此设定尺寸与贴边，
+    // 记住显示形态：Rust 下次启动会在显示窗口前按此设定尺寸并拉回屏内，
     // 因此这里必须持久化，否则「常态即胶囊」在重启后会丢。
     if (settings) {
       settings = { ...settings, compact_mode: next === "compact" };
@@ -784,11 +869,11 @@
   {#if mode === "compact"}
     <div
       class="pill-layer"
-      class:is-docked={!pillRevealed}
+      class:is-docked={pillDocked && !pillRevealed}
       data-side={pillSide}
       role="presentation"
-      onpointerenter={() => clearDockTimer()}
-      onpointerleave={() => scheduleDockPill()}
+      onpointerenter={onPillPointerEnter}
+      onpointerleave={onPillPointerLeave}
     >
       <div
         class="pill"

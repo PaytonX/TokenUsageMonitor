@@ -546,8 +546,9 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
                 .set_size(LogicalSize::new(168u32, 56u32))
                 .map_err(|e| e.to_string())?;
             compact.store(true, Ordering::SeqCst);
-            // 胶囊必须紧贴左/右边缘，7px 把手才能与之对齐；纵向夹在屏内。
-            dock_window(&window);
+            // 常态浮动：胶囊停在原处，只把越界的位置拉回屏内 —— 不再强制贴边；
+            // 只有用户把它拖到屏幕边缘松手，才由 sync_peek_window("docked") 贴死。
+            clamp_window_to_work_area(&window, 8.0);
         }
         other => return Err(format!("unknown window mode: {other}")),
     }
@@ -555,12 +556,13 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
     Ok(())
 }
 
-/// 创建/定位贴边把手，并把「谁捕获鼠标」交给本命令统一托管：
-/// `docked = true`（胶囊收起）→ 把手捕获鼠标、主窗穿透；
-/// `docked = false`（胶囊已滑入）→ 把手穿透（被胶囊盖住）、主窗捕获鼠标。
+/// 创建/定位贴边把手，并把「谁捕获鼠标」交给本命令统一托管（三态）：
+/// `floating`（常态浮动）→ 销毁把手、主窗可交互、不移动主窗；
+/// `revealed`（胶囊已贴边滑入）→ 把手存在但不捕获、主窗捕获、不移动主窗；
+/// `docked`（胶囊收起贴边）→ 先贴死边缘，再让把手捕获鼠标、主窗穿透。
 /// 返回胶囊贴靠的水平边，供前端决定滑入方向。
 #[tauri::command]
-pub async fn sync_peek_window(app: AppHandle, docked: bool) -> Result<String, String> {
+pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, String> {
     let dash = app
         .get_webview_window("dashboard")
         .ok_or_else(|| "dashboard window not found".to_string())?;
@@ -574,52 +576,69 @@ pub async fn sync_peek_window(app: AppHandle, docked: bool) -> Result<String, St
         return Ok(if is_right { "right" } else { "left" }.to_string());
     }
 
-    // 每个状态边界都强制贴边一次：胶囊必须紧贴左/右边缘，7px 把手才能与之对齐。
-    // 启动恢复时窗口刚被改过尺寸，那一瞬间贴边可能读到旧尺寸而偏移，这里是
-    // 窗口真正显示后的二次校正；收起草时也由此保证「收起即贴边」。
-    dock_window(&dash);
-
-    let peek = match app.get_webview_window("peek") {
-        Some(existing) => existing,
-        None => {
-            // 把手页通过初始化脚本拿到所在边，决定 4px 圆角朝向。
-            let side = if is_right { "\"right\"" } else { "\"left\"" };
-            let built = WebviewWindowBuilder::new(
-                &app,
-                "peek",
-                tauri::WebviewUrl::App("peek.html".into()),
-            )
-            .title("TokenUsageMonitor · 贴边把手")
-            .inner_size(PEEK_W, PEEK_H)
-            .resizable(false)
-            .decorations(false)
-            .transparent(true)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .shadow(false)
-            .focused(false)
-            .visible(false)
-            .initialization_script(format!("window.__PEEK_SIDE__ = {side};"))
-            .build()
-            .map_err(|e| e.to_string())?;
-            #[cfg(windows)]
-            crate::dwm_corner::disable_corner_artifacts(&built);
-            built
+    match state.as_str() {
+        "floating" => {
+            // 常态浮动：不需要把手窗口，主窗接管鼠标，位置保持不变（用户可自由拖动）。
+            if let Some(peek) = app.get_webview_window("peek") {
+                let _ = peek.destroy();
+            }
+            if let Err(e) = dash.set_ignore_cursor_events(false) {
+                tracing::warn!("dashboard set_ignore_cursor_events failed: {e}");
+            }
         }
-    };
+        "revealed" | "docked" => {
+            // 贴边态：胶囊必须紧贴左/右边缘，7px 把手才能与之对齐。收起（docked）
+            // 由前端在拖拽结束时判定，这里才真正贴死；滑入（revealed）时窗口已贴边，
+            // 不再移动，避免每帧校正造成抖动。
+            if state == "docked" {
+                dock_window(&dash);
+            }
 
-    let _ = peek.set_position(pos);
-    let _ = peek.show();
-    // 鼠标捕获：两个窗口必须一致切换。走 best-effort 但带兜底 —— 停靠态主窗是
-    // 穿透的，把手一旦不能捕获鼠标就再也唤不醒胶囊，此时直接让主窗把胶囊唤出来
-    // （peek-reveal），宁可少一层交互也不能让应用不可达。
-    if let Err(e) = peek.set_ignore_cursor_events(!docked) {
-        tracing::warn!("peek set_ignore_cursor_events failed: {e}");
-        if docked {
-            let _ = dash.emit("peek-reveal", ());
+            let peek = match app.get_webview_window("peek") {
+                Some(existing) => existing,
+                None => {
+                    // 把手页通过初始化脚本拿到所在边，决定 4px 圆角朝向。
+                    let side = if is_right { "\"right\"" } else { "\"left\"" };
+                    let built = WebviewWindowBuilder::new(
+                        &app,
+                        "peek",
+                        tauri::WebviewUrl::App("peek.html".into()),
+                    )
+                    .title("TokenUsageMonitor · 贴边把手")
+                    .inner_size(PEEK_W, PEEK_H)
+                    .resizable(false)
+                    .decorations(false)
+                    .transparent(true)
+                    .always_on_top(true)
+                    .skip_taskbar(true)
+                    .shadow(false)
+                    .focused(false)
+                    .visible(false)
+                    .initialization_script(format!("window.__PEEK_SIDE__ = {side};"))
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                    #[cfg(windows)]
+                    crate::dwm_corner::disable_corner_artifacts(&built);
+                    built
+                }
+            };
+
+            let _ = peek.set_position(pos);
+            let _ = peek.show();
+            // 鼠标捕获：两个窗口必须一致切换。走 best-effort 但带兜底 —— 停靠态
+            // 主窗是穿透的，把手一旦不能捕获鼠标就再也唤不醒胶囊，此时直接让主窗
+            // 把胶囊唤出来（peek-reveal），宁可少一层交互也不能让应用不可达。
+            let docked = state == "docked";
+            if let Err(e) = peek.set_ignore_cursor_events(!docked) {
+                tracing::warn!("peek set_ignore_cursor_events failed: {e}");
+                if docked {
+                    let _ = dash.emit("peek-reveal", ());
+                }
+            } else if let Err(e) = dash.set_ignore_cursor_events(docked) {
+                tracing::warn!("dashboard set_ignore_cursor_events failed: {e}");
+            }
         }
-    } else if let Err(e) = dash.set_ignore_cursor_events(docked) {
-        tracing::warn!("dashboard set_ignore_cursor_events failed: {e}");
+        other => return Err(format!("unknown peek state: {other}")),
     }
 
     Ok(if is_right { "right" } else { "left" }.to_string())

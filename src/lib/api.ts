@@ -11,6 +11,7 @@ import type {
   DeviceInfo,
   HeatmapCell,
   PeekSide,
+  PeekState,
   ProviderCatalog,
   ProviderError,
   ProviderState,
@@ -74,11 +75,13 @@ export async function setWindowMode(mode: WindowMode): Promise<void> {
   await invoke<void>("set_window_mode", { mode });
 }
 
-/** 贴边把手与主胶囊的会话状态切换。`docked = true`：胶囊收起 —— 把手捕获
- * 鼠标（作为唤醒把手）、主窗穿透；`docked = false`：胶囊已滑入 —— 两者互换。
+/** 贴边把手与主胶囊的会话状态切换。三态：
+ * `floating` —— 常态浮动：主窗可交互、不移动位置、不建把手窗口；
+ * `revealed` —— 胶囊已贴边滑入：把手存在但不捕获、主窗捕获鼠标；
+ * `docked` —— 胶囊收起贴边：先把主窗贴死边缘，再让把手捕获鼠标、主窗穿透。
  * 返回胶囊贴靠的水平边，供前端决定滑入方向。 */
-export async function syncPeekWindow(docked: boolean): Promise<PeekSide> {
-  return invoke<PeekSide>("sync_peek_window", { docked });
+export async function syncPeekWindow(state: PeekState): Promise<PeekSide> {
+  return invoke<PeekSide>("sync_peek_window", { state });
 }
 
 /** 把手 → 主窗：指针进入（60ms 防抖后由把手页发出）。 */

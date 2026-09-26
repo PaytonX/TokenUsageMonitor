@@ -436,12 +436,13 @@ pub fn run() {
             let dash = app
                 .get_webview_window("dashboard")
                 .expect("dashboard window must exist");
-            // 显示形态是持久的：上次停在 compact 胶囊态就先按胶囊尺寸贴边定好位置，
+            // 显示形态是持久的：上次停在 compact 胶囊态就先按胶囊尺寸定好大小，
             // 再显示窗口（配置里 visible=false）—— 否则启动会先闪一个 400x680 的全窗。
-            // 前端挂载后会按窗宽自行对齐视图，因此这里不需要额外通知。
+            // 恢复后是常态浮动（只把窗口拉回屏内，不贴边），只有用户把它拖到屏幕边缘
+            // 松手才由前端判定贴边收起。前端挂载后会按窗宽自行对齐视图，故无需额外通知。
             if app.state::<AppState>().settings.compact_mode_now() {
                 let _ = dash.set_size(tauri::LogicalSize::new(168u32, 56u32));
-                ipc::dock_window(&dash);
+                ipc::clamp_window_to_work_area(&dash, 8.0);
                 app.state::<AppState>()
                     .compact_mode
                     .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -449,20 +450,11 @@ pub fn run() {
             let _ = dash.show();
             let startup_clamped = std::sync::atomic::AtomicBool::new(false);
             let dash_for_clamp = dash.clone();
-            let clamp_app = app.handle().clone();
             dash.on_window_event(move |event| {
                 if matches!(event, tauri::WindowEvent::Focused(true))
                     && !startup_clamped.swap(true, std::sync::atomic::Ordering::SeqCst)
                 {
-                    if clamp_app
-                        .state::<AppState>()
-                        .compact_mode
-                        .load(std::sync::atomic::Ordering::SeqCst)
-                    {
-                        ipc::dock_window(&dash_for_clamp);
-                    } else {
-                        ipc::clamp_window_to_work_area(&dash_for_clamp, 8.0);
-                    }
+                    ipc::clamp_window_to_work_area(&dash_for_clamp, 8.0);
                 }
             });
 
@@ -487,9 +479,7 @@ pub fn run() {
                 }
             });
 
-            // 拖动时的贴边策略：compact 胶囊始终横向贴死最近的左/右边缘
-            // （7px 把手就画在那里），纵向保留并夹在屏内，同时让把手跟随；
-            // dashboard 全窗保持原有 14px 四向吸附。
+            // 拖动时的贴边策略：两种形态都沿用普通边缘吸附 + 把手跟随。
             let snap_dash = dash.clone();
             let snap_dash_inner = snap_dash.clone();
             let edge_snap_flag = app.state::<AppState>().edge_snap.clone();
@@ -498,11 +488,13 @@ pub fn run() {
                 if !matches!(event, tauri::WindowEvent::Moved(_)) {
                     return;
                 }
-                if compact_flag.load(Ordering::SeqCst) {
-                    ipc::dock_window(&snap_dash_inner);
-                    ipc::reposition_peek(&snap_dash_inner);
-                } else if edge_snap_flag.load(Ordering::SeqCst) {
+                // 两种形态都沿用普通边缘吸附（是否贴边收起由前端在拖拽结束时判定）；
+                // 把手只是跟随胶囊纵向位置，未创建时为空操作。
+                if edge_snap_flag.load(Ordering::SeqCst) {
                     ipc::snap_to_edges(&snap_dash_inner, 14.0);
+                }
+                if compact_flag.load(Ordering::SeqCst) {
+                    ipc::reposition_peek(&snap_dash_inner);
                 }
             });
 
