@@ -349,6 +349,42 @@ fn clamp_rect(
     (x.clamp(area_x + margin, max_x), y.clamp(area_y + margin, max_y))
 }
 
+/// 把手窗与胶囊主行的逻辑尺寸（DIP）。主行固定取收起态的 56，这样明细
+/// 展开时把手不会跟着下移，收起后也无需重新对齐。
+const PEEK_W: f64 = 7.0;
+const PEEK_H: f64 = 58.0;
+const PILL_ROW_H: f64 = 56.0;
+
+/// 胶囊应贴靠的水平边。比较窗口中心与工作区中心；正中时归右侧（默认边）。
+fn dock_side(x: f64, w: f64, area_x: f64, area_w: f64) -> bool {
+    x + w / 2.0 >= area_x + area_w / 2.0
+}
+
+/// 把窗口横向贴死到最近的水平边缘，纵向保留原位置但夹在工作区内。
+/// 把手画在屏幕边缘，胶囊必须紧贴边缘二者才能对齐；纵向是用户自由选择的位置。
+fn dock_rect(
+    x: f64, y: f64, w: f64, h: f64,
+    area_x: f64, area_y: f64, area_w: f64, area_h: f64,
+) -> (f64, f64) {
+    let left = area_x;
+    let right = (area_x + area_w - w).max(area_x);
+    let nx = if dock_side(x, w, area_x, area_w) { right } else { left };
+    let max_y = (area_y + area_h - h).max(area_y);
+    (nx, y.clamp(area_y, max_y))
+}
+
+/// 把手的物理位置：贴死所在边缘，纵向中心对齐胶囊主行（`row_h` 为物理像素）。
+fn peek_rect(
+    dash_y: f64, row_h: f64, is_right: bool,
+    area_x: f64, area_y: f64, area_w: f64, area_h: f64,
+    peek_w: f64, peek_h: f64,
+) -> (f64, f64) {
+    let x = if is_right { area_x + area_w - peek_w } else { area_x };
+    let y = dash_y + row_h / 2.0 - peek_h / 2.0;
+    let max_y = (area_y + area_h - peek_h).max(area_y);
+    (x, y.clamp(area_y, max_y))
+}
+
 pub fn clamp_window_to_work_area(window: &WebviewWindow, margin_logical: f64) -> bool {
     let Ok(pos) = window.outer_position() else { return false; };
     let Ok(size) = window.outer_size() else { return false; };
@@ -1002,5 +1038,63 @@ mod clamp_tests {
     fn pins_when_window_taller_than_work_area() {
         let (x, y) = clamp_rect(0.0, 500.0, 360.0, 1200.0, 0.0, 0.0, 1920.0, 1040.0, 8.0);
         assert_eq!((x, y), (8.0, 8.0));
+    }
+}
+
+#[cfg(test)]
+mod dock_tests {
+    use super::{dock_rect, dock_side, peek_rect};
+
+    const AREA_X: f64 = 0.0;
+    const AREA_Y: f64 = 0.0;
+    const AREA_W: f64 = 1920.0;
+    const AREA_H: f64 = 1040.0;
+
+    #[test]
+    fn dock_rect_flushes_to_the_left_edge() {
+        let (x, y) = dock_rect(10.0, 300.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!((x, y), (0.0, 300.0));
+    }
+
+    #[test]
+    fn dock_rect_flushes_to_the_right_edge() {
+        let (x, y) = dock_rect(1000.0, 300.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!((x, y), (1752.0, 300.0));
+    }
+
+    #[test]
+    fn dock_rect_exact_middle_docks_right() {
+        let (x, _) = dock_rect(876.0, 0.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!(x, 1752.0);
+    }
+
+    #[test]
+    fn dock_rect_keeps_vertical_but_clamps_inside() {
+        let (_, top) = dock_rect(0.0, -40.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!(top, 0.0);
+        let (_, bottom) = dock_rect(0.0, 1030.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!(bottom, 984.0);
+    }
+
+    #[test]
+    fn dock_side_mirrors_for_a_negative_origin_monitor() {
+        assert!(!dock_side(-1900.0, 168.0, -1920.0, 1920.0));
+        assert!(dock_side(-60.0, 168.0, -1920.0, 1920.0));
+    }
+
+    #[test]
+    fn peek_rect_sits_flush_and_centres_on_the_pill_row() {
+        let (x, y) = peek_rect(100.0, 56.0, true, AREA_X, AREA_Y, AREA_W, AREA_H, 7.0, 58.0);
+        assert_eq!((x, y), (1913.0, 99.0));
+        let (lx, _) = peek_rect(100.0, 56.0, false, AREA_X, AREA_Y, AREA_W, AREA_H, 7.0, 58.0);
+        assert_eq!(lx, 0.0);
+    }
+
+    #[test]
+    fn peek_rect_clamps_to_the_work_area() {
+        let (_, top) = peek_rect(0.0, 56.0, true, AREA_X, AREA_Y, AREA_W, AREA_H, 7.0, 58.0);
+        assert_eq!(top, 0.0);
+        let (_, bottom) = peek_rect(1020.0, 56.0, true, AREA_X, AREA_Y, AREA_W, AREA_H, 7.0, 58.0);
+        assert_eq!(bottom, 982.0);
     }
 }
