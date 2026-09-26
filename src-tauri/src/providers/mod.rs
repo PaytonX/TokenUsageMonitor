@@ -254,7 +254,7 @@ pub const PRESETS: &[Preset] = &[
         auth_kind: AuthKind::BearerKey,
         default_accent: "#1d1d1d",
         sub_modes: None,
-        experimental: true,
+        experimental: false,
     },
     Preset {
         kind: "kimi",
