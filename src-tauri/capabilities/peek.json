@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "peek",
+  "description": "TokenUsageMonitor edge handle window: it only reports hover/leave and listens for the reveal-complete signal. No window or data access.",
+  "windows": ["peek"],
+  "permissions": [
+    "core:event:allow-emit",
+    "core:event:allow-listen"
+  ]
+}
