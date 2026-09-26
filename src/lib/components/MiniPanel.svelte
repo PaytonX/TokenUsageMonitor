@@ -15,7 +15,9 @@
     /** provider_id -> active flag from the latest UsageUpdate. */
     actives?: Record<string, boolean>;
     /** true = show REMAINING %; false = show USED % (see `countdown_mode`).
-     *  The fill bar always visualizes consumed amount either way. */
+     *  The fill bar follows the same direction as the displayed percentage
+     *  (countdown: remaining; otherwise: used); warn/crit tone thresholds stay
+     *  keyed to the consumed amount. */
     countdown?: boolean;
     /** provider_id -> 账户强调色（#RRGGBB）。给了就优先于品牌注册表的颜色，
      *  与圆环/徽章/胶囊 logo 保持同一口径。 */
@@ -38,6 +40,7 @@
     {@const money = payAsYouGoLabel(s, countdown)}
     {@const tone = usedPct >= 0.95 ? "crit" : usedPct >= 0.8 ? "warn" : "ok"}
     {@const brand = accentFor?.(s.provider_id) ?? brandColorFor(s.provider_id.split("-")[0])}
+    {@const barPct = countdown ? remain : usedPct}
     <div
       class="mini__row"
       role="listitem"
@@ -50,7 +53,7 @@
       <span class="mini__track">
         <span
           class="mini__fill"
-          style={`width:${(usedPct * 100).toFixed(1)}%;background:${
+          style={`width:${(barPct * 100).toFixed(1)}%;background:${
             tone === "ok" ? brand : `var(--tum-${tone})`
           }`}
         ></span>
