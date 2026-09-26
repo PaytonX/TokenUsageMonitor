@@ -506,6 +506,7 @@ pub fn run() {
             ipc::force_refresh,
             ipc::toggle_polling,
             ipc::set_window_mode,
+            ipc::sync_peek_window,
             ipc::open_settings,
             ipc::close_settings,
             ipc::open_trend_window,

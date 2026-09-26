@@ -12,6 +12,7 @@ use crate::settings::Settings;
 use crate::AppState;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewWindow, WebviewWindowBuilder};
 
 /// A configured account plus its credential/registry state, for the Settings UI.
@@ -469,6 +470,9 @@ fn peek_placement(window: &WebviewWindow) -> Option<(bool, PhysicalPosition<i32>
 pub fn reposition_peek(window: &WebviewWindow) {
     let Some(peek) = window.app_handle().get_webview_window("peek") else { return; };
     let Some((_, pos)) = peek_placement(window) else { return; };
+    if peek.outer_position().map(|cur| cur == pos).unwrap_or(false) {
+        return;
+    }
     let _ = peek.set_position(pos);
 }
 
@@ -521,23 +525,83 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
         .get_webview_window("dashboard")
         .ok_or_else(|| "dashboard window not found".to_string())?;
 
+    let compact = app.state::<AppState>().compact_mode.clone();
+
     match mode.as_str() {
         "dashboard" => {
             window
                 .set_size(LogicalSize::new(400u32, 680u32))
                 .map_err(|e| e.to_string())?;
+            // 全窗态是普通窗口：恢复鼠标交互，贴边把手在此模式下没有意义。
+            let _ = window.set_ignore_cursor_events(false);
+            if let Some(peek) = app.get_webview_window("peek") {
+                let _ = peek.close();
+            }
+            compact.store(false, Ordering::SeqCst);
+            clamp_window_to_work_area(&window, 8.0);
         }
         "compact" => {
-            // Mini pill: single row 150x44 (ring + name + divider + dot + close).
+            // 迷你胶囊 168x56：主行 = 圆环 + 百分比 + 分隔线 + 品牌芯片。
             window
-                .set_size(LogicalSize::new(150u32, 44u32))
+                .set_size(LogicalSize::new(168u32, 56u32))
                 .map_err(|e| e.to_string())?;
+            compact.store(true, Ordering::SeqCst);
+            // 胶囊必须紧贴左/右边缘，7px 把手才能与之对齐；纵向夹在屏内。
+            dock_window(&window);
         }
         other => return Err(format!("unknown window mode: {other}")),
     }
 
-    clamp_window_to_work_area(&window, 8.0);
     Ok(())
+}
+
+/// 创建/定位贴边把手，并把「谁捕获鼠标」交给本命令统一托管：
+/// `docked = true`（胶囊收起）→ 把手捕获鼠标、主窗穿透；
+/// `docked = false`（胶囊已滑入）→ 把手穿透（被胶囊盖住）、主窗捕获鼠标。
+/// 返回胶囊贴靠的水平边，供前端决定滑入方向。
+#[tauri::command]
+pub async fn sync_peek_window(app: AppHandle, docked: bool) -> Result<String, String> {
+    let dash = app
+        .get_webview_window("dashboard")
+        .ok_or_else(|| "dashboard window not found".to_string())?;
+    let Some((is_right, pos)) = peek_placement(&dash) else {
+        return Err("dashboard window has no monitor".to_string());
+    };
+
+    let peek = match app.get_webview_window("peek") {
+        Some(existing) => existing,
+        None => {
+            // 把手页通过初始化脚本拿到所在边，决定 4px 圆角朝向。
+            let side = if is_right { "\"right\"" } else { "\"left\"" };
+            let built = WebviewWindowBuilder::new(
+                &app,
+                "peek",
+                tauri::WebviewUrl::App("peek.html".into()),
+            )
+            .title("TokenUsageMonitor · 贴边把手")
+            .inner_size(PEEK_W, PEEK_H)
+            .resizable(false)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .shadow(false)
+            .focused(false)
+            .visible(true)
+            .initialization_script(format!("window.__PEEK_SIDE__ = {side};"))
+            .build()
+            .map_err(|e| e.to_string())?;
+            #[cfg(windows)]
+            crate::dwm_corner::disable_corner_artifacts(&built);
+            built
+        }
+    };
+
+    let _ = peek.set_position(pos);
+    peek.set_ignore_cursor_events(!docked).map_err(|e| e.to_string())?;
+    dash.set_ignore_cursor_events(docked).map_err(|e| e.to_string())?;
+
+    Ok(if is_right { "right" } else { "left" }.to_string())
 }
 
 /// Open the Settings window. If it already exists, just focus it.
