@@ -13,6 +13,7 @@
   import ProgressRing from "./ProgressRing.svelte";
   import PulseDot from "./PulseDot.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
+  import { EXPERIMENTAL_KINDS } from "../brand-glyphs";
 
   interface Props {
     snapshot: UsageSnapshot;
@@ -52,10 +53,8 @@
   // Brand/logo normalization mirrors App.svelte header avatars: the first
   // segment of a credential-scoped provider_id is the provider kind.
   let kind = $derived(snapshot.provider_id.split("-")[0]);
-  // UsageSnapshot carries no preset metadata, so experimental status is
-  // derived from kind. Keep this set in sync with presets flagged
-  // `experimental` (Task 13): codex is best-effort / billing-unstable.
-  const EXPERIMENTAL_KINDS = new Set(["codex"]);
+  // 实验性来源由 kind 推导；集合与 brand-glyphs 的 EXPERIMENTAL_KINDS 同源，
+  // 避免 ProviderCard 与焦点胶囊两处各维护一份而漂移。
   let isExperimental = $derived(EXPERIMENTAL_KINDS.has(kind));
   let balanceLabel = $derived.by(() => {
     if (!w.balance) return null;
@@ -307,12 +306,13 @@
     flex: none;
     white-space: nowrap;
     font-size: var(--tum-font-size-xs);
-    font-weight: 500;
-    color: var(--tum-warn);
-    background: rgba(255, 200, 61, 0.12);
-    border: 1px solid rgba(255, 200, 61, 0.4);
-    padding: 1px 6px;
-    border-radius: var(--tum-radius-xs);
+    font-weight: 600;
+    /* 品牌色 22% 底 + 圆角 6（spec 决策 12）；文字继承卡片强调色。 */
+    color: var(--acct-accent, var(--tum-accent));
+    background: rgba(255, 255, 255, 0.08);
+    border: none;
+    padding: 1px 5px;
+    border-radius: 6px;
     letter-spacing: 0.5px;
   }
 
