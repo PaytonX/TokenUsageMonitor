@@ -28,7 +28,7 @@ use notify::SharedNotifyState;
 use reqwest::Client;
 use scheduler::SharedBurnTracker;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri::menu::{Menu, MenuItem};
@@ -80,6 +80,11 @@ pub struct AppState {
     /// 缓存「Dashboard 处于 compact 胶囊态」。供同步的 `Moved` 处理器选择
     /// 停靠策略（贴边 vs 四向吸附），以及托盘恢复时重新拉起把手。
     pub compact_mode: Arc<AtomicBool>,
+    /// 用户正在用原生拖拽移动窗口：前端调用 set_pill_dragging(true) 置位，
+    /// 窗口停止移动 400ms 后由 watcher 清零并发事件通知前端结算。
+    pub pill_drag: Arc<AtomicBool>,
+    /// 窗口最近一次 Moved 的时间戳（epoch ms），供 watcher 判断是否停稳。
+    pub pill_last_move_ms: Arc<AtomicU64>,
     /// Holds the tray icon alive for the app lifetime. Never referenced after
     /// construction.
     #[allow(dead_code)]
@@ -136,6 +141,14 @@ pub fn build_http_client(proxy_url: Option<&str>) -> Result<Client, String> {
         builder = builder.no_proxy().proxy(proxy);
     }
     builder.build().map_err(|e| format!("building reqwest client failed: {e}"))
+}
+
+/// Epoch 毫秒时间戳。拖拽结束检测用它判断窗口是否已停止移动。
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Load any saved credentials for the configured accounts into the in-memory
@@ -424,6 +437,8 @@ pub fn run() {
                 close_to_tray,
                 edge_snap,
                 compact_mode: Arc::new(AtomicBool::new(false)),
+                pill_drag: Arc::new(AtomicBool::new(false)),
+                pill_last_move_ms: Arc::new(AtomicU64::new(0)),
                 _tray: tray,
                 local,
             };
@@ -484,10 +499,12 @@ pub fn run() {
             let snap_dash_inner = snap_dash.clone();
             let edge_snap_flag = app.state::<AppState>().edge_snap.clone();
             let compact_flag = app.state::<AppState>().compact_mode.clone();
+            let last_move = app.state::<AppState>().pill_last_move_ms.clone();
             snap_dash.on_window_event(move |event| {
                 if !matches!(event, tauri::WindowEvent::Moved(_)) {
                     return;
                 }
+                last_move.store(crate::now_ms(), Ordering::SeqCst);
                 // 两种形态都沿用普通边缘吸附（是否贴边收起由前端在拖拽结束时判定）；
                 // 把手只是跟随胶囊纵向位置，未创建时为空操作。
                 if edge_snap_flag.load(Ordering::SeqCst) {
@@ -525,6 +542,28 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 scheduler::spawn_all(&handle).await;
             });
+
+            // 拖拽结束检测：原生 startDragging 的模态拖拽会把 mouseup 交给系统，
+            // WebView 通常收不到 pointerup，因此由 Rust 观察「窗口停止移动」来判定
+            // 手势结束，再通知前端做贴边/浮动结算。
+            let settle_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                    let Some(state) = settle_handle.try_state::<AppState>() else { continue; };
+                    if !state.pill_drag.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    let last = state.pill_last_move_ms.load(Ordering::SeqCst);
+                    if last == 0 || crate::now_ms().saturating_sub(last) < 400 {
+                        continue;
+                    }
+                    state.pill_drag.store(false, Ordering::SeqCst);
+                    if let Some(w) = settle_handle.get_webview_window("dashboard") {
+                        let _ = w.emit("pill-drag-settled", ());
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -536,6 +575,7 @@ pub fn run() {
             ipc::toggle_polling,
             ipc::set_window_mode,
             ipc::sync_peek_window,
+            ipc::set_pill_dragging,
             ipc::open_settings,
             ipc::close_settings,
             ipc::open_trend_window,

@@ -644,6 +644,18 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
     Ok(if is_right { "right" } else { "left" }.to_string())
 }
 
+/// 前端在开始原生拖拽时置位、手势结束（或收到 pointerup 快路径）时清零。
+/// 与 Rust 侧的「窗口停止移动」检测配合判定拖拽结束。
+#[tauri::command]
+pub async fn set_pill_dragging(state: State<'_, AppState>, active: bool) -> Result<(), String> {
+    state.pill_drag.store(active, Ordering::SeqCst);
+    if active {
+        state.pill_last_move_ms
+            .store(crate::now_ms(), Ordering::SeqCst);
+    }
+    Ok(())
+}
+
 /// Open the Settings window. If it already exists, just focus it.
 /// The window is created lazily so the dashboard doesn't pay the cost on
 /// startup if the user never opens Settings.

@@ -84,6 +84,16 @@ export async function syncPeekWindow(state: PeekState): Promise<PeekSide> {
   return invoke<PeekSide>("sync_peek_window", { state });
 }
 
+/** 告知后端「用户开始/结束原生拖拽」：拖拽结束判定在 Rust 侧完成。 */
+export async function setPillDragging(active: boolean): Promise<void> {
+  await invoke<void>("set_pill_dragging", { active });
+}
+
+/** Rust → 主窗：窗口停止移动、判定为拖拽结束，可以结算贴边/浮动了。 */
+export function onPillDragSettled(cb: () => void): Promise<UnlistenFn> {
+  return listen("pill-drag-settled", () => cb());
+}
+
 /** 把手 → 主窗：指针进入（60ms 防抖后由把手页发出）。 */
 export function onPeekHover(cb: () => void): Promise<UnlistenFn> {
   return listen("peek-hover", () => cb());
