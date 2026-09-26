@@ -367,21 +367,6 @@ export function hexToRgb(hex: string): string | null {
   return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
 }
 
-/** Lighten a "#RRGGBB" color by `amt` (0..1) toward white — used to build a
- * two-stop arc gradient from a single per-account accent. */
-export function lightenHex(hex: string, amt = 0.35): string {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex.trim());
-  if (!m) return hex;
-  const n = parseInt(m[1], 16);
-  const r = (n >> 16) & 255;
-  const g = (n >> 8) & 255;
-  const b = n & 255;
-  const c = (v: number) => Math.round(v + (255 - v) * amt);
-  return `#${[c(r), c(g), c(b)]
-    .map((v) => v.toString(16).padStart(2, "0"))
-    .join("")}`;
-}
-
 /** Helper to format a usage value with the right unit suffix. */
 export function formatUsage(value: number, unit: UsageUnit): string {
   if (unit === "usd") {

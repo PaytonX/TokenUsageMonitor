@@ -58,11 +58,14 @@ if (host) {
   let debounceTimer: number | null = null;
 
   host.addEventListener("pointerenter", () => {
-    // 立刻隐去把手（110ms 淡出），胶囊随后从窗外滑入盖住这里。
-    host.classList.add("is-hidden");
     if (debounceTimer !== null) window.clearTimeout(debounceTimer);
     debounceTimer = window.setTimeout(() => {
       debounceTimer = null;
+      // ⚠️ 只能在 hover 确认后才隐去把手。若在 pointerenter 里立刻加 is-hidden，
+      // 该类的 pointer-events:none 会让浏览器在指针仍位于把手上时改判 hover
+      // 目标并派发一次 pointerleave —— 于是这个 60ms 定时器被下面的 leave
+      // 处理器清掉，peek-hover 永不发出，表现为「hover 老是不生效」。
+      host.classList.add("is-hidden");
       void emit("peek-hover");
     }, HOVER_DEBOUNCE_MS);
   });

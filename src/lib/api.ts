@@ -91,6 +91,12 @@ export function onPeekLeave(cb: () => void): Promise<UnlistenFn> {
   return listen("peek-leave", () => cb());
 }
 
+/** Rust → 主窗：胶囊必须常显可交互的兜底信号（托盘恢复 compact 主窗、或把手
+ *  捕获鼠标失败已无法唤醒胶囊时发出）。收到即调用 revealPill()。 */
+export function onPeekReveal(cb: () => void): Promise<UnlistenFn> {
+  return listen("peek-reveal", () => cb());
+}
+
 /** 主窗 → 把手：滑出完成，把手可复现；payload 是此刻胶囊贴靠的边（用于
  *  纠正把手的圆角朝向，否则拖到屏幕另一侧后把手会一直朝错方向）。 */
 export function emitPeekShow(side: PeekSide): Promise<void> {

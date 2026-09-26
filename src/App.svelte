@@ -16,6 +16,7 @@
     emitPeekShow,
     onPeekHover,
     onPeekLeave,
+    onPeekReveal,
     forceRefresh,
     openSettings,
     onTabsChanged,
@@ -381,6 +382,7 @@
 
     unlistenFns.push(await onPeekHover(() => void revealPill()));
     unlistenFns.push(await onPeekLeave(() => scheduleDockPill()));
+    unlistenFns.push(await onPeekReveal(() => void revealPill()));
 
     // 1-second clock tick for the timestamp header.
     const tick = setInterval(() => (now = new Date()), 1000);

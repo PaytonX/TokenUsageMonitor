@@ -605,12 +605,15 @@ pub async fn sync_peek_window(app: AppHandle, docked: bool) -> Result<String, St
 
     let _ = peek.set_position(pos);
     let _ = peek.show();
-    // 鼠标捕获走 best-effort：两个窗口必须一致切换，任何一侧失败都不该让
-    // 调用方拿到半途而废的错误（下次状态切换会重新对齐）。
+    // 鼠标捕获：两个窗口必须一致切换。走 best-effort 但带兜底 —— 停靠态主窗是
+    // 穿透的，把手一旦不能捕获鼠标就再也唤不醒胶囊，此时直接让主窗把胶囊唤出来
+    // （peek-reveal），宁可少一层交互也不能让应用不可达。
     if let Err(e) = peek.set_ignore_cursor_events(!docked) {
         tracing::warn!("peek set_ignore_cursor_events failed: {e}");
-    }
-    if let Err(e) = dash.set_ignore_cursor_events(docked) {
+        if docked {
+            let _ = dash.emit("peek-reveal", ());
+        }
+    } else if let Err(e) = dash.set_ignore_cursor_events(docked) {
         tracing::warn!("dashboard set_ignore_cursor_events failed: {e}");
     }
 

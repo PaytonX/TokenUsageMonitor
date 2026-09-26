@@ -179,6 +179,9 @@ fn show_dashboard(app: &AppHandle) {
     let _ = window.show();
     let _ = window.set_focus();
     if app.state::<AppState>().compact_mode.load(Ordering::SeqCst) {
+        // compact 主窗被恢复时仍是「停靠 + 穿透 + 内容滑出窗外」的不可见态，
+        // 因此同时请前端把胶囊唤出来（把手只是备选入口）。
+        let _ = window.emit("peek-reveal", ());
         ipc::reposition_peek(&window);
         if let Some(peek) = app.get_webview_window("peek") {
             let _ = peek.show();
