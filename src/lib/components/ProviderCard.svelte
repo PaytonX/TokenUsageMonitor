@@ -12,6 +12,7 @@
   import ResetCountdown from "./ResetCountdown.svelte";
   import ProgressRing from "./ProgressRing.svelte";
   import PulseDot from "./PulseDot.svelte";
+  import ProviderLogo from "./ProviderLogo.svelte";
 
   interface Props {
     snapshot: UsageSnapshot;
@@ -48,6 +49,14 @@
   }: Props = $props();
 
   let w = $derived(snapshot.windows);
+  // Brand/logo normalization mirrors App.svelte header avatars: the first
+  // segment of a credential-scoped provider_id is the provider kind.
+  let kind = $derived(snapshot.provider_id.split("-")[0]);
+  // UsageSnapshot carries no preset metadata, so experimental status is
+  // derived from kind. Keep this set in sync with presets flagged
+  // `experimental` (Task 13): codex is best-effort / billing-unstable.
+  const EXPERIMENTAL_KINDS = new Set(["codex"]);
+  let isExperimental = $derived(EXPERIMENTAL_KINDS.has(kind));
   let balanceLabel = $derived.by(() => {
     if (!w.balance) return null;
     return `${formatUsage(w.balance.total, "cny")}`;
@@ -146,8 +155,16 @@
         onSelect?.();
       }}
     >
-      <PulseDot {active} {tone} size={8} />
+      <span class="card__status">
+        <PulseDot {active} {tone} size={8} />
+        <span class="card__logo-badge">
+          <ProviderLogo {kind} size={11} accent={accent ?? null} />
+        </span>
+      </span>
       <span class="card__name">{snapshot.provider_display_name}</span>
+      {#if isExperimental}
+        <span class="card__exp" title="实验性支持：数据可能不完整或口径调整中">实验</span>
+      {/if}
     </button>
     {#if snapshot.plan_tier}
       <span class="card__tier">{snapshot.plan_tier}</span>
@@ -260,6 +277,43 @@
     color: inherit;
     text-align: left;
     cursor: pointer;
+  }
+
+  .card__status {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    margin-right: 3px;
+  }
+
+  .card__logo-badge {
+    position: absolute;
+    right: -7px;
+    bottom: -7px;
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--tum-bg-solid);
+    border: 1px solid var(--tum-border-strong);
+    overflow: hidden;
+  }
+
+  .card__exp {
+    flex: none;
+    white-space: nowrap;
+    font-size: var(--tum-font-size-xs);
+    font-weight: 500;
+    color: var(--tum-warn);
+    background: rgba(255, 200, 61, 0.12);
+    border: 1px solid rgba(255, 200, 61, 0.4);
+    padding: 1px 6px;
+    border-radius: var(--tum-radius-xs);
+    letter-spacing: 0.5px;
   }
 
   .card:has(:focus-visible) {
