@@ -844,7 +844,7 @@
           >✕</button>
         </div>
         {#if pillExpanded}
-          <MiniPanel {snapshots} {actives} countdown={displayRemaining} />
+          <MiniPanel {snapshots} {actives} countdown={displayRemaining} accentFor={(id) => accentById[id]} />
         {/if}
       </div>
     </div>

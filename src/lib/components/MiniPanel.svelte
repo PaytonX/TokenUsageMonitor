@@ -17,9 +17,12 @@
     /** true = show REMAINING %; false = show USED % (see `countdown_mode`).
      *  The fill bar always visualizes consumed amount either way. */
     countdown?: boolean;
+    /** provider_id -> 账户强调色（#RRGGBB）。给了就优先于品牌注册表的颜色，
+     *  与圆环/徽章/胶囊 logo 保持同一口径。 */
+    accentFor?: (providerId: string) => string | undefined;
   }
 
-  let { snapshots, actives = {}, countdown = true }: Props = $props();
+  let { snapshots, actives = {}, countdown = true, accentFor }: Props = $props();
 </script>
 
 <div
@@ -34,7 +37,7 @@
     {@const remain = remainingPercent(s)}
     {@const money = payAsYouGoLabel(s, countdown)}
     {@const tone = usedPct >= 0.95 ? "crit" : usedPct >= 0.8 ? "warn" : "ok"}
-    {@const brand = brandColorFor(s.provider_id.split("-")[0])}
+    {@const brand = accentFor?.(s.provider_id) ?? brandColorFor(s.provider_id.split("-")[0])}
     <div
       class="mini__row"
       role="listitem"
@@ -42,7 +45,7 @@
     >
       <PulseDot active={!!actives[s.provider_id]} {tone} size={7} accent={brand} />
       <span class="mini__logo" title={s.provider_display_name}>
-        <ProviderLogo kind={s.provider_id.split("-")[0]} size={18} />
+        <ProviderLogo kind={s.provider_id.split("-")[0]} size={18} accent={brand} />
       </span>
       <span class="mini__track">
         <span
