@@ -1,36 +1,188 @@
 <script lang="ts">
   import {
     formatUsage,
+    hexToRgb,
+    isPayAsYouGo,
+    percent,
+    remainingPercent,
+    type BurnInfo,
     type UsageSnapshot,
   } from "../types";
   import UsageBar from "./UsageBar.svelte";
   import ResetCountdown from "./ResetCountdown.svelte";
+  import ProgressRing from "./ProgressRing.svelte";
+  import PulseDot from "./PulseDot.svelte";
+  import ProviderLogo from "./ProviderLogo.svelte";
 
   interface Props {
     snapshot: UsageSnapshot;
     error?: string | null;
+    burn?: BurnInfo | null;
+    active?: boolean;
+    lastRefreshAt?: number;
+    /** Provider whose card is currently focused in the header ring. */
+    focused?: boolean;
+    /** Per-account accent (#RRGGBB). Injected as `--acct-accent*` CSS vars on
+     *  the card root and passed to the ring; falls back to --tum-accent. */
+    accent?: string;
+    /** true = the ring/label show REMAINING; false = USED (see `countdown_mode`). */
+    countdown?: boolean;
+    /** Called when the user clicks this card; App links it to focus + heatmap. */
+    onSelect?: () => void;
+    /** Reported as the pointer enters/leaves the card; drives the floating
+     *  detail overlay in App (small cards no longer clip the detail). The
+     *  rect is the card's viewport box at enter time (overlay anchoring). */
+    onHover?: (id: string, hovering: boolean, rect?: DOMRect) => void;
   }
 
-  let { snapshot, error = null }: Props = $props();
+  let {
+    snapshot,
+    error = null,
+    burn = null,
+    active = false,
+    lastRefreshAt = Date.now(),
+    focused = false,
+    accent,
+    countdown = true,
+    onSelect,
+    onHover,
+  }: Props = $props();
 
   let w = $derived(snapshot.windows);
+  // Brand/logo normalization mirrors App.svelte header avatars: the first
+  // segment of a credential-scoped provider_id is the provider kind.
+  let kind = $derived(snapshot.provider_id.split("-")[0]);
+  // UsageSnapshot carries no preset metadata, so experimental status is
+  // derived from kind. Keep this set in sync with presets flagged
+  // `experimental` (Task 13): codex is best-effort / billing-unstable.
+  const EXPERIMENTAL_KINDS = new Set(["codex"]);
+  let isExperimental = $derived(EXPERIMENTAL_KINDS.has(kind));
   let balanceLabel = $derived.by(() => {
     if (!w.balance) return null;
     return `${formatUsage(w.balance.total, "cny")}`;
   });
+
+  // Ring/label flip: `countdown` true shows REMAINING, false shows USED.
+  // Tone thresholds stay on used % regardless of display mode.
+  let remaining = $derived(remainingPercent(snapshot));
+  let usedPct = $derived(1 - remaining);
+  let ringLabel = $derived(
+    countdown
+      ? `${Math.round(remaining * 100)}%`
+      : `${Math.round(usedPct * 100)}%`,
+  );
+  let ringValue = $derived(countdown ? remaining : usedPct);
+  // 按量付费 provider：无配额窗口，百分比无意义，不渲染圆环（余额已由
+  // 头部 balance 展示，本月消费由底部 UsageBar 展示，避免信息重复）。
+  let tone = $derived<"ok" | "warn" | "crit">(
+    usedPct >= 0.95 ? "crit" : usedPct >= 0.8 ? "warn" : "ok",
+  );
+
+  // Dual-ring (feedback #8): providers with both a quota'd 5h window and a
+  // longer window show TWO windows on one ring — inner = 5h short window,
+  // outer = the long window (weekly, falling back to monthly). Providers
+  // without a 5h window keep a single ring.
+  let shortRemain = $derived(
+    w.five_hour && w.five_hour.quota > 0 ? 1 - percent(w.five_hour) : null,
+  );
+  let longWin = $derived(
+    (w.weekly && w.weekly.quota > 0
+      ? w.weekly
+      : w.monthly && w.monthly.quota > 0
+        ? w.monthly
+        : null),
+  );
+  let useDual = $derived(shortRemain !== null && longWin !== null);
+  let longRemain = $derived(longWin ? 1 - percent(longWin) : null);
+  let hasWeeklyQuota = $derived(Boolean(w.weekly && w.weekly.quota > 0));
+  let dualLegend = $derived(
+    useDual
+      ? hasWeeklyQuota
+        ? "内环：5 小时窗口 · 外环：周用量窗口"
+        : "内环：5 小时窗口 · 外环：月度窗口"
+      : "",
+  );
+
+  // Per-account accent → override CSS vars on the card root (fall back to the
+  // global --tum-accent scheme when absent).
+  let accentStyle = $derived.by(() => {
+    if (!accent) return undefined;
+    const rgb = hexToRgb(accent);
+    if (!rgb) return undefined;
+    return [
+      `--acct-accent:${accent}`,
+      `--acct-accent-stroke:rgba(${rgb},0.45)`,
+      `--acct-accent-fill:rgba(${rgb},0.12)`,
+      `--acct-accent-glow:rgba(${rgb},0.35)`,
+    ].join(";");
+  });
+
+  let expanded = $state(false);
 </script>
 
-<article class="card" data-tauri-drag-region={false}>
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events:
+     whole-card quick-select (body click anchors focus+heatmap). Keyboard
+     access is provided by the title button (see card__titlebtn), which also
+     selects the provider. -->
+<article
+  class="card"
+  class:card--expanded={expanded}
+  class:card--focused={focused}
+  style={accentStyle}
+  data-tauri-drag-region={false}
+  onpointerenter={(e) =>
+    onHover?.(
+      snapshot.provider_id,
+      true,
+      (e.currentTarget as HTMLElement).getBoundingClientRect(),
+    )}
+  onpointerleave={() => onHover?.(snapshot.provider_id, false)}
+  onclick={(e) => {
+    // Title button already toggles expansion (and selects); a click
+    // elsewhere anchors the header ring + heatmap to this provider.
+    if ((e.target as HTMLElement).closest("button")) return;
+    onSelect?.();
+  }}
+>
   <header class="card__head">
-    <div class="card__title">
+    <button
+      type="button"
+      class="card__titlebtn"
+      aria-expanded={expanded}
+      aria-label={`${snapshot.provider_display_name}，用量详情${active ? "（正在请求）" : ""}`}
+      onclick={() => {
+        expanded = !expanded;
+        onSelect?.();
+      }}
+    >
+      <span class="card__status">
+        <PulseDot {active} {tone} size={8} />
+        <span class="card__logo-badge">
+          <ProviderLogo {kind} size={9} accent={accent ?? null} />
+        </span>
+      </span>
       <span class="card__name">{snapshot.provider_display_name}</span>
-      {#if snapshot.plan_tier}
-        <span class="card__tier">{snapshot.plan_tier}</span>
+      {#if isExperimental}
+        <span class="card__exp" title="实验性支持：数据可能不完整或口径调整中">实验</span>
       {/if}
-    </div>
-    {#if balanceLabel}
-      <span class="card__balance" title="账户余额">{balanceLabel}</span>
+    </button>
+    {#if snapshot.plan_tier}
+      <span class="card__tier">{snapshot.plan_tier}</span>
     {/if}
+    <div class="card__head-right">
+      {#if balanceLabel && !isPayAsYouGo(snapshot)}
+        <span class="card__balance" title="账户余额">{balanceLabel}</span>
+      {/if}
+      <span class="card__ring" title={useDual ? dualLegend : undefined}>
+        {#if !isPayAsYouGo(snapshot)}
+          {#if useDual}
+            <ProgressRing value={countdown ? shortRemain! : 1 - shortRemain!} outerValue={countdown ? longRemain! : 1 - longRemain!} label={ringLabel} size={36} stroke={4} {countdown} {accent} />
+          {:else}
+            <ProgressRing value={ringValue} label={ringLabel} size={36} stroke={4} {countdown} {accent} />
+          {/if}
+        {/if}
+      </span>
+    </div>
   </header>
 
   {#if error}
@@ -41,19 +193,35 @@
   {/if}
 
   <div class="card__bars">
-    {#if w.five_hour}
+    {#if isPayAsYouGo(snapshot)}
+      <!-- 按量付费：统一对齐金额块（账户余额 / 本月消费），等宽右对齐。
+           替代头部的余额与底部的月度条，避免信息重复。 -->
+      {#if balanceLabel}
+        <div class="card__money-row">
+          <span class="card__money-label">账户余额</span>
+          <span class="card__money-value" title="账户余额">{balanceLabel}</span>
+        </div>
+      {/if}
+      {#if w.monthly}
+        <div class="card__money-row">
+          <span class="card__money-label">本月消费</span>
+          <span class="card__money-value">{formatUsage(w.monthly.used, w.monthly.unit)}</span>
+        </div>
+      {/if}
+    {/if}
+    {#if !isPayAsYouGo(snapshot) && w.five_hour}
       <UsageBar usage={w.five_hour} label="5 小时" />
       {#if w.five_hour.reset_at}
         <ResetCountdown resetAt={w.five_hour.reset_at} label="5h" />
       {/if}
     {/if}
-    {#if w.weekly}
+    {#if !isPayAsYouGo(snapshot) && w.weekly}
       <UsageBar usage={w.weekly} label="周用量" />
       {#if w.weekly.reset_at}
         <ResetCountdown resetAt={w.weekly.reset_at} label="周" />
       {/if}
     {/if}
-    {#if w.monthly}
+    {#if !isPayAsYouGo(snapshot) && w.monthly}
       <UsageBar usage={w.monthly} label={w.monthly.quota > 0 ? "月度总量" : "本月消费"} />
       {#if w.monthly.reset_at}
         <ResetCountdown resetAt={w.monthly.reset_at} label="月" />
@@ -64,6 +232,7 @@
 
 <style>
   .card {
+    position: relative;
     background: var(--tum-surface);
     border: 1px solid var(--tum-border);
     border-radius: var(--tum-radius-md);
@@ -79,6 +248,15 @@
     background: var(--tum-surface-hover);
   }
 
+  .card--expanded {
+    z-index: 6;
+  }
+
+  .card--focused {
+    border-color: var(--acct-accent-stroke, var(--tum-accent-stroke));
+    box-shadow: inset 0 0 0 1px var(--acct-accent-stroke, var(--tum-accent-stroke));
+  }
+
   .card__head {
     display: flex;
     justify-content: space-between;
@@ -86,10 +264,61 @@
     gap: var(--tum-space-2);
   }
 
-  .card__title {
+  .card__titlebtn {
     display: flex;
     align-items: center;
     gap: var(--tum-space-2);
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .card__status {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    margin-right: 3px;
+  }
+
+  .card__logo-badge {
+    position: absolute;
+    right: -6px;
+    bottom: -6px;
+    width: 12px;
+    height: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--tum-bg-solid);
+    border: 1px solid var(--tum-border-strong);
+    overflow: hidden;
+  }
+
+  .card__exp {
+    flex: none;
+    white-space: nowrap;
+    font-size: var(--tum-font-size-xs);
+    font-weight: 500;
+    color: var(--tum-warn);
+    background: rgba(255, 200, 61, 0.12);
+    border: 1px solid rgba(255, 200, 61, 0.4);
+    padding: 1px 6px;
+    border-radius: var(--tum-radius-xs);
+    letter-spacing: 0.5px;
+  }
+
+  .card:has(:focus-visible) {
+    outline: 2px solid var(--acct-accent, var(--tum-accent));
+    outline-offset: 2px;
   }
 
   .card__name {
@@ -97,19 +326,31 @@
     font-weight: 600;
     color: var(--tum-text-primary);
     letter-spacing: 0.3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .card__tier {
+    flex: none;
+    white-space: nowrap;
     font-size: var(--tum-font-size-xs);
     font-weight: 500;
-    color: var(--tum-accent);
-    background: var(--tum-accent-fill);
-    border: 1px solid var(--tum-accent-stroke);
+    color: var(--acct-accent, var(--tum-accent));
+    background: var(--acct-accent-fill, var(--tum-accent-fill));
+    border: 1px solid var(--acct-accent-stroke, var(--tum-accent-stroke));
     padding: 1px 6px;
     border-radius: var(--tum-radius-xs);
     font-family: var(--tum-font-mono);
     letter-spacing: 0.5px;
     text-transform: uppercase;
+  }
+
+  .card__head-right {
+    display: flex;
+    align-items: center;
+    gap: var(--tum-space-2);
+    flex: none;
   }
 
   .card__balance {
@@ -120,10 +361,40 @@
     letter-spacing: 0.4px;
   }
 
+  .card__ring {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
   .card__bars {
     display: flex;
     flex-direction: column;
     gap: var(--tum-space-2);
+  }
+
+  /* 按量付费统一对齐金额块：两行 label/value 右对齐，等宽数字 */
+  .card__money-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--tum-space-2);
+  }
+
+  .card__money-label {
+    font-family: var(--tum-font-mono);
+    font-size: var(--tum-font-size-xs);
+    color: var(--tum-text-muted);
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+  }
+
+  .card__money-value {
+    font-family: var(--tum-font-mono);
+    font-size: var(--tum-font-size-sm);
+    color: var(--tum-text-primary);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.3px;
   }
 
   .card__error {

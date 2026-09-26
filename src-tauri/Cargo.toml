@@ -25,7 +25,7 @@ tauri-plugin-window-state = "2"
 
 # Async runtime + HTTP
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "socks"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -33,6 +33,7 @@ serde_json = "1"
 
 # Time
 chrono = { version = "0.4", features = ["serde", "clock"] }
+dirs = "5"
 
 # Storage
 rusqlite = { version = "0.32", features = ["bundled"] }

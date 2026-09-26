@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { percent, formatUsage, unitLabel, type WindowUsage } from "../types";
+  import { percent, formatUsage, type WindowUsage } from "../types";
 
   interface Props {
     usage: WindowUsage;
@@ -10,9 +10,7 @@
 
   let pct = $derived(percent(usage));
   let hasQuota = $derived(usage.quota > 0);
-  let colorClass = $derived(
-    pct < 0.7 ? "good" : pct < 0.9 ? "warn" : "danger",
-  );
+  let tone = $derived(pct >= 0.95 ? "crit" : pct >= 0.8 ? "warn" : "ok");
 </script>
 
 <div class="bar">
@@ -29,7 +27,7 @@
   {#if hasQuota}
     <div class="bar__track">
       <div
-        class={`bar__fill bar__fill--${colorClass}`}
+        class={`bar__fill bar__fill--${tone}`}
         style={`width: ${(pct * 100).toFixed(1)}%`}
       ></div>
     </div>
@@ -71,32 +69,30 @@
   }
 
   .bar__track {
-    height: 3px;
-    background: rgba(148, 163, 184, 0.12);
-    border-radius: var(--tum-radius-xs);
+    height: 4px;
+    background: rgba(255, 255, 255, 0.10);
+    border-radius: var(--tum-radius-pill);
     overflow: hidden;
     position: relative;
   }
 
   .bar__fill {
     height: 100%;
-    border-radius: var(--tum-radius-xs);
-    transition: width 0.4s ease;
+    border-radius: var(--tum-radius-pill);
+    transition: width 0.4s ease, background 0.4s ease;
   }
 
-  /* Calm telemetry colors - amber stays primary, success muted, danger sharp */
-  .bar__fill--good {
-    background: var(--tum-accent);
-    box-shadow: 0 0 6px var(--tum-accent-glow);
+  .bar__fill--ok {
+    background: var(--tum-grad-ok);
   }
 
   .bar__fill--warn {
-    background: var(--tum-warning);
-    box-shadow: 0 0 6px rgba(251, 146, 60, 0.4);
+    background: var(--tum-grad-warn);
+    box-shadow: 0 0 6px rgba(255, 200, 61, 0.45);
   }
 
-  .bar__fill--danger {
-    background: var(--tum-danger);
-    box-shadow: 0 0 6px rgba(248, 113, 113, 0.4);
+  .bar__fill--crit {
+    background: var(--tum-grad-crit);
+    box-shadow: 0 0 6px rgba(255, 95, 86, 0.5);
   }
 </style>

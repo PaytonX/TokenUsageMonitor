@@ -21,27 +21,30 @@ use crate::providers::{
     UsageWindows, WindowUsage,
 };
 use crate::signing;
+use crate::storage::Storage;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-const HOST: &str = "ark.cn-beijing.volcengineapi.com";
-const BASE_URL: &str = "https://ark.cn-beijing.volcengineapi.com/";
+pub(crate) const HOST: &str = "ark.cn-beijing.volcengineapi.com";
+pub(crate) const BASE_URL: &str = "https://ark.cn-beijing.volcengineapi.com/";
 
 /// Numbers in Volcengine responses are sometimes JSON numbers and sometimes
-/// strings ("50.0"); accept both.
+/// strings ("50.0"); accept both. `pub(crate)` so the pay-as-you-go variant
+/// (`volcengine_api`) can reuse it to parse usage fields.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum FlexibleNum {
+pub(crate) enum FlexibleNum {
     Number(f64),
     Text(String),
 }
 
 impl FlexibleNum {
-    fn value(&self) -> Option<f64> {
+    pub(crate) fn value(&self) -> Option<f64> {
         match self {
             FlexibleNum::Number(n) => Some(*n),
             FlexibleNum::Text(s) => s.trim().parse().ok(),
@@ -156,6 +159,8 @@ impl WindowRaw {
             unit,
             reset_at,
             over_quota: used > quota,
+            cost_source: crate::providers::CostSource::ProviderReported,
+            tokens: None,
         })
     }
 }
@@ -274,11 +279,24 @@ fn details_window(now: DateTime<Utc>, beijing: FixedOffset) -> (NaiveDate, Naive
 }
 pub struct VolcengineProvider {
     http: Client,
+    storage: Arc<Storage>,
+    instance_id: String,
+    label: String,
 }
 
 impl VolcengineProvider {
-    pub fn new(http: Client) -> Self {
-        Self { http }
+    pub fn new(
+        http: Client,
+        storage: Arc<Storage>,
+        instance_id: String,
+        label: String,
+    ) -> Self {
+        Self {
+            http,
+            storage,
+            instance_id,
+            label,
+        }
     }
 
     fn afp_query() -> String {
@@ -295,52 +313,67 @@ impl VolcengineProvider {
         query: &str,
         body: serde_json::Value,
     ) -> Result<String, ProviderError> {
-        let body_bytes = serde_json::to_vec(&body).unwrap_or_else(|_| Vec::new());
-        let signed = signing::sign(
-            access_key,
-            secret_key,
-            "POST",
-            HOST,
-            "/",
-            query,
-            "application/json",
-            &body_bytes,
-            Utc::now(),
-        );
-        let resp = self
-            .http
-            .post(format!("{BASE_URL}?{query}"))
-            .header("Host", &signed.host)
-            .header("X-Date", &signed.x_date)
-            .header("X-Content-Sha256", &signed.x_content_sha256)
-            .header("Authorization", &signed.authorization)
-            .header("Content-Type", "application/json")
-            .body(body_bytes)
-            .send()
-            .await?;
-        let status = resp.status();
-        let text = resp.text().await?;
-        let envelope: ErrorEnvelope = serde_json::from_str(&text).unwrap_or_default();
-        let has_error = envelope
-            .response_metadata
-            .as_ref()
-            .and_then(|m| m.error.as_ref())
-            .is_some();
-        if !status.is_success() || has_error {
-            return Err(map_api_error(status, &text));
-        }
-        Ok(text)
+        signed_post(&self.http, access_key, secret_key, query, body).await
     }
+}
+
+/// Sign and send a POST request to Volcengine Ark, shared by the AFP
+/// (AgentPlan) provider and the pay-as-you-go `volcengine_api` variant.
+pub(crate) async fn signed_post(
+    client: &Client,
+    access_key: &str,
+    secret_key: &str,
+    query: &str,
+    body: serde_json::Value,
+) -> Result<String, ProviderError> {
+    let body_bytes = serde_json::to_vec(&body).unwrap_or_else(|_| Vec::new());
+    let signed = signing::sign(
+        access_key,
+        secret_key,
+        "POST",
+        HOST,
+        "/",
+        query,
+        "application/json",
+        &body_bytes,
+        Utc::now(),
+    );
+    let resp = client
+        .post(format!("{BASE_URL}?{query}"))
+        .header("Host", &signed.host)
+        .header("X-Date", &signed.x_date)
+        .header("X-Content-Sha256", &signed.x_content_sha256)
+        .header("Authorization", &signed.authorization)
+        .header("Content-Type", "application/json")
+        .body(body_bytes)
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await?;
+    let envelope: ErrorEnvelope = serde_json::from_str(&text).unwrap_or_default();
+    let has_error = envelope
+        .response_metadata
+        .as_ref()
+        .and_then(|m| m.error.as_ref())
+        .is_some();
+    if !status.is_success() || has_error {
+        return Err(map_api_error(status, &text));
+    }
+    Ok(text)
 }
 
 #[async_trait]
 impl Provider for VolcengineProvider {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> String {
+        self.instance_id.clone()
+    }
+
+    fn kind(&self) -> &'static str {
         "volcengine"
     }
 
-    fn display_name(&self) -> &'static str {
-        "Volcano AgentPlan"
+    fn display_name(&self) -> String {
+        self.label.clone()
     }
 
     fn auth_kind(&self) -> AuthKind {
@@ -388,8 +421,8 @@ impl Provider for VolcengineProvider {
         };
 
         // 2. Usage details for the last 31 days, daily granularity. The
-        // heatmap is best-effort: a details failure must not drop the AFP
-        // windows above.
+        //    heatmap is best-effort: a details failure must not drop the AFP
+        //    windows above.
         let body = json!({
             "QueryInterval": "Day",
             "Filter": {
@@ -406,7 +439,7 @@ impl Provider for VolcengineProvider {
             )
             .await;
 
-        let heatmap: Option<Vec<HeatmapCell>> = match details_resp {
+        let api_heatmap: Option<Vec<HeatmapCell>> = match details_resp {
             Ok(text) => parse_heatmap(&text, beijing),
             Err(e) => {
                 tracing::warn!(error = %e, "GetUsageDetails: request failed, skipping heatmap");
@@ -414,9 +447,27 @@ impl Provider for VolcengineProvider {
             }
         };
 
+        // 火山 API 只回最近 31 天明细，且每次轮询都是全量重拉。把每次
+        // 拉到的日用量落入本地存储（record_daily_on 峰值语义，幂等），
+        // 日历热力图才能逐月累积出 >31 天的历史。嵌入快照的热力图改用
+        // 本地合并视图（含刚写入的最新 31 天）。
+        if let Some(cells) = &api_heatmap {
+            for c in cells {
+                let _ = self
+                    .storage
+                    .record_daily_on(self.instance_id.as_str(), c.date, c.value, c.unit);
+            }
+        }
+        let heatmap: Option<Vec<HeatmapCell>> = self
+            .storage
+            .load_heatmap(self.instance_id.as_str(), 200)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or(api_heatmap);
+
         Ok(UsageSnapshot {
-            provider_id: self.id().to_string(),
-            provider_display_name: self.display_name().to_string(),
+            provider_id: self.id(),
+            provider_display_name: self.display_name(),
             plan_tier: afp.plan_type,
             timestamp: now,
             windows,

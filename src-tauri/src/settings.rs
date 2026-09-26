@@ -6,39 +6,195 @@
 //! Until step 7 is exercised in the UI, `Settings::load()` returns a default
 //! config with all providers disabled, which lets the dashboard start clean.
 
-use crate::providers::Credentials;
+use crate::providers::{preset_display_name, AccountMeta, Credentials};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    /// Legacy field (pre multi-account). Kept for backward compatibility: on
+    /// startup, if `accounts` is empty this list seeds the initial accounts.
+    #[serde(default)]
     pub enabled_providers: Vec<String>,
+    /// User-configured accounts (the source of truth since multi-account).
+    #[serde(default)]
+    pub accounts: Vec<AccountMeta>,
     /// Polling interval seconds. 0 = use per-provider default.
     pub poll_interval_seconds: u32,
     /// Persisted dashboard position (last known). Restored on startup.
     pub dashboard_x: Option<i32>,
     pub dashboard_y: Option<i32>,
     /// Compact-mode flag.
+    #[serde(default)]
     pub compact_mode: bool,
     /// Whether to autostart on system boot (informational; the user must add
     /// a shortcut to shell:startup themselves for now).
+    #[serde(default)]
     pub autostart_hint_shown: bool,
+    /// Close button hides to tray instead of quitting. Default true.
+    #[serde(default = "default_close_to_tray")]
+    pub close_to_tray: bool,
+    /// Whether to fire OS notifications when usage crosses a threshold.
+    /// Default true.
+    #[serde(default = "default_notify_enabled")]
+    pub notify_enabled: bool,
+    /// Notification threshold (percent used) for the warning level.
+    #[serde(default = "default_notify_warn_percent")]
+    pub notify_warn_percent: u8,
+    /// Notification threshold (percent used) for the critical level.
+    #[serde(default = "default_notify_crit_percent")]
+    pub notify_crit_percent: u8,
+    /// Which usage window the ring gauges show: "auto" (per provider's most
+    /// critical window), or an explicit "five_hour" | "daily" | "weekly" |
+    /// "monthly".
+    #[serde(default = "default_ring_window")]
+    pub ring_window: String,
+    /// Snap the dashboard to screen edges when it is dragged near one. Default
+    /// on.
+    #[serde(default = "default_edge_snap")]
+    pub edge_snap: bool,
+    /// Ring gauge display mode. `false` = show usage *used*; `true` = show the
+    /// *remaining* position (countdown). Display-only, read by the frontend.
+    #[serde(default = "default_countdown_mode")]
+    pub countdown_mode: bool,
+    /// Currency code used to render estimated costs (USD/CNY/...). Display-only.
+    #[serde(default = "default_display_currency")]
+    pub display_currency: String,
+    /// Multi-device hub role: "off" | "hub" | "agent". "hub" listens on
+    /// `hub_port` for other instances to report; "agent" reports up to
+    /// `hub_base`. Default off.
+    #[serde(default = "default_hub_mode")]
+    pub hub_mode: String,
+    /// Local port the hub listener binds to when `hub_mode == "hub"`.
+    #[serde(default = "default_hub_port")]
+    pub hub_port: u16,
+    /// Base URL of the remote hub to report to when `hub_mode == "agent"`
+    /// (e.g. `http://192.168.1.20:43210`).
+    #[serde(default)]
+    pub hub_base: String,
+    /// Whether an agent actually reports its own usage (in addition to being
+    /// configured). `false` disables reporting.
+    #[serde(default)]
+    pub report_on: bool,
+    /// Shared secret that hub requires (`Authorization: Bearer <token>`) on
+    /// `/ingest` and `/devices`. Empty disables auth (trusted LAN only).
+    #[serde(default)]
+    pub hub_token: String,
+    /// 用户手动覆盖的汇率（币种代码 → 每 1 USD 兑该币种数值）。覆盖值优先于
+    /// 网络拉取值；键须为受支持币种（USD/CNY/TWD/HKD/JPY/EUR/GBP），非法值忽略。
+    #[serde(default)]
+    pub rate_overrides: HashMap<String, f64>,
+    /// Optional outbound proxy for all provider/hub HTTP traffic.
+    /// Accepts `http://host:port` or `socks5://host:port`; `None` uses the default client.
+    #[serde(default)]
+    pub proxy_url: Option<String>,
+}
+
+fn default_hub_port() -> u16 {
+    43210
+}
+
+fn default_hub_mode() -> String {
+    "off".to_string()
+}
+
+fn default_display_currency() -> String {
+    "auto".to_string()
+}
+
+fn default_countdown_mode() -> bool {
+    false
+}
+
+fn default_close_to_tray() -> bool {
+    true
+}
+
+fn default_notify_enabled() -> bool {
+    true
+}
+
+fn default_notify_warn_percent() -> u8 {
+    80
+}
+
+fn default_notify_crit_percent() -> u8 {
+    95
+}
+
+fn default_ring_window() -> String {
+    "auto".to_string()
+}
+
+fn default_edge_snap() -> bool {
+    true
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             enabled_providers: Vec::new(),
+            accounts: Vec::new(),
             poll_interval_seconds: 0,
             dashboard_x: None,
             dashboard_y: None,
             compact_mode: false,
             autostart_hint_shown: false,
+            close_to_tray: default_close_to_tray(),
+            notify_enabled: default_notify_enabled(),
+            notify_warn_percent: default_notify_warn_percent(),
+            notify_crit_percent: default_notify_crit_percent(),
+            ring_window: default_ring_window(),
+            edge_snap: default_edge_snap(),
+            countdown_mode: default_countdown_mode(),
+            display_currency: default_display_currency(),
+            hub_mode: default_hub_mode(),
+            hub_port: default_hub_port(),
+            hub_base: String::new(),
+            report_on: false,
+            hub_token: String::new(),
+            rate_overrides: HashMap::new(),
+            proxy_url: None,
         }
     }
+}
+
+/// Backward compatibility: turn the pre-multi-account `enabled_providers` list
+/// into initial `AccountMeta` entries so existing users' configs still load.
+/// No-op when the config already has accounts.
+///
+/// Legacy credentials lived under the provider kind (e.g. "deepseek"); the
+/// migrated `instance_id` is the same value, so the existing keyring entries
+/// are picked up as-is - no credential migration needed.
+fn migrate_legacy(mut settings: Settings, config_path: &PathBuf) -> Result<Settings> {
+    if !settings.accounts.is_empty() || settings.enabled_providers.is_empty() {
+        return Ok(settings);
+    }
+    for kind in std::mem::take(&mut settings.enabled_providers) {
+        settings.accounts.push(AccountMeta {
+            instance_id: kind.clone(),
+            provider_kind: kind.clone(),
+            label: preset_display_name(&kind),
+            accent_color: crate::providers::PRESETS
+                .iter()
+                .find(|p| p.kind == kind)
+                .map(|p| p.default_accent)
+                .unwrap_or("#29b6f6")
+                .to_string(),
+            enabled: true,
+            note: None,
+        });
+    }
+    let new_settings = settings.clone();
+    let tmp = config_path.with_extension("toml.tmp");
+    let body = toml::to_string_pretty(&new_settings).with_context(|| "serializing migrated config")?;
+    std::fs::write(&tmp, body).with_context(|| "writing migrated tmp config")?;
+    std::fs::rename(&tmp, config_path).with_context(|| "renaming migrated config")?;
+    Ok(new_settings)
 }
 
 #[derive(Clone)]
@@ -61,7 +217,10 @@ impl SettingsStore {
                 .with_context(|| "reading config.toml")?;
             let parsed: Settings = toml::from_str(&raw)
                 .with_context(|| "parsing config.toml")?;
-            Arc::new(RwLock::new(parsed))
+            // Migrate legacy `enabled_providers` configs to the multi-account
+            // model, writing the upgraded config back when it changed.
+            let migrated = migrate_legacy(parsed, &config_path)?;
+            Arc::new(RwLock::new(migrated))
         } else {
             Arc::new(RwLock::new(Settings::default()))
         };
@@ -74,6 +233,26 @@ impl SettingsStore {
 
     pub async fn get(&self) -> Settings {
         self.cache.read().await.clone()
+    }
+
+    /// Synchronous read of the cached settings. Safe for one-shot startup use
+    /// before the async runtime drives concurrent accesses (a write hold here
+    /// would only come from an in-flight `save`, which hasn't happened yet).
+    pub fn read_blocking(&self) -> Settings {
+        self.cache.try_read().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// Sync, non-async read of `close_to_tray`. Used by the synchronous
+    /// `on_window_event` close interceptor in lib.rs. Tokio RwLock write holds
+    /// are brief (settings saves are rare), so `try_read` is reliable here.
+    pub fn close_to_tray_now(&self) -> bool {
+        self.cache.try_read().map(|s| s.close_to_tray).unwrap_or(true)
+    }
+
+    /// Sync, non-async read of `edge_snap`. Same rationale as
+    /// `close_to_tray_now`.
+    pub fn edge_snap_now(&self) -> bool {
+        self.cache.try_read().map(|s| s.edge_snap).unwrap_or(true)
     }
 
     pub async fn save(&self, new_settings: Settings) -> Result<()> {
@@ -107,5 +286,76 @@ impl SettingsStore {
             let _ = entry.delete_credential();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod settings_defaults_tests {
+    use super::Settings;
+
+    #[test]
+    fn old_toml_without_new_fields_gets_defaults() {
+        let raw = "\
+enabled_providers = [\"minimax\"]
+poll_interval_seconds = 30
+dashboard_x = 100
+dashboard_y = 200
+compact_mode = true
+autostart_hint_shown = false
+";
+        let parsed: Settings = toml::from_str(raw).expect("parse legacy config");
+        assert!(parsed.close_to_tray);
+        assert_eq!(parsed.notify_warn_percent, 80);
+        assert_eq!(parsed.notify_crit_percent, 95);
+        assert!(parsed.rate_overrides.is_empty());
+        assert!(parsed.proxy_url.is_none());
+    }
+
+    #[test]
+    fn proxy_url_defaults_to_none_and_round_trips() {
+        let raw = "\
+enabled_providers = []
+poll_interval_seconds = 60
+";
+        let parsed: Settings = toml::from_str(raw).expect("parse config without proxy");
+        assert!(parsed.proxy_url.is_none());
+
+        let with_proxy = "\
+enabled_providers = []
+poll_interval_seconds = 60
+proxy_url = \"socks5://127.0.0.1:1080\"
+";
+        let parsed: Settings = toml::from_str(with_proxy).expect("parse config with proxy");
+        assert_eq!(parsed.proxy_url.as_deref(), Some("socks5://127.0.0.1:1080"));
+
+        let dumped = toml::to_string(&parsed).expect("serialize settings");
+        let reparsed: Settings = toml::from_str(&dumped).expect("reparse dumped settings");
+        assert_eq!(reparsed.proxy_url.as_deref(), Some("socks5://127.0.0.1:1080"));
+    }
+
+    #[test]
+    fn new_fields_round_trip() {
+        let raw = "\
+enabled_providers = []
+poll_interval_seconds = 60
+close_to_tray = false
+notify_warn_percent = 70
+notify_crit_percent = 90
+";
+        let parsed: Settings = toml::from_str(raw).expect("parse new config");
+        assert!(!parsed.close_to_tray);
+        assert_eq!(parsed.notify_warn_percent, 70);
+        assert_eq!(parsed.notify_crit_percent, 90);
+
+        let dumped = toml::to_string(&parsed).expect("serialize parsed");
+        let reparsed: Settings = toml::from_str(&dumped).expect("reparse dumped config");
+        assert!(!reparsed.close_to_tray);
+        assert_eq!(reparsed.notify_warn_percent, 70);
+        assert_eq!(reparsed.notify_crit_percent, 90);
+
+        let default_dumped = toml::to_string(&Settings::default()).expect("serialize defaults");
+        assert!(default_dumped.contains("close_to_tray = true"));
+        assert!(default_dumped.contains("notify_warn_percent = 80"));
+        assert!(default_dumped.contains("notify_crit_percent = 95"));
     }
 }

@@ -115,17 +115,47 @@ struct ModelRemains {
 pub struct MiniMaxProvider {
     http: Client,
     storage: Arc<Storage>,
+    instance_id: String,
+    label: String,
 }
 
 impl MiniMaxProvider {
-    pub fn new(http: Client, storage: Arc<Storage>) -> Self {
-        Self { http, storage }
+    pub fn new(http: Client, storage: Arc<Storage>, instance_id: String, label: String) -> Self {
+        Self {
+            http,
+            storage,
+            instance_id,
+            label,
+        }
+    }
+
+    fn self_id(&self) -> &str {
+        &self.instance_id
     }
 }
 
 /// Consumed percent from MiniMax's remaining percent, clamped to 0..=100.
 fn consumed_pct(remaining: i64) -> f64 {
     (100 - remaining.clamp(0, 100)) as f64
+}
+
+/// 增量记账的核心：根据上次观察到的 `(窗口 end_ms, consumed%)` 与本次的
+/// `(end_ms, consumed%)`，计算应计入「今天」的用量增量。
+///
+/// - 首次观察（prev 为 None）→ 0（只建基线，不把历史用量算进今天）；
+/// - 同一窗口（end_ms 相同）→ consumed 的增量（抖动回退按 0 处理）；
+/// - 窗口滚动（end_ms 变化）→ 新窗口当前已消耗的全部（旧窗口最后一次
+///   轮询之后的尾巴丢失，轮询间隔为分钟级，损失可忽略）。
+///
+/// 一天多个 5h 窗口的增量会累加，日值可能 >100%：含义是「当日消耗的
+/// 窗口额度当量」（如 140% = 1.4 个窗口额度），这是百分比制额度下
+/// 最诚实的日用量口径。
+fn window_delta(prev: Option<(i64, f64)>, cur: (i64, f64)) -> f64 {
+    match prev {
+        None => 0.0,
+        Some((pe, pc)) if pe == cur.0 => (cur.1 - pc).max(0.0),
+        Some(_) => cur.1.max(0.0),
+    }
 }
 
 /// Epoch milliseconds to a UTC instant. Non-positive values mean "unreported"
@@ -146,6 +176,8 @@ fn interval_window(row: &ModelRemains) -> WindowUsage {
         unit: UsageUnit::Percent,
         reset_at: at_millis(row.end_time),
         over_quota: used > 100.0,
+        cost_source: crate::providers::CostSource::ProviderReported,
+        tokens: None,
     }
 }
 
@@ -158,17 +190,23 @@ fn weekly_window(row: &ModelRemains) -> WindowUsage {
         unit: UsageUnit::Percent,
         reset_at: at_millis(row.weekly_end_time),
         over_quota: used > 100.0,
+        cost_source: crate::providers::CostSource::ProviderReported,
+        tokens: None,
     }
 }
 
 #[async_trait]
 impl Provider for MiniMaxProvider {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> String {
+        self.instance_id.clone()
+    }
+
+    fn kind(&self) -> &'static str {
         "minimax"
     }
 
-    fn display_name(&self) -> &'static str {
-        "MiniMax Token Plan"
+    fn display_name(&self) -> String {
+        self.label.clone()
     }
 
     fn auth_kind(&self) -> AuthKind {
@@ -225,28 +263,99 @@ impl Provider for MiniMaxProvider {
             daily: None,
         };
 
-        // Persist a daily snapshot for the heatmap. We use the consumed 5h
-        // percent so the heatmap still shows day-to-day activity intensity.
-        let daily_value = consumed_pct(general.current_interval_remaining_percent);
-        let _ = self.storage.record_daily(
-            self.id(),
-            daily_value,
-            UsageUnit::Percent,
-        );
+        // 热力图：MiniMax 没有历史用量查询接口，只有当前窗口的剩余 %。
+        // 采用与 DeepSeek 余额差值一致的【增量记账】：每次轮询把
+        // `window_delta` 计算出的增量累加到「今天」（accumulate_daily）。
+        // 归属日 = 轮询当天（增量只可能发生在当下），彻底避免旧逻辑按
+        // 窗口 end_time 归属导致的跨天错位；窗口滚动时新窗口已消耗的
+        // 部分计入今天，多个窗口的消耗自然累加（见 window_delta 文档）。
+        let end_ms = general.end_time;
+        let consumed = consumed_pct(general.current_interval_remaining_percent);
+
+        let prev_end = self
+            .storage
+            .kv_get(self.self_id(), "mm_win_end_ms")
+            .ok()
+            .flatten()
+            .and_then(|s| s.trim().parse::<i64>().ok());
+        let prev_consumed = self
+            .storage
+            .kv_get(self.self_id(), "mm_win_consumed_pct")
+            .ok()
+            .flatten()
+            .and_then(|s| s.trim().parse::<f64>().ok());
+        let prev = match (prev_end, prev_consumed) {
+            (Some(e), Some(c)) => Some((e, c)),
+            _ => None,
+        };
+
+        let delta = window_delta(prev, (end_ms, consumed));
+        if delta > 0.0 {
+            let _ = self
+                .storage
+                .accumulate_daily(self.self_id(), delta, UsageUnit::Percent);
+        }
+        // 更新基线，供下次轮询 diff。
+        let _ = self
+            .storage
+            .kv_set(self.self_id(), "mm_win_end_ms", &end_ms.to_string());
+        let _ = self
+            .storage
+            .kv_set(self.self_id(), "mm_win_consumed_pct", &consumed.to_string());
 
         let heatmap: Option<Vec<HeatmapCell>> = self
             .storage
-            .load_heatmap(self.id(), 90)
+            .load_heatmap(self.self_id(), 200)
             .ok()
             .filter(|v| !v.is_empty());
 
         Ok(UsageSnapshot {
-            provider_id: self.id().to_string(),
-            provider_display_name: self.display_name().to_string(),
+            provider_id: self.id(),
+            provider_display_name: self.display_name(),
             plan_tier: None,
             timestamp: now,
             windows,
             heatmap,
         })
+    }
+}
+
+#[cfg(test)]
+mod minimax_delta_tests {
+    use super::window_delta;
+
+    #[test]
+    fn first_observation_only_baselines() {
+        // 首次轮询：只建基线，不把历史用量算进今天。
+        assert_eq!(window_delta(None, (1000, 60.0)), 0.0);
+    }
+
+    #[test]
+    fn same_window_accumulates_increase_only() {
+        // 同一窗口内：增量 = 本次 - 上次。
+        assert_eq!(window_delta(Some((1000, 30.0)), (1000, 45.0)), 15.0);
+        // API 抖动导致回落：不计负数。
+        assert_eq!(window_delta(Some((1000, 45.0)), (1000, 44.0)), 0.0);
+        // 无变化：0。
+        assert_eq!(window_delta(Some((1000, 45.0)), (1000, 45.0)), 0.0);
+    }
+
+    #[test]
+    fn window_rollover_counts_new_window_usage() {
+        // 窗口滚动：新窗口当前已消耗的部分计入今天（旧窗口尾巴丢失）。
+        assert_eq!(window_delta(Some((1000, 80.0)), (2000, 12.0)), 12.0);
+        // 滚动且新窗口还没消耗：0。
+        assert_eq!(window_delta(Some((1000, 80.0)), (2000, 0.0)), 0.0);
+    }
+
+    #[test]
+    fn multiple_windows_a_day_can_exceed_one_window() {
+        // 一天多个窗口累加的口径验证：窗口 A 用了 60%，滚动后窗口 B 已用 80%。
+        // B 滚动前（当天内）：60 + (0→80 增量) = 140% = 1.4 个窗口额度。
+        let a = window_delta(None, (1000, 60.0)); // 基线，不写
+        assert_eq!(a, 0.0);
+        let b = window_delta(Some((1000, 60.0)), (2000, 80.0)); // B 滚动进来
+        let c = window_delta(Some((2000, 80.0)), (2000, 80.0)); // B 内无变化
+        assert_eq!(b + c, 80.0); // B 的当量全部计入
     }
 }

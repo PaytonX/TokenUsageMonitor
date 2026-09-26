@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { flip } from "svelte/animate";
+  import { fly } from "svelte/transition";
+  import { LogicalSize } from "@tauri-apps/api/dpi";
   import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
   import {
     getUsage,
@@ -11,37 +14,298 @@
     setWindowMode,
     forceRefresh,
     openSettings,
+    onTabsChanged,
+    readHiddenTabs,
+    readCardOrder,
+    writeCardOrder,
+    type PageTab,
     type UsageSnapshot,
     type ProviderState,
     type ProviderError,
     type Settings,
-    remainingPercent,
+    type BurnInfo,
+    ringWindowRemaining,
+    providerShortName,
+    payAsYouGoLabel,
+    isPayAsYouGo,
+    hexToRgb,
+    lightenHex,
   } from "./lib";
   import ProviderCard from "./lib/components/ProviderCard.svelte";
   import ProgressRing from "./lib/components/ProgressRing.svelte";
   import HeatmapGrid from "./lib/components/HeatmapGrid.svelte";
+  import MiniPanel from "./lib/components/MiniPanel.svelte";
+  import DetailCard from "./lib/components/DetailCard.svelte";
+  import ProviderLogo from "./lib/components/ProviderLogo.svelte";
+  import TrendPanel from "./lib/components/TrendPanel.svelte";
+  import ToolPanel from "./lib/components/ToolPanel.svelte";
+  import ModelPanel from "./lib/components/ModelPanel.svelte";
+  import DevicePanel from "./lib/components/DevicePanel.svelte";
+  import PillsOrSelect from "./lib/components/PillsOrSelect.svelte";
 
   type Mode = "dashboard" | "compact";
 
+  // C7/C8 多视图：dashboard 在"总量/趋势/工具"间切换；模型/设备依赖本地采集
+  // 扩展与多端同步(B8)，暂以占位项呈现。
+  type ViewMode = "overview" | "trend" | "tools" | "models" | "devices";
+  const VIEW_KEY = "tum.view";
+  let view = $state<ViewMode>(
+    localStorage.getItem(VIEW_KEY) === "trend"
+      ? "trend"
+      : localStorage.getItem(VIEW_KEY) === "tools"
+        ? "tools"
+        : localStorage.getItem(VIEW_KEY) === "models"
+          ? "models"
+          : localStorage.getItem(VIEW_KEY) === "devices"
+            ? "devices"
+            : "overview",
+  );
+  $effect(() => {
+    localStorage.setItem(VIEW_KEY, view);
+  });
+
+  // 页签显隐：总量恒常驻，趋势/工具/模型由设置窗口开关控制（tabs-changed 事件
+  // 触发重读）。关闭的页签不出现在标签行，也不渲染其组件（功能不启用）。
+  let tabsRev = $state(0);
+  $effect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void onTabsChanged(() => {
+      if (!disposed) tabsRev++;
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  });
+  const extraTabs = $derived.by(() => {
+    void tabsRev;
+    const hidden = new Set<PageTab>(readHiddenTabs());
+    const defs: { key: PageTab; label: string }[] = [
+      { key: "trend", label: "趋势" },
+      { key: "tools", label: "工具" },
+      { key: "models", label: "模型" },
+      { key: "devices", label: "设备" },
+    ];
+    return defs
+      .filter((t) => !hidden.has(t.key))
+      .map((t) => ({ key: t.key as ViewMode, label: t.label }));
+  });
+  const tabs = $derived([
+    { key: "overview", label: "总量" },
+    ...extraTabs,
+  ] as { key: ViewMode; label: string }[]);
+  // 当前页签被禁用时回落总量，避免停留在未渲染的页签上。
+  $effect(() => {
+    if (view !== "overview" && !extraTabs.some((t) => t.key === view)) {
+      view = "overview";
+    }
+  });
+
   let snapshots = $state<UsageSnapshot[]>([]);
   let errors = $state<Record<string, string>>({});
+  let burns = $state<Record<string, BurnInfo | null>>({});
+  let actives = $state<Record<string, boolean>>({});
   let mode = $state<Mode>("dashboard");
   let heatmapTabId = $state<string | null>(null);
   const PROVIDER_COLORS: Record<string, string> = {
     minimax: "#ff5c5c",
     deepseek: "#4d6bfe",
     volcengine: "#12b76a",
+    openai: "#10a37f",
   };
   const FOCUS_FALLBACK_COLOR = "#8a8f98";
   const FOCUS_KEY = "tum.focus";
+  const HEATMAP_VIEW_KEY = "tum.heatmapView";
+
+  // 热力图时间范围："compact" = 近 31 天 5×7 网格；"calendar" = GitHub 式
+  // 近 6 个月日历（自然月标注 + 累计/峰值/活跃统计）。默认日历——滚动
+  // 31 天窗口不直观，按自然月看当月与过去数月更符合直觉。
+  let heatmapView = $state<"compact" | "calendar">(
+    localStorage.getItem(HEATMAP_VIEW_KEY) === "compact" ? "compact" : "calendar",
+  );
+  $effect(() => {
+    localStorage.setItem(HEATMAP_VIEW_KEY, heatmapView);
+  });
 
   // Global focus: "all" (aggregate min) or one provider_id. Drives the
   // header ring, the chips row and the heatmap panel.
   let focus = $state(localStorage.getItem(FOCUS_KEY) ?? "all");
+  // Provider whose card the pointer is currently over; drives the floating
+  // detail overlay. `anchorRect` is the trigger card's viewport box so the
+  // overlay can park right beside it instead of docking at window bottom.
+  let hoveredId = $state<string | null>(null);
+  let anchorRect = $state<DOMRect | null>(null);
+  // Overlay box is measured before reveal so placement uses real dimensions
+  // (content height varies per provider). Stays hidden until first measure.
+  let overlayEl = $state<HTMLElement | null>(null);
+  let measuredW = $state(0);
+  let measuredH = $state(0);
+  let overlayX = $state(0);
+  let overlayY = $state(0);
+  let overlayReady = $state(false);
+  const OVERLAY_GAP = 8;
+  const VIEWPORT_MARGIN = 8;
+
+  // Hiding the detail overlay is deferred by a grace window so the pointer
+  // can travel from the card into the overlay (or back) without it vanishing
+  // mid-move. Entering the overlay cancels the pending hide (pinning it);
+  // leaving it re-arms a hide so it closes when you go elsewhere.
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleOverlayHide() {
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      hoveredId = null;
+      anchorRect = null;
+      hideTimer = null;
+    }, 350);
+  }
+  function cancelOverlayHide() {
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  }
+  function onCardHover(id: string, hovering: boolean, rect?: DOMRect) {
+    if (hovering) {
+      cancelOverlayHide();
+      hoveredId = id;
+      anchorRect = rect ?? null;
+      // Hide until the ResizeObserver re-measures at the new anchor — avoids
+      // a one-frame ghost at the previous card's coordinates.
+      overlayReady = false;
+    } else if (hoveredId === id) {
+      scheduleOverlayHide();
+    }
+  }
+
+  // Compute fixed coordinates for the overlay from the trigger rect and the
+  // measured content box: clamp horizontally; prefer below, flip above when
+  // the bottom edge would overflow; clamp to viewport as the last resort.
+  function placeOverlay() {
+    const rect = anchorRect;
+    if (!rect) return;
+    const w = measuredW || 320;
+    const h = measuredH;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const maxX = Math.max(VIEWPORT_MARGIN, vw - w - VIEWPORT_MARGIN);
+    overlayX = Math.min(Math.max(rect.left, VIEWPORT_MARGIN), maxX);
+    const below = rect.bottom + OVERLAY_GAP;
+    const above = rect.top - OVERLAY_GAP - h;
+    if (h <= 0 || below + h <= vh - VIEWPORT_MARGIN) {
+      overlayY = below;
+    } else if (above >= VIEWPORT_MARGIN) {
+      overlayY = above;
+    } else {
+      overlayY = Math.max(VIEWPORT_MARGIN, vh - h - VIEWPORT_MARGIN);
+    }
+  }
+
+  // Measure the overlay content box whenever it mounts or its size changes.
+  // ResizeObserver callbacks run before paint, so reveal-after-measure has
+  // no visible flash. The initial synchronous apply covers same-frame mount.
+  // Re-run when the displayed snapshot changes, not only when the element
+  // mounts: crossing between two equal-height cards does not resize the box,
+  // so ResizeObserver would not fire and the overlay could stay hidden.
+  // $effect runs after the DOM patch, so the synchronous apply() below
+  // measures the new content and reveals it without waiting for a resize.
+  $effect(() => {
+    void detailSnapshot;
+    const el = overlayEl;
+    if (!el) return;
+    const apply = () => {
+      const box = el.getBoundingClientRect();
+      if (box.width > 0 && box.height > 0) {
+        measuredW = box.width;
+        measuredH = box.height;
+        overlayReady = true;
+      }
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
+  // Reposition whenever the anchor moves or the content box changes size.
+  $effect(() => {
+    void anchorRect;
+    void measuredW;
+    void measuredH;
+    placeOverlay();
+  });
+
+  // 总量页卡片拖拽排序：snapshots 保持后端到达顺序（usage-updated 刷新不打断
+  // 用户排序），展示顺序由 cardOrder 偏好重排；拖拽经过时实时让位（dragOrder
+  // 临时序列 + flip 动画），dragend 提交并持久化，未拖成则原样还原。
+  let cardOrder = $state<string[]>(readCardOrder());
+  let draggingId = $state<string | null>(null);
+  let dragOrder = $state<string[]>([]);
+  const orderedSnapshots = $derived.by(() => {
+    const order = draggingId !== null ? dragOrder : cardOrder;
+    if (order.length === 0) return snapshots;
+    const pos = new Map(order.map((id, i) => [id, i]));
+    const known = snapshots
+      .filter((s) => pos.has(s.provider_id))
+      .sort(
+        (a, b) => (pos.get(a.provider_id) ?? 0) - (pos.get(b.provider_id) ?? 0),
+      );
+    const fresh = snapshots.filter((s) => !pos.has(s.provider_id));
+    return [...known, ...fresh];
+  });
+  function onCardDragStart(e: DragEvent, id: string) {
+    draggingId = id;
+    dragOrder = orderedSnapshots.map((s) => s.provider_id);
+    e.dataTransfer?.setData("text/plain", id);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  }
+  function onCardDragOver(e: DragEvent, targetId: string) {
+    e.preventDefault();
+    if (!draggingId || targetId === draggingId) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const before = e.clientY < rect.top + rect.height / 2;
+    if (dragOrder.indexOf(draggingId) < 0 || dragOrder.indexOf(targetId) < 0)
+      return;
+    const next = dragOrder.filter((id) => id !== draggingId);
+    const at = next.indexOf(targetId);
+    next.splice(before ? at : at + 1, 0, draggingId);
+    dragOrder = next;
+  }
+  function onCardDragEnd() {
+    if (draggingId === null) return;
+    if (dragOrder.length > 0) {
+      cardOrder = dragOrder;
+      writeCardOrder(cardOrder);
+    }
+    draggingId = null;
+    dragOrder = [];
+  }
   const PILL_DRAG_THRESHOLD_PX = 4;
   const PILL_FADE_DELAY_MS = 2500;
   const PILL_EDGE_THRESHOLD_PX = 24;
   let settings = $state<Settings | null>(null);
+
+  // Per-account accent map (instance_id -> #RRGGBB), derived from settings.
+  // Snapshot `provider_id` doubles as the account `instance_id`, so lookup by it.
+  let accentById = $derived(
+    (settings?.accounts ?? []).reduce(
+      (m, a) => {
+        m[a.instance_id] = a.accent_color;
+        return m;
+      },
+      {} as Record<string, string>,
+    ),
+  );
+  // Resolve a provider's emphasis colour with the legacy fallback chain.
+  const colorOf = (id: string) =>
+    accentById[id] ?? PROVIDER_COLORS[id] ?? FOCUS_FALLBACK_COLOR;
+
+  // Countdown mode: false = show USED, true = show REMAINING (1 - used).
+  let displayRemaining = $derived(settings?.countdown_mode ?? false);
 
   let now = $state(new Date());
   // Wall-clock at the moment we last received an `usage-updated` (or did a
@@ -50,9 +314,12 @@
   let unlistenFns: Array<() => void> = [];
 
   onMount(async () => {
-    // Initial pull.
-    snapshots = await getUsage();
-    const states = await getProviderStates();
+    // 并行拉取用量 + 状态 + 设置，减少启动等待。
+    const [usage, states] = await Promise.all([
+      getUsage(),
+      getProviderStates(),
+    ]);
+    snapshots = usage;
     errors = extractErrors(states);
     settings = await getSettings();
     lastRefreshAt = Date.now();
@@ -63,11 +330,14 @@
 
     // Live updates.
     unlistenFns.push(
-      await onUsageUpdated((snap) => {
+      await onUsageUpdated((update) => {
+        const snap = update.snapshot;
         snapshots = snapshots
           .filter((s) => s.provider_id !== snap.provider_id)
           .concat(snap)
           .sort((a, b) => a.provider_id.localeCompare(b.provider_id));
+        burns = { ...burns, [snap.provider_id]: update.burn };
+        actives = { ...actives, [snap.provider_id]: update.active };
         if (!heatmapTabId) heatmapTabId = snap.provider_id;
         errors = { ...errors, [snap.provider_id]: "" };
         lastRefreshAt = Date.now();
@@ -101,11 +371,13 @@
     unlistenFns.push(() => clearInterval(tick));
   });
 
-  // Aggregate progress ring shows the worst remaining % across all providers.
+  // Aggregate progress ring shows the worst remaining % across all providers,
+  // resolved through the user's `ring_window` setting (auto = most critical).
+  let ringWindow = $derived((settings?.ring_window ?? "auto") || "auto");
   let aggregateRemaining = $derived(
     snapshots.length === 0
       ? 0
-      : Math.min(...snapshots.map(remainingPercent)),
+      : Math.min(...snapshots.map((s) => ringWindowRemaining(s, ringWindow))),
   );
   let aggregateLabel = $derived(
     snapshots.length === 0
@@ -120,12 +392,35 @@
       : (snapshots.find((s) => s.provider_id === focus) ?? null),
   );
   let ringPercent = $derived(
-    focusedSnapshot ? remainingPercent(focusedSnapshot) : aggregateRemaining,
+    focusedSnapshot
+      ? ringWindowRemaining(focusedSnapshot, ringWindow)
+      : aggregateRemaining,
   );
   let ringLabel = $derived(
     focusedSnapshot
       ? `${Math.round(ringPercent * 100)}%`
       : aggregateLabel,
+  );
+
+  // Ring arc/label mirror `displayRemaining`: remaining figures above flip to
+  // "used" (1 - remaining) when the user prefers the used display.
+  let ringArcValue = $derived(displayRemaining ? ringPercent : 1 - ringPercent);
+  let ringArcLabel = $derived(
+    displayRemaining
+      ? ringLabel
+      : `${Math.round((1 - ringPercent) * 100)}%`,
+  );
+
+  // 顶棚环 / 迷你胶囊：focus 到单个按量付费 provider 时，百分比无意义，
+  // 改为金额（countdown=余额 / used=当月消费）。聚合(focus=all)时保持百分比。
+  let headerMoney = $derived(
+    focusedSnapshot
+      ? payAsYouGoLabel(focusedSnapshot, displayRemaining)
+      : null,
+  );
+  // focus 到单个按量付费 provider：顶部圆环以表情替代（通用按量计费交互）。
+  let headerIsPayAsYouGo = $derived(
+    focusedSnapshot ? isPayAsYouGo(focusedSnapshot) : false,
   );
 
   // The active snapshot whose heatmap is shown in the bottom panel.
@@ -136,31 +431,19 @@
     null,
   );
 
-  // Snapshots that actually carry heatmap data — drives the tab list.
-  let snapshotsWithHeatmap = $derived(
-    snapshots.filter(
-      (s) => s.heatmap && s.heatmap.length > 0,
-    ),
-  );
-  let hasHeatmap = $derived(snapshotsWithHeatmap.length > 0);
-
-  // Prefer the heatmap cells' own unit (e.g. Volcano windows are AFP but its
-  // heatmap cells are Tokens); fall back to the windows' unit.
-  let heatmapUnit = $derived(
-    activeSnapshot?.heatmap?.[0]?.unit ??
-    activeSnapshot?.windows?.monthly?.unit ??
-    activeSnapshot?.windows?.weekly?.unit ??
-    activeSnapshot?.windows?.five_hour?.unit ??
-    "tokens"
+  // Provider behind the floating detail overlay (hovered card). Rendered once
+  // at window level so small cards (e.g. DeepSeek) can never clip its content.
+  let detailSnapshot = $derived(
+    hoveredId ? (snapshots.find((s) => s.provider_id === hoveredId) ?? null) : null,
   );
 
-  // Ensure heatmapTabId always points at a snapshot that exists &
-  // (preferably) has heatmap data, so the heatmap tab is never orphaned.
+  // HeatmapGrid self-fetches per provider via get_heatmap, so every provider
+  // can own a heatmap tab regardless of snapshot-embedded cells.
   $effect(() => {
     if (snapshots.length === 0) return;
     const stillExists = snapshots.some((s) => s.provider_id === heatmapTabId);
     if (!stillExists) {
-      heatmapTabId = snapshotsWithHeatmap[0]?.provider_id ?? snapshots[0].provider_id;
+      heatmapTabId = snapshots[0].provider_id;
     }
   });
 
@@ -180,12 +463,32 @@
 
   // Mini pill (compact mode) — focused provider color/name.
   const focusedColor = $derived(
-    focusedSnapshot
-      ? (PROVIDER_COLORS[focusedSnapshot.provider_id] ?? FOCUS_FALLBACK_COLOR)
-      : FOCUS_FALLBACK_COLOR,
+    focusedSnapshot ? colorOf(focusedSnapshot.provider_id) : FOCUS_FALLBACK_COLOR,
   );
   const focusedName = $derived(
-    focusedSnapshot ? focusedSnapshot.provider_display_name : "全部",
+    focusedSnapshot
+      ? providerShortName(
+          focusedSnapshot.provider_id,
+          focusedSnapshot.provider_display_name,
+        )
+      : "全部来源",
+  );
+  // 胶囊右侧品牌色芯片：账户强调色的低饱和底 + 同色文字展示完整短名，
+  // flex:1 填满分隔线到右缘（固定布局、非自适应），消除右侧空白；
+  // 超长自定义标签以省略号兜底，悬停 title 显示完整账户名。
+  const badgeStyle = $derived.by(() => {
+    const rgb = hexToRgb(focusedColor);
+    if (!rgb) {
+      return "background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.2); color: var(--tum-text-primary);";
+    }
+    return [
+      `background: rgba(${rgb}, 0.16)`,
+      `border: 1px solid rgba(${rgb}, 0.45)`,
+      `color: ${lightenHex(focusedColor, 0.18)}`,
+    ].join("; ");
+  });
+  const providerFullName = $derived(
+    focusedSnapshot ? focusedSnapshot.provider_display_name : "全部来源",
   );
 
   // Pill fade machine (spec §3.4): fade to 22% after 2.5s while parked near
@@ -194,9 +497,60 @@
   let pillHovered = $state(false);
   let pillFaded = $state(false);
   let pillFadeTimer: ReturnType<typeof setTimeout> | null = null;
-  let pillDragStart: { x: number; y: number } | null = null;
+  let pillDragStart: { x: number; y: number; fromControl: boolean } | null = null;
   let pillDidDrag = false;
   let pillFadeGen = 0;
+
+  // Compact pill three-state tone (spec §5.2): ringPercent is aggregate
+  // REMAINING, so used = 1 - ringPercent. <80 silent / 80-95 amber / >=95 red.
+  // Empty data normalizes to "ok" so the no-data idle ring never breathes red.
+  let pillTone = $derived(
+    snapshots.length === 0
+      ? "ok"
+      : 1 - ringPercent >= 0.95
+        ? "crit"
+        : 1 - ringPercent >= 0.8
+          ? "warn"
+          : "ok",
+  );
+
+  // The compact OS window is physically 150x44 (ipc::set_window_mode). The
+  // hover MiniPanel grows it downward via setSize; top-left anchor is kept.
+  // B4 switches the collapsed height 44 -> 40: update PILL_COLLAPSED_H there
+  // together with the Rust LogicalSize.
+  const PILL_COLLAPSED_W = 150;
+  const PILL_COLLAPSED_H = 44;
+  const PILL_EXPANDED_BASE = 48; // 44 main row + MiniPanel vertical padding
+  const PILL_EXPANDED_ROW = 24; // 18px row + 6px gap
+  let pillExpanded = $state(false);
+  let pillResizeGen = 0;
+
+  async function expandPill() {
+    if (mode !== "compact" || snapshots.length === 0) return;
+    const gen = ++pillResizeGen;
+    const height =
+      PILL_EXPANDED_BASE + snapshots.length * PILL_EXPANDED_ROW;
+    try {
+      await getCurrentWindow().setSize(
+        new LogicalSize(PILL_COLLAPSED_W, height),
+      );
+      if (gen === pillResizeGen) pillExpanded = true;
+    } catch {
+      // IPC failed — leave the pill collapsed.
+    }
+  }
+
+  async function collapsePill(): Promise<void> {
+    const gen = ++pillResizeGen;
+    pillExpanded = false;
+    try {
+      await getCurrentWindow().setSize(
+        new LogicalSize(PILL_COLLAPSED_W, PILL_COLLAPSED_H),
+      );
+    } catch {
+      // Ignore — window may be mid mode-switch.
+    }
+  }
 
   function clearPillFadeTimer() {
     if (pillFadeTimer !== null) {
@@ -247,9 +601,15 @@
 
   function onPillPointerDown(event: PointerEvent) {
     if (event.button !== 0) return;
-    pillDragStart = { x: event.clientX, y: event.clientY };
+    pillDragStart = {
+      x: event.clientX,
+      y: event.clientY,
+      fromControl: (event.target as HTMLElement).closest("button") !== null,
+    };
     pillDidDrag = false;
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    if (!pillDragStart.fromControl) {
+      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    }
   }
 
   function onPillPointerMove(event: PointerEvent) {
@@ -267,9 +627,10 @@
   function onPillPointerUp(event: PointerEvent) {
     if (!pillDragStart || event.button !== 0) return;
     const didDrag = pillDidDrag;
+    const fromControl = pillDragStart.fromControl;
     pillDragStart = null;
     pillDidDrag = false;
-    if (!didDrag) {
+    if (!didDrag && !fromControl) {
       void toggleMode();
     } else {
       void refreshPillFade();
@@ -327,6 +688,8 @@
     mode = next;
     pillHovered = false;
     pillFaded = false;
+    pillExpanded = false;
+    pillResizeGen++;
     clearPillFadeTimer();
     if (next === "compact") {
       void refreshPillFade();
@@ -367,36 +730,76 @@
     <div
       class="pill"
       class:is-faded={pillFaded}
+      class:pill--expanded={pillExpanded}
+      data-tone={pillTone}
       onpointerenter={() => {
         pillHovered = true;
         clearPillFadeTimer();
         pillFaded = false;
+        void expandPill();
       }}
       onpointerleave={() => {
         pillHovered = false;
-        void refreshPillFade();
+        // Restore the physical size FIRST so the edge-fade check measures
+        // the 150x44 pill, not the transient expanded rectangle.
+        void collapsePill().then(() => refreshPillFade());
       }}
       onpointerdown={onPillPointerDown}
       onpointermove={onPillPointerMove}
       onpointerup={onPillPointerUp}
       oncontextmenu={(e) => e.preventDefault()}
+      role="group"
+      aria-label="迷你用量面板"
     >
-      <div class="pill__ring">
-        <ProgressRing value={ringPercent} label="" size={24} stroke={3} />
-        <span class="pill__percent">{ringLabel}</span>
+      <div class="pill__main">
+        <button
+          type="button"
+          class="pill__restore"
+          aria-label="恢复主面板"
+          onclick={(e) => {
+            e.stopPropagation();
+            void toggleMode();
+          }}
+        >
+          <span class="pill__ring">
+            {#if headerIsPayAsYouGo && focusedSnapshot}
+              <span class="pill__avatar" title={providerFullName}>
+                <ProviderLogo
+                  kind={focusedSnapshot.provider_id.split("-")[0]}
+                  size={16}
+                  accent={focusedColor}
+                />
+              </span>
+            {:else}
+              <ProgressRing value={ringArcValue} label="" size={24} stroke={3} idle={snapshots.length === 0} countdown={displayRemaining} />
+            {/if}
+            <span
+              class="pill__percent"
+              class:pill__percent--crit={pillTone === "crit"}
+            >{headerMoney ?? ringArcLabel}</span>
+          </span>
+          <span class="pill__divider"></span>
+          <span
+            class="pill__badge"
+            style={badgeStyle}
+            title={providerFullName}
+          >{focusedName}</span>
+        </button>
+        <button
+          type="button"
+          class="pill__close"
+          title="关闭应用"
+          aria-label="关闭应用"
+          onpointerdown={(e) => e.stopPropagation()}
+          onclick={(e) => {
+            e.stopPropagation();
+            void closeApp();
+          }}
+        >✕</button>
       </div>
-      <span class="pill__divider"></span>
-      <span class="pill__dot" style:background={focusedColor}></span>
-      <span class="pill__name">{focusedName}</span>
-      <button
-        class="pill__close"
-        title="关闭应用"
-        onpointerdown={(e) => e.stopPropagation()}
-        onclick={(e) => {
-          e.stopPropagation();
-          void closeApp();
-        }}
-      >✕</button>
+      {#if pillExpanded}
+        <MiniPanel {snapshots} {actives} countdown={displayRemaining} />
+      {/if}
     </div>
   {:else}
     <header class="shell__header" data-tauri-drag-region>
@@ -405,7 +808,17 @@
         <span class="shell__title">TokenUsageMonitor</span>
       </div>
       <div class="shell__actions" data-tauri-drag-region={false}>
-        <ProgressRing value={ringPercent} label={ringLabel} size={28} stroke={3} />
+        {#if headerIsPayAsYouGo && focusedSnapshot}
+          <span class="shell__avatar" title={providerFullName}>
+            <ProviderLogo
+              kind={focusedSnapshot.provider_id.split("-")[0]}
+              size={22}
+              accent={focusedColor}
+            />
+          </span>
+        {:else}
+          <ProgressRing value={headerMoney ? 0 : ringArcValue} label={headerMoney ?? ringArcLabel} size={28} stroke={3} idle={snapshots.length === 0 || !!headerMoney} countdown={displayRemaining} />
+        {/if}
         <button class="shell__btn" onclick={refresh} title="立即刷新">↻</button>
         <button class="shell__btn" onclick={() => openSettings()} title="设置">⚙</button>
         <button class="shell__btn" onclick={toggleMode} title="折叠到迷你态">⤢</button>
@@ -413,67 +826,142 @@
       </div>
     </header>
 
-    {#if snapshots.length > 0}
-      <div class="focus-row" data-tauri-drag-region={false}>
+    <div class="view-row" data-tauri-drag-region={false}>
+      {#each tabs as t (t.key)}
         <button
-          class="heatmap__tab"
-          class:heatmap__tab--active={focus === "all"}
-          onclick={() => (focus = "all")}
-        >全部</button>
-        {#each snapshots as snap (snap.provider_id)}
-          <button
-            class="heatmap__tab"
-            class:heatmap__tab--active={focus === snap.provider_id}
-            onclick={() => (focus = snap.provider_id)}
-          >
-            <span
-              class="focus-dot"
-              style:background={PROVIDER_COLORS[snap.provider_id] ?? FOCUS_FALLBACK_COLOR}
-            ></span>
-            {snap.provider_display_name}
-          </button>
-        {/each}
+          type="button"
+          class="view-tab"
+          class:is-active={view === t.key}
+          onclick={() => (view = t.key)}
+        >{t.label}</button>
+      {/each}
+    </div>
+
+    {#if view === "overview"}
+      {#if snapshots.length > 0}
+      <div class="focus-row" data-tauri-drag-region={false}>
+        <PillsOrSelect
+          items={[{ id: "all", label: "全部" }, ...snapshots.map((s) => ({ id: s.provider_id, label: s.provider_display_name }))]}
+          value={focus}
+          onPick={(id) => {
+            focus = id;
+          }}
+          dotFor={(id) => (id === "all" ? undefined : colorOf(id))}
+        />
       </div>
     {/if}
 
-    <section class="shell__cards">
+    <!-- svelte-ignore a11y_no_static_element_interactions:
+         card drag-and-drop is a pointer-only interaction; keyboard users reach
+         the same selection via the card title button (see ProviderCard). -->
+    <section
+      class="shell__cards"
+      ondragover={(e) => {
+        if (draggingId) e.preventDefault();
+      }}
+    >
       {#if snapshots.length === 0}
         <div class="shell__empty">
           <p>正在拉取最新用量…</p>
           <p class="shell__hint">首次启动可能需要 1-2 秒</p>
         </div>
       {:else}
-        {#each snapshots as snap (snap.provider_id)}
-          <ProviderCard
-            snapshot={snap}
-            error={errors[snap.provider_id] ?? null}
-          />
+        {#each orderedSnapshots as snap (snap.provider_id)}
+          <!-- svelte-ignore a11y_no_static_element_interactions:
+               drag handle wrapper; selection stays keyboard-accessible via the
+               card title button (see ProviderCard). -->
+          <div
+            class="shell__card-slot"
+            class:shell__card-slot--dragging={draggingId === snap.provider_id}
+            draggable="true"
+            ondragstart={(e) => onCardDragStart(e, snap.provider_id)}
+            ondragover={(e) => onCardDragOver(e, snap.provider_id)}
+            ondragend={onCardDragEnd}
+            ondrop={(e) => e.preventDefault()}
+            animate:flip={{ duration: 200 }}
+          >
+            <ProviderCard
+              snapshot={snap}
+              error={errors[snap.provider_id] ?? null}
+              burn={burns[snap.provider_id] ?? null}
+              active={actives[snap.provider_id] ?? false}
+              {lastRefreshAt}
+              focused={focus === snap.provider_id}
+              accent={accentById[snap.provider_id]}
+              countdown={displayRemaining}
+              onHover={onCardHover}
+              onSelect={() => {
+                focus = snap.provider_id;
+                heatmapTabId = snap.provider_id;
+              }}
+            />
+          </div>
         {/each}
       {/if}
     </section>
 
-    {#if snapshots.length > 0 && (hasHeatmap || focus !== "all")}
+    {#if snapshots.length > 0}
       <section class="shell__heatmap" data-tauri-drag-region={false}>
         <div class="heatmap__head">
           <span class="heatmap__title">日历热力图</span>
-          {#if focus === "all"}
-            <div class="heatmap__tabs">
-              {#each snapshotsWithHeatmap as snap (snap.provider_id)}
-                <button
-                  class="heatmap__tab {snap.provider_id === heatmapTabId ? 'heatmap__tab--active' : ''}"
-                  onclick={() => (heatmapTabId = snap.provider_id)}
-                  title={snap.provider_display_name}
-                >{snap.provider_display_name}</button>
-              {/each}
-            </div>
+          {#if activeSnapshot?.provider_id.startsWith("minimax")}
+            <span class="heatmap__src">· 来源：本机 MiniMax Code</span>
           {/if}
+          {#if focus === "all"}
+            <PillsOrSelect
+              items={snapshots.map((s) => ({ id: s.provider_id, label: s.provider_display_name }))}
+              value={heatmapTabId}
+              onPick={(id) => (heatmapTabId = id)}
+              dotFor={(id) => colorOf(id)}
+            />
+          {/if}
+          <div class="heatmap__view" role="group" aria-label="热力图时间范围">
+            <button
+              class="heatmap__view-btn"
+              class:is-active={heatmapView === "compact"}
+              onclick={() => (heatmapView = "compact")}
+              title="最近 31 天滚动窗口"
+            >31天</button>
+            <button
+              class="heatmap__view-btn"
+              class:is-active={heatmapView === "calendar"}
+              onclick={() => (heatmapView = "calendar")}
+              title="按自然月查看近 6 个月用量"
+            >月历</button>
+          </div>
         </div>
-        {#if activeSnapshot && activeSnapshot.heatmap}
-          <HeatmapGrid cells={activeSnapshot.heatmap} unit={heatmapUnit} />
-        {:else if focus !== "all"}
-          <div class="heatmap__empty">{activeSnapshot?.provider_id === "deepseek" ? "DeepSeek 依据余额下降累计消耗，启用后需积累数日才有数据" : "该来源暂无热力图数据"}</div>
+        {#if activeSnapshot}
+          <HeatmapGrid
+            providerId={activeSnapshot.provider_id}
+            view={heatmapView}
+            emptyHint={activeSnapshot.provider_id === "deepseek"
+              ? "DeepSeek 依据余额下降累计消耗，启用后需积累数日才有数据"
+              : "该来源暂无热力图数据"}
+          />
         {/if}
       </section>
+    {/if}
+    {:else if view === "trend"}
+      {#if snapshots.length > 0}
+        <TrendPanel
+          providerIds={snapshots.map((s) => s.provider_id)}
+          colors={snapshots.reduce(
+            (m, s) => {
+              m[s.provider_id] = colorOf(s.provider_id);
+              return m;
+            },
+            {} as Record<string, string>,
+          )}
+        />
+      {:else}
+        <div class="shell__empty"><p>暂无用量数据</p></div>
+      {/if}
+    {:else if view === "tools"}
+      <ToolPanel />
+    {:else if view === "devices"}
+      <DevicePanel providerCount={snapshots.length} />
+    {:else}
+      <ModelPanel />
     {/if}
 
     <footer class="shell__footer" data-tauri-drag-region>
@@ -484,6 +972,28 @@
       </span>
       <span class="shell__count">共 {snapshots.length} 个 Provider</span>
     </footer>
+
+    {#if detailSnapshot}
+      <div
+        class="detail-overlay"
+        role="group"
+        data-tauri-drag-region={false}
+        style={`left:${overlayX}px;top:${overlayY}px;visibility:${overlayReady ? "visible" : "hidden"};`}
+        onpointerenter={cancelOverlayHide}
+        onpointerleave={scheduleOverlayHide}
+        transition:fly={{ y: 6, duration: 120 }}
+        bind:this={overlayEl}
+      >
+        <DetailCard
+          snapshot={detailSnapshot}
+          burn={burns[detailSnapshot.provider_id] ?? null}
+          {lastRefreshAt}
+          countdown={displayRemaining}
+          accent={accentById[detailSnapshot.provider_id]}
+          error={errors[detailSnapshot.provider_id] ?? null}
+        />
+      </div>
+    {/if}
   {/if}
 </main>
 
@@ -492,7 +1002,12 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    background: var(--tum-bg);
+    /* Layered glass over a transparent window: a faint accent tint on top of a
+       translucent dark base. The window itself is transparent (mica removed),
+       so the border-radius corners below are genuinely see-through. */
+    background:
+      radial-gradient(120% 120% at 0% 0%, rgba(76, 194, 255, 0.07), transparent 42%),
+      rgba(24, 26, 30, 0.82);
     border: 1px solid var(--tum-border);
     border-radius: var(--tum-radius-lg);
     backdrop-filter: blur(16px);
@@ -557,6 +1072,19 @@
     gap: var(--tum-space-2);
   }
 
+  .shell__avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    overflow: hidden;
+    border: 1px solid var(--tum-border-strong);
+    background: rgba(255, 255, 255, 0.06);
+  }
+
   .shell__btn {
     width: 22px;
     height: 22px;
@@ -586,6 +1114,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--tum-space-2);
+    padding: 0 3px;
     scrollbar-width: thin;
     scrollbar-color: var(--tum-border) transparent;
   }
@@ -597,6 +1126,19 @@
   .shell__cards::-webkit-scrollbar-thumb {
     background: var(--tum-border);
     border-radius: 2px;
+  }
+
+  .shell__card-slot {
+    min-width: 0;
+    cursor: grab;
+  }
+
+  .shell__card-slot:active {
+    cursor: grabbing;
+  }
+
+  .shell__card-slot--dragging {
+    opacity: 0.45;
   }
 
   .shell__empty {
@@ -645,34 +1187,43 @@
     font-family: var(--tum-font-mono);
   }
 
-  .heatmap__tabs {
+  .heatmap__src {
+    font-family: var(--tum-font-mono);
+    font-size: 9px;
+    color: var(--tum-accent, #4cc2ff);
+    letter-spacing: 0.3px;
+  }
+
+  /* 热力图时间范围切换（31天滚动 / 月历），与 Provider tabs 同语言的
+     胶囊分段控件。 */
+  .heatmap__view {
     display: flex;
     gap: 2px;
-    flex-wrap: wrap;
-  }
-
-  .heatmap__tab {
-    padding: 2px 8px;
-    font-size: var(--tum-font-size-xs);
-    color: var(--tum-text-muted);
-    background: transparent;
+    padding: 2px;
     border: 1px solid var(--tum-border);
-    border-radius: var(--tum-radius-xs);
+    border-radius: var(--tum-radius-pill);
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .heatmap__view-btn {
+    border: none;
+    background: transparent;
+    color: var(--tum-text-muted);
+    font-size: 10px;
+    font-family: var(--tum-font);
+    padding: 2px 9px;
+    border-radius: var(--tum-radius-pill);
     cursor: pointer;
-    font-family: var(--tum-font-mono);
-    letter-spacing: 0.3px;
-    transition: all 0.15s ease;
+    transition: background 0.2s ease, color 0.2s ease;
   }
 
-  .heatmap__tab:hover {
-    color: var(--tum-text-secondary);
-    background: var(--tum-surface-hover);
+  .heatmap__view-btn:hover {
+    color: var(--tum-text-primary);
   }
 
-  .heatmap__tab--active {
-    color: var(--tum-accent);
-    background: var(--tum-accent-fill);
-    border-color: var(--tum-accent-stroke);
+  .heatmap__view-btn.is-active {
+    background: rgba(76, 194, 255, 0.18);
+    color: var(--tum-text-primary);
   }
 
   .focus-row {
@@ -681,27 +1232,38 @@
     gap: 6px;
   }
 
-  .focus-row .heatmap__tab {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
+  /* C7 多视图切换：总量/趋势 + 未实装占位（工具/模型/设备）。与 Provider
+     tabs 同语言的胶囊分段控件，但置于 header 之下、内容区之上。 */
+  .view-row {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--tum-border);
+    border-radius: var(--tum-radius-pill);
+    background: rgba(255, 255, 255, 0.04);
+    align-self: flex-start;
+    flex: none;
   }
 
-  .focus-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-    flex-shrink: 0;
-  }
-
-  .heatmap__empty {
-    padding: var(--tum-space-4) 0;
-    text-align: center;
-    font-size: var(--tum-font-size-xs);
+  .view-tab {
+    border: none;
+    background: transparent;
     color: var(--tum-text-muted);
-    font-family: var(--tum-font-mono);
-    letter-spacing: 0.5px;
+    font-size: 10px;
+    font-family: var(--tum-font);
+    padding: 3px 10px;
+    border-radius: var(--tum-radius-pill);
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+
+  .view-tab:hover {
+    color: var(--tum-text-primary);
+  }
+
+  .view-tab.is-active {
+    background: rgba(76, 194, 255, 0.18);
+    color: var(--tum-text-primary);
   }
 
   .shell__footer {
@@ -740,25 +1302,95 @@
     letter-spacing: 0.4px;
   }
 
-  /* Mini pill (compact) — single row 150x44 (see ipc::set_window_mode
-     "compact"). Background matches the old compact__btn fill. */
+  /* Mini pill (compact): collapsed physical window is 150x44 (see
+     ipc::set_window_mode). Hover grows it for the MiniPanel rows.
+     Three states via data-tone: silent (<80%) / amber (80-95%) /
+     red breathe (>=95%, spec §5.2 CompactPill). */
   .pill {
     height: 100%;
+    position: relative;
     display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 8px;
+    flex-direction: column;
+    padding: 0 8px;
     border-radius: 22px;
-    background: rgba(10, 14, 26, 0.9);
+    background: rgba(10, 14, 26, 0.92);
     border: 1px solid var(--tum-border);
-    transition: opacity 0.35s ease, transform 0.35s ease;
+    transition:
+      opacity 0.35s ease,
+      transform 0.35s ease,
+      border-color 0.3s ease,
+      border-radius 0.2s ease,
+      box-shadow 0.3s ease;
     cursor: default;
     overflow: hidden;
+  }
+
+  .pill--expanded {
+    border-radius: var(--tum-radius-lg);
+  }
+
+  .pill[data-tone="warn"] {
+    border-color: rgba(255, 200, 61, 0.55);
+  }
+
+  .pill[data-tone="crit"] {
+    border-color: rgba(255, 95, 86, 0.65);
+    animation: pill-breathe 1.6s ease-in-out infinite;
   }
 
   .pill.is-faded {
     opacity: 0.22;
     transform: scale(0.9);
+    animation: none;
+  }
+
+  @keyframes pill-breathe {
+    0%,
+    100% {
+      border-color: rgba(255, 95, 86, 0.55);
+      box-shadow:
+        0 0 0 0 rgba(255, 95, 86, 0),
+        inset 0 0 0 1px rgba(255, 95, 86, 0.4);
+    }
+    50% {
+      border-color: rgba(255, 95, 86, 0.95);
+      /* blur 大、spread 0 的柔和外发光 + 贴合圆角的内描边：
+         避免旧版 `14px 2px` 的硬边外扩在透明窗口里呈矩形块状光晕 */
+      box-shadow:
+        0 0 16px 0 rgba(255, 95, 86, 0.5),
+        inset 0 0 0 1px rgba(255, 95, 86, 0.85);
+    }
+  }
+
+  .pill__main {
+    height: 44px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .pill__restore {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    appearance: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .pill__restore:focus-visible {
+    outline: 2px solid var(--tum-accent);
+    outline-offset: -2px;
+    border-radius: var(--tum-radius-pill);
   }
 
   .pill__ring {
@@ -768,11 +1400,28 @@
     flex-shrink: 0;
   }
 
+  .pill__avatar {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    overflow: hidden;
+    border: 1px solid var(--tum-border-strong);
+    background: rgba(255, 255, 255, 0.06);
+  }
+
   .pill__percent {
     font-size: var(--tum-font-size-xs);
     font-family: var(--tum-font-mono);
     color: var(--tum-text-primary);
     letter-spacing: 0.3px;
+  }
+
+  .pill__percent--crit {
+    color: var(--tum-crit);
   }
 
   .pill__divider {
@@ -782,24 +1431,32 @@
     flex-shrink: 0;
   }
 
-  .pill__dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .pill__name {
-    font-size: var(--tum-font-size-xs);
+  .pill__badge {
+    /* 品牌色芯片：flex:1 填满分隔线到右缘的固定布局（非自适应宽度），
+       展示完整 Provider 短名；底色/描边/文字色由内联 style 注入。 */
+    flex: 1;
+    min-width: 0;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 600;
     font-family: var(--tum-font);
-    color: var(--tum-text-secondary);
+    letter-spacing: 0.2px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    min-width: 0;
+    box-sizing: border-box;
   }
 
   .pill__close {
+    /* 关闭钮悬浮右上角（不占布局空间，悬停时淡入），为品牌芯片让出宽度 */
+    position: absolute;
+    top: 4px;
+    right: 4px;
     width: 18px;
     height: 18px;
     border: none;
@@ -810,7 +1467,6 @@
     line-height: 1;
     cursor: pointer;
     opacity: 0;
-    flex-shrink: 0;
     transition: opacity 0.2s ease, background 0.2s ease, color 0.2s ease;
   }
 
@@ -821,5 +1477,28 @@
   .pill__close:hover {
     background: var(--tum-danger-fill);
     color: var(--tum-danger);
+  }
+
+  .pill__close:focus-visible {
+    opacity: 1;
+    outline: 2px solid var(--tum-accent);
+    outline-offset: -2px;
+  }
+
+  /* Floating detail overlay anchored beside the hovered card: rendered at
+     window level so the full detail (rows + chart) is never clipped by a
+     small card. Position + width are set inline after measuring the content
+     box; it flips above the card when the viewport bottom is tight. Parking
+     the pointer on it keeps it pinned so the actions inside are reachable. */
+  .detail-overlay {
+    position: fixed;
+    z-index: 60;
+    width: 320px;
+    max-width: calc(100vw - 16px);
+    pointer-events: auto;
+  }
+
+  .detail-overlay :global(.detail) {
+    padding: 10px 12px;
   }
 </style>
