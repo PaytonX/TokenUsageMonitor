@@ -8,8 +8,9 @@ const port = process.env.TAURI_DEV_PORT
   : 5173;
 
 // Multi-page build: dashboard (index.html) + settings window (settings.html)
-// + standalone full-window trend view (trend.html). All share src/lib/ modules;
-// only the entry Svelte component differs.
+// + standalone full-window trend view (trend.html) + local-tools window
+// (toolwindow.html) + the compact pill's edge handle (peek.html). All share
+// src/lib/ modules; only the entry module differs.
 export default defineConfig({
   plugins: [svelte()],
   clearScreen: false,
@@ -29,6 +30,7 @@ export default defineConfig({
         settings: resolve(__dirname, "settings.html"),
         trend: resolve(__dirname, "trend.html"),
         tools: resolve(__dirname, "toolwindow.html"),
+        peek: resolve(__dirname, "peek.html"),
       },
     },
   },
