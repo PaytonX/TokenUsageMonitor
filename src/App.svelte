@@ -750,6 +750,7 @@
       class="pill-layer"
       class:is-docked={!pillRevealed}
       data-side={pillSide}
+      role="presentation"
       onpointerenter={() => clearDockTimer()}
       onpointerleave={() => scheduleDockPill()}
     >
@@ -1353,10 +1354,9 @@
     letter-spacing: 0.4px;
   }
 
-  /* Mini pill (compact): collapsed physical window is 150x44 (see
-     ipc::set_window_mode). Hover grows it for the MiniPanel rows.
-     Three states via data-tone: silent (<80%) / amber (80-95%) /
-     red breathe (>=95%, spec §5.2 CompactPill). */
+  /* 贴边胶囊：收起态物理窗 168x56（与 Rust set_window_mode 的 LogicalSize 一致），
+     展开时按 PILL_EXPANDED_BASE/ROW 增高。
+     data-tone 三态：<80% 静默 / 80-95% 琥珀 / >=95% 红色呼吸（spec §5.2 CompactPill）。 */
   .pill {
     height: 100%;
     display: flex;
