@@ -8,6 +8,8 @@
     saveCredentials,
     deleteCredentials,
     testProvider,
+    testProxy,
+    detectCodexToken,
     upsertAccount,
     removeAccount,
     closeSettings,
@@ -22,6 +24,7 @@
     type Settings,
     type Credentials,
     type TestResult,
+    type ProxyTestResult,
     type RatesSnapshot,
     emitTabsChanged,
     readHiddenTabs,
@@ -29,8 +32,9 @@
     type PageTab,
   } from "./lib";
   import { CURRENCIES, USD_RATES, applyRatesSnapshot, type Currency } from "./lib/currency";
+  import ProviderLogo from "./lib/components/ProviderLogo.svelte";
 
-  type Tab = "general" | "accounts" | "interaction" | "about";
+  type Tab = "general" | "accounts" | "interaction" | "network" | "about";
 
   /** One account as rendered in the Settings UI. Meta edits are batched into
    * `save_settings`; credential ops hit the backend immediately by
@@ -44,6 +48,8 @@
     /** AccessKeySecret fields */
     accessKey: string;
     secretKey: string;
+    /** LocalToken field (e.g. Codex ~/.codex/auth.json) */
+    token: string;
     credsDirty: boolean;
     testing: boolean;
     testResult: TestResult | null;
@@ -81,6 +87,11 @@
   let hubBase = $state("");
   let reportOn = $state(false);
   let hubToken = $state("");
+  // 网络代理（spec §3.4）：空字符串 = 不设置代理（跟随系统环境变量）。
+  let proxyEnabled = $state(false);
+  let proxyUrl = $state("");
+  let proxyTesting = $state(false);
+  let proxyResult = $state<ProxyTestResult | null>(null);
   // 汇率（B.6/C6）：编辑态覆盖值 + 最近一次生效快照（供 placeholder/更新时间展示）。
   let rateOverrides = $state<Record<string, number | undefined>>({});
   let ratesSnapshot = $state<RatesSnapshot | null>(null);
@@ -101,14 +112,16 @@
 
   const canSave = $derived(settings !== null);
 
-  function authKindFor(kind: string): "bearer_key" | "access_key_secret" {
-    return (presetMap.get(kind)?.auth_kind ?? "bearer_key") as
-      | "bearer_key"
-      | "access_key_secret";
+  function authKindFor(kind: string): "bearer_key" | "access_key_secret" | "local_token" {
+    return presetMap.get(kind)?.auth_kind ?? "bearer_key";
   }
 
   function isAccessKey(kind: string): boolean {
     return authKindFor(kind) === "access_key_secret";
+  }
+
+  function isLocalToken(kind: string): boolean {
+    return authKindFor(kind) === "local_token";
   }
 
   function buildForms(): AccountForm[] {
@@ -126,6 +139,7 @@
       apiKey: "",
       accessKey: "",
       secretKey: "",
+      token: "",
       credsDirty: false,
       testing: false,
       testResult: null,
@@ -152,6 +166,8 @@
       hubBase = s.hub_base ?? "";
       reportOn = s.report_on ?? false;
       hubToken = s.hub_token ?? "";
+      proxyUrl = s.proxy_url ?? "";
+      proxyEnabled = !!s.proxy_url;
       rateOverrides = { ...(s.rate_overrides ?? {}) };
       forms = buildForms();
       // 生效汇率快照（更新时间 / 告警展示用），并让本窗口立即采用。
@@ -179,6 +195,9 @@
   }
 
   function buildCredentials(f: AccountForm): Credentials {
+    if (isLocalToken(f.meta.provider_kind)) {
+      return { kind: "local_token", token: f.token.trim() };
+    }
     if (isAccessKey(f.meta.provider_kind)) {
       return {
         kind: "access_key_secret",
@@ -190,6 +209,9 @@
   }
 
   function hasCredentialInput(f: AccountForm): boolean {
+    if (isLocalToken(f.meta.provider_kind)) {
+      return f.token.trim().length > 0;
+    }
     if (isAccessKey(f.meta.provider_kind)) {
       return f.accessKey.trim().length > 0 && f.secretKey.trim().length > 0;
     }
@@ -293,6 +315,7 @@
     f.apiKey = "";
     f.accessKey = "";
     f.secretKey = "";
+    f.token = "";
     f.testResult = null;
     f.error = null;
     try {
@@ -301,6 +324,35 @@
       f.credsDirty = false;
     } catch (e) {
       f.error = String(e);
+    }
+  }
+
+  async function detectCodexFor(f: AccountForm) {
+    f.error = null;
+    try {
+      const detected = await detectCodexToken();
+      if (!detected) {
+        f.error = "未检测到本地 Codex 登录（~/.codex/auth.json）。请先登录 Codex CLI。";
+        return;
+      }
+      f.token = detected.token;
+      f.credsDirty = true;
+    } catch (e) {
+      f.error = String(e);
+    }
+  }
+
+  async function handleTestProxy() {
+    const url = proxyUrl.trim();
+    if (!url) return;
+    proxyTesting = true;
+    proxyResult = null;
+    try {
+      proxyResult = await testProxy(url);
+    } catch (e) {
+      proxyResult = { ok: false, status: null, error: String(e) };
+    } finally {
+      proxyTesting = false;
     }
   }
 
@@ -384,6 +436,7 @@
         report_on: reportOn,
         hub_token: hubToken,
         rate_overrides: buildRateOverrides(),
+        proxy_url: proxyEnabled && proxyUrl.trim() ? proxyUrl.trim() : null,
       };
       await saveSettings(next);
       // Mirror the display-currency choice into localStorage so every window
@@ -499,6 +552,13 @@ async function handleMinimize() {
         onclick={() => (tab = "interaction")}
       >
         交互与通知
+      </button>
+      <button
+        class="nav-item"
+        class:is-active={tab === "network"}
+        onclick={() => (tab = "network")}
+      >
+        网络
       </button>
       <button
         class="nav-item"
@@ -657,13 +717,22 @@ async function handleMinimize() {
                     disabled={busy?.startsWith("add-")}
                     onclick={() => onPresetClick(preset)}
                   >
-                    <span class="preset-card__swatch" aria-hidden="true"></span>
+                    <span class="preset-card__logo">
+                      <ProviderLogo kind={preset.kind} size={22} accent={preset.default_accent} />
+                    </span>
                     <span class="preset-card__text">
-                      <span class="preset-card__name">{preset.display_name}</span>
+                      <span class="preset-card__name">
+                        {preset.display_name}
+                        {#if preset.experimental}
+                          <span class="preset-card__exp">实验</span>
+                        {/if}
+                      </span>
                       <span class="preset-card__auth">
                         {preset.auth_kind === "access_key_secret"
                           ? "Access Key + Secret"
-                          : "Bearer API Key"}
+                          : preset.auth_kind === "local_token"
+                            ? "本地登录凭证"
+                            : "Bearer API Key"}
                       </span>
                     </span>
                     <span class="preset-card__add">
@@ -821,6 +890,22 @@ async function handleMinimize() {
                           oninput={() => (f.credsDirty = true)}
                         />
                       </label>
+                    {:else if isLocalToken(f.meta.provider_kind)}
+                      <label class="field">
+                        <span class="field__label">本地登录凭证</span>
+                        <input
+                          class="field__input"
+                          type="password"
+                          placeholder="粘贴 Codex 登录令牌，或点击右侧自动检测"
+                          bind:value={f.token}
+                          oninput={() => (f.credsDirty = true)}
+                        />
+                      </label>
+                      <div class="account__actions">
+                        <button class="btn btn--ghost" onclick={() => detectCodexFor(f)}>
+                          自动检测 ~/.codex
+                        </button>
+                      </div>
                     {:else}
                       <label class="field">
                         <span class="field__label">API Key</span>
@@ -982,6 +1067,51 @@ async function handleMinimize() {
               </label>
             </div>
             <p class="hint">设为 0 可关闭对应级别。建议告急阈值高于警告阈值。</p>
+          </div>
+        </div>
+
+      {:else if tab === "network"}
+        <div class="pane">
+          <h2 class="pane__title">网络</h2>
+
+          <div class="section">
+            <h3 class="section__title">代理</h3>
+            <p class="hint">
+              为所有 Provider 请求与多端同步配置 HTTP / SOCKS5 代理。保存后生效，已连接的账号会自动重建。
+              留空则不显式设置代理（跟随系统环境变量）。
+            </p>
+            <div class="behavior-row">
+              <div class="behavior-info">
+                <span class="behavior-label">启用代理</span>
+                <span class="behavior-hint">支持 http:// 与 socks5://，用户名密码可写在 URL 中。</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" bind:checked={proxyEnabled} />
+                <span class="toggle__track"><span class="toggle__thumb"></span></span>
+              </label>
+            </div>
+            {#if proxyEnabled}
+              <label class="interval">
+                <input
+                  type="text"
+                  placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+                  bind:value={proxyUrl}
+                />
+                <span class="interval__hint">代理地址</span>
+              </label>
+              <div class="account__actions">
+                <button class="btn btn--ghost" disabled={proxyTesting || proxyUrl.trim().length === 0} onclick={() => handleTestProxy()}>
+                  {proxyTesting ? "测试中…" : "测试连接"}
+                </button>
+              </div>
+              {#if proxyResult}
+                <div class="account__test {proxyResult.ok ? "test-ok" : "test-fail"}">
+                  {proxyResult.ok
+                    ? `✓ 连接成功（HTTP ${proxyResult.status ?? "?"}）`
+                    : `✗ ${proxyResult.error ?? "连接失败"}`}
+                </div>
+              {/if}
+            {/if}
           </div>
         </div>
 
@@ -1510,13 +1640,26 @@ async function handleMinimize() {
     z-index: 20;
   }
 
-  .preset-card__swatch {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: var(--preset-accent);
-    box-shadow: 0 0 8px var(--preset-accent);
+  .preset-card__logo {
+    width: 26px;
+    height: 26px;
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .preset-card__exp {
+    margin-left: 6px;
+    font-size: var(--tum-font-size-xs);
+    font-weight: 500;
+    color: var(--tum-warn);
+    background: rgba(255, 200, 61, 0.12);
+    border: 1px solid rgba(255, 200, 61, 0.4);
+    padding: 0 5px;
+    border-radius: var(--tum-radius-xs);
+    letter-spacing: 0.5px;
+    vertical-align: middle;
   }
 
   .preset-card__text {
