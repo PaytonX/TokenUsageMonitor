@@ -562,6 +562,10 @@
     if (mode !== "compact") return;
     try {
       pillSide = await syncPeekWindow(!pillRevealed);
+      // 收起态顺带让把手显形自愈：把手页只在收到 peek-show 时清除自己的
+      // is-hidden，若之前因异常时序（例如重载、模式竞态）停在隐藏态，它就
+      // 既看不见也点不到 —— 那样胶囊再也唤不出来。这里与停靠状态一并纠正。
+      if (!pillRevealed) void emitPeekShow(pillSide).catch(() => {});
     } catch {
       // 窗口正在切换模式 / 已被关闭：保持当前状态即可。
     }
