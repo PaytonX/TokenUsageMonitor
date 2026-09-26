@@ -2,7 +2,7 @@
 // defined in `src-tauri/src/ipc.rs`.
 
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { emit, emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AccountMeta,
   BurnInfo,
@@ -10,6 +10,7 @@ import type {
   DetectedCodexToken,
   DeviceInfo,
   HeatmapCell,
+  PeekSide,
   ProviderCatalog,
   ProviderError,
   ProviderState,
@@ -71,6 +72,29 @@ export async function togglePolling(paused: boolean): Promise<boolean> {
 
 export async function setWindowMode(mode: WindowMode): Promise<void> {
   await invoke<void>("set_window_mode", { mode });
+}
+
+/** 贴边把手与主胶囊的会话状态切换。`docked = true`：胶囊收起 —— 把手捕获
+ * 鼠标（作为唤醒把手）、主窗穿透；`docked = false`：胶囊已滑入 —— 两者互换。
+ * 返回胶囊贴靠的水平边，供前端决定滑入方向。 */
+export async function syncPeekWindow(docked: boolean): Promise<PeekSide> {
+  return invoke<PeekSide>("sync_peek_window", { docked });
+}
+
+/** 把手 → 主窗：指针进入（60ms 防抖后由把手页发出）。 */
+export function onPeekHover(cb: () => void): Promise<UnlistenFn> {
+  return listen("peek-hover", () => cb());
+}
+
+/** 把手 → 主窗：指针离开。 */
+export function onPeekLeave(cb: () => void): Promise<UnlistenFn> {
+  return listen("peek-leave", () => cb());
+}
+
+/** 主窗 → 把手：滑出完成，把手可复现；payload 是此刻胶囊贴靠的边（用于
+ *  纠正把手的圆角朝向，否则拖到屏幕另一侧后把手会一直朝错方向）。 */
+export function emitPeekShow(side: PeekSide): Promise<void> {
+  return emitTo("peek", "peek-show", side);
 }
 
 export async function openSettings(): Promise<void> {
