@@ -494,24 +494,28 @@ pub fn run() {
                 }
             });
 
-            // 拖动时的贴边策略：两种形态都沿用普通边缘吸附 + 把手跟随。
+            // 拖动时的贴边策略：dashboard 形态沿用普通边缘吸附；胶囊态不做实时吸附，
+            // 是否贴边收起只在拖拽停稳后由前端按落点判定，拖拽期间把手也不跟随。
             let snap_dash = dash.clone();
             let snap_dash_inner = snap_dash.clone();
             let edge_snap_flag = app.state::<AppState>().edge_snap.clone();
             let compact_flag = app.state::<AppState>().compact_mode.clone();
+            let pill_drag_flag = app.state::<AppState>().pill_drag.clone();
             let last_move = app.state::<AppState>().pill_last_move_ms.clone();
             snap_dash.on_window_event(move |event| {
                 if !matches!(event, tauri::WindowEvent::Moved(_)) {
                     return;
                 }
                 last_move.store(crate::now_ms(), Ordering::SeqCst);
-                // 两种形态都沿用普通边缘吸附（是否贴边收起由前端在拖拽结束时判定）；
-                // 把手只是跟随胶囊纵向位置，未创建时为空操作。
-                if edge_snap_flag.load(Ordering::SeqCst) {
-                    ipc::snap_to_edges(&snap_dash_inner, 14.0);
-                }
                 if compact_flag.load(Ordering::SeqCst) {
-                    ipc::reposition_peek(&snap_dash_inner);
+                    // 胶囊态不做实时吸附：吸附会和用户拖拽互相拉扯（拖不离边缘），
+                    // 是否贴边收起只在松手停稳后由前端按落点判定。
+                    // 拖拽期间也不跟随把手，否则把手会沿屏幕边缘乱跳。
+                    if !pill_drag_flag.load(Ordering::SeqCst) {
+                        ipc::reposition_peek(&snap_dash_inner);
+                    }
+                } else if edge_snap_flag.load(Ordering::SeqCst) {
+                    ipc::snap_to_edges(&snap_dash_inner, 14.0);
                 }
             });
 
