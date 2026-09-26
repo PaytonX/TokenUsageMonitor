@@ -574,6 +574,11 @@ pub async fn sync_peek_window(app: AppHandle, docked: bool) -> Result<String, St
         return Ok(if is_right { "right" } else { "left" }.to_string());
     }
 
+    // 每个状态边界都强制贴边一次：胶囊必须紧贴左/右边缘，7px 把手才能与之对齐。
+    // 启动恢复时窗口刚被改过尺寸，那一瞬间贴边可能读到旧尺寸而偏移，这里是
+    // 窗口真正显示后的二次校正；收起草时也由此保证「收起即贴边」。
+    dock_window(&dash);
+
     let peek = match app.get_webview_window("peek") {
         Some(existing) => existing,
         None => {
