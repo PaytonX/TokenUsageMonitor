@@ -692,8 +692,10 @@
     if (!didDrag && !fromControl) {
       void toggleMode();
     } else if (didDrag) {
-      // 拖拽可能越过了屏幕中线：重新确认贴靠边并让把手对齐。
-      void syncPeek();
+      // 拖拽结束即收边：compact 胶囊在拖动过程中就被 Rust 贴死到最近的左/右边缘，
+      // 所以松手就代表「拖到边缘了」—— 立刻滑出，而不是等指针离开 320ms。
+      // 先取回最新贴靠边（可能刚被拖到另一侧），再走与自动收起相同的链路。
+      void syncPeek().then(() => dockPill());
     }
   }
 
