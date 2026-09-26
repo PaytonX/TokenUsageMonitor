@@ -93,7 +93,6 @@
   .logo__mask {
     display: inline-block;
     flex: none;
-    background-color: currentColor;
     -webkit-mask-position: center;
     mask-position: center;
     -webkit-mask-size: contain;

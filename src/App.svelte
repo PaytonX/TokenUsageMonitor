@@ -756,7 +756,6 @@
     >
       <div
         class="pill"
-        class:pill--expanded={pillExpanded}
         data-tone={pillTone}
         onpointerdown={onPillPointerDown}
         onpointermove={onPillPointerMove}
@@ -1398,6 +1397,7 @@
   }
 
   .pill__main {
+    /* 高度与脚本常量 PILL_COLLAPSED_H 保持一致（收起态物理窗 168×56）。 */
     height: 56px;
     flex: none;
     display: flex;

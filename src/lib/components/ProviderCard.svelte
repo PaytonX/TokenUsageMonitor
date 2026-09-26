@@ -13,7 +13,7 @@
   import ProgressRing from "./ProgressRing.svelte";
   import PulseDot from "./PulseDot.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
-  import { EXPERIMENTAL_KINDS } from "../brand-glyphs";
+  import { brandColorFor, EXPERIMENTAL_KINDS } from "../brand-glyphs";
 
   interface Props {
     snapshot: UsageSnapshot;
@@ -56,10 +56,10 @@
   // 实验性来源由 kind 推导；集合与 brand-glyphs 的 EXPERIMENTAL_KINDS 同源，
   // 避免 ProviderCard 与焦点胶囊两处各维护一份而漂移。
   let isExperimental = $derived(EXPERIMENTAL_KINDS.has(kind));
-  // 实验小标：品牌色 22% 底（与焦点胶囊的 .ps__exp 同口径）；accent 不是 6 位
-  // hex 时返回空串，此时由 .card__exp 的白色 8% 兜底。
+  // 实验小标：品牌色 22% 底（与焦点胶囊的 .ps__exp 同口径）。色源与卡片其余
+  // 品牌视觉一致：账户自定义色优先，否则用品牌注册表的品牌色。
   const expStyle = $derived.by(() => {
-    const rgb = accent ? hexToRgb(accent) : null;
+    const rgb = hexToRgb(accent ?? brandColorFor(kind));
     return rgb ? `background: rgba(${rgb}, 0.22)` : "";
   });
   let balanceLabel = $derived.by(() => {
@@ -313,8 +313,8 @@
     white-space: nowrap;
     font-size: var(--tum-font-size-xs);
     font-weight: 600;
-    /* 品牌色 22% 底由内联 style 注入（与 .ps__exp 同口径）；拿不到 hex 时
-       退回白色 8%。圆角 6（spec 决策 12）；文字继承卡片强调色。 */
+    /* 品牌色 22% 底由内联 style 注入（色源 = 账户强调色 ?? 品牌色，与 .ps__exp
+       同口径）；hex 解析失败时退回白色 8%。圆角 6（spec 决策 12）。 */
     color: var(--acct-accent, var(--tum-accent));
     background: rgba(255, 255, 255, 0.08);
     border: none;
