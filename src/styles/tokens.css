@@ -82,7 +82,6 @@
      绘制层，因此不在这里做模糊；表面改为高不透明度的深色，保证任意壁纸下
      正文（#e6e8ea）对比度充足。 */
   --tum-glass: rgba(22, 25, 31, 0.92);
-  --tum-glass-shadow: 0 22px 55px rgba(0, 0, 0, 0.36);
   --tum-ease-spring: cubic-bezier(0.33, 1, 0.68, 1);
   --tum-ease-ring: cubic-bezier(0.2, 0.8, 0.2, 1);
 

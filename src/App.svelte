@@ -1386,8 +1386,10 @@
     padding: 0 10px;
     border-radius: 22px;
     background: var(--tum-glass);
+    /* 不画投影：胶囊填满窗口、四角被圆角切掉，投影的深色像素只会从这四个缺口
+       漏出来（表现为「四角没全透明」），而窗口会把窗外的投影全部裁掉，
+       等于零立体感换取一处瑕疵。 */
     border: 1px solid var(--tum-border-strong);
-    box-shadow: var(--tum-glass-shadow);
     overflow: hidden;
     transition: border-color 0.3s ease, box-shadow 0.3s ease;
     cursor: default;
@@ -1405,13 +1407,10 @@
   @keyframes pill-breathe {
     0%,
     100% {
-      box-shadow:
-        var(--tum-glass-shadow),
-        inset 0 0 0 1px rgba(255, 95, 86, 0.4);
+      box-shadow: inset 0 0 0 1px rgba(255, 95, 86, 0.4);
     }
     50% {
       box-shadow:
-        var(--tum-glass-shadow),
         0 0 16px 0 rgba(255, 95, 86, 0.5),
         inset 0 0 0 1px rgba(255, 95, 86, 0.85);
     }
