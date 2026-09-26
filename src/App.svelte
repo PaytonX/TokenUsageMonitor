@@ -301,6 +301,8 @@
   const PILL_PEEK_BACK_MS = 90; // 滑出完成后把手复现的延迟
   const PILL_REVEAL_MINI_MS = 120; // 滑入开始后展开明细的延迟
   const PILL_DOCK_DELAY_MS = 320; // 指针离开后停留多久才收起
+  // 模式恢复判定阈值（逻辑像素）：介于 compact(168) 与 dashboard(400) 之间。
+  const PILL_RESTORE_MAX_W = 200;
   let settings = $state<Settings | null>(null);
 
   // Per-account accent map (instance_id -> #RRGGBB), derived from settings.
@@ -383,6 +385,21 @@
     unlistenFns.push(await onPeekHover(() => void revealPill()));
     unlistenFns.push(await onPeekLeave(() => scheduleDockPill()));
     unlistenFns.push(await onPeekReveal(() => void revealPill()));
+
+    // 前端可能刚被重载（HMR / WebView 崩溃恢复）：Rust 侧的窗口尺寸与 compact 标志
+    // 都还在，但这里的 mode 会回到初始值 —— 若不同步，就会在 168x56 的窗里渲染
+    // dashboard 视图（内容被裁掉、头部按钮落在窗外，用户自己点不回来）。
+    // 因此按实际窗口宽度对齐模式，并重新同步把手与鼠标捕获。
+    try {
+      const win = getCurrentWindow();
+      const [size, scale] = await Promise.all([win.innerSize(), win.scaleFactor()]);
+      if (size.width / scale <= PILL_RESTORE_MAX_W) {
+        mode = "compact";
+        await syncPeek();
+      }
+    } catch {
+      // 取不到窗口尺寸：维持默认的 dashboard 模式。
+    }
 
     // 1-second clock tick for the timestamp header.
     const tick = setInterval(() => (now = new Date()), 1000);
