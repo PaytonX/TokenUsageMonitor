@@ -303,6 +303,7 @@
   const PILL_REVEAL_MINI_MS = 120; // 滑入开始后展开明细的延迟
   const PILL_DOCK_DELAY_MS = 320; // 指针离开后停留多久才收起
   const PILL_HOVER_ARM_MS = 800; // 贴边收起后把手重新可唤回的兜底延迟
+  const PILL_DRAG_SETTLE_MS = 400; // 窗口停止移动多久算拖拽结束
   // 模式恢复判定阈值（逻辑像素）：介于 compact(168) 与 dashboard(400) 之间。
   const PILL_RESTORE_MAX_W = 200;
   let settings = $state<Settings | null>(null);
@@ -509,6 +510,24 @@
       focus = "all";
     }
   });
+  // 拖拽期间窗口每移动一次就重置结算计时器；停止移动即视为拖拽结束并判定贴边/浮动。
+  $effect(() => {
+    const win = getCurrentWindow();
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void win
+      .onMoved(() => {
+        if (pillDragging) scheduleDragSettle();
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      });
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  });
 
   // Mini pill (compact mode) — focused provider color/name.
   const focusedColor = $derived(
@@ -552,6 +571,11 @@
   // 若立刻响应 hover，胶囊刚滑出就被唤回（看起来像没隐藏）。因此贴边时先解除
   // 布防，等指针离开把手一次（peek-leave）或超时兜底后再重新布防。
   let peekHoverArmed = $state(true);
+  // 用户拖拽中：由 onPillPointerMove 置位。原生 startDragging 的模态拖拽会把
+  // mouseup 交给系统，WebView 通常收不到 pointerup，所以拖拽结束改由「窗口停止
+  // 移动」来判定，不能只依赖 pointerup。
+  let pillDragging = false;
+  let dragSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let peekArmTimer: ReturnType<typeof setTimeout> | null = null;
   let pillExpanded = $state(false);
   let pillResizeGen = 0;
@@ -594,6 +618,24 @@
       peekArmTimer = null;
       peekHoverArmed = true;
     }, PILL_HOVER_ARM_MS);
+  }
+  /** 窗口每次移动都重置计时；停止移动 PILL_DRAG_SETTLE_MS 后判定拖拽结束。 */
+  function scheduleDragSettle() {
+    if (dragSettleTimer !== null) clearTimeout(dragSettleTimer);
+    dragSettleTimer = setTimeout(() => {
+      dragSettleTimer = null;
+      if (!pillDragging) return;
+      pillDragging = false;
+      void settlePillAfterDrag();
+    }, PILL_DRAG_SETTLE_MS);
+  }
+
+  function cancelDragSettle() {
+    if (dragSettleTimer !== null) {
+      clearTimeout(dragSettleTimer);
+      dragSettleTimer = null;
+    }
+    pillDragging = false;
   }
 
   /** 与后端同步「谁捕获鼠标 + 胶囊贴哪一边」。三态由 pillDocked/pillRevealed 推出。 */
@@ -752,6 +794,7 @@
     const dy = event.clientY - pillDragStart.y;
     if (!pillDidDrag && Math.hypot(dx, dy) > PILL_DRAG_THRESHOLD_PX) {
       pillDidDrag = true;
+      pillDragging = true;
       void getCurrentWindow().startDragging();
     }
   }
@@ -765,6 +808,8 @@
     if (!didDrag && !fromControl) {
       void toggleMode();
     } else if (didDrag) {
+      // pointerup 能收到时的快路径；收不到则由 scheduleDragSettle 兜底。
+      cancelDragSettle();
       void settlePillAfterDrag();
     }
   }
@@ -772,6 +817,7 @@
   /** 拖拽结束：贴近左/右边缘（24 逻辑 px 内）→ 贴边收起；否则恢复常态浮动。 */
   async function settlePillAfterDrag() {
     if (mode !== "compact") return;
+    cancelDragSettle();
     clearDockTimer();
     try {
       const win = getCurrentWindow();
@@ -849,6 +895,7 @@
     pillExpanded = false;
     pillResizeGen++;
     peekGen++;
+    cancelDragSettle();
     clearDockTimer();
     clearMiniTimer();
     await syncPeek();
