@@ -13,6 +13,7 @@
     type WindowKey,
     type WindowUsage,
   } from "../types";
+  import ProviderLogo from "./ProviderLogo.svelte";
 
   interface Props {
     snapshot: UsageSnapshot;
@@ -55,6 +56,7 @@
   });
 
   let critical = $derived(mostCriticalWindow(snapshot));
+  let kind = $derived(snapshot.provider_id.split("-")[0]);
 
   let burnLabel = $derived(
     burn ? `${formatUsage(burn.rate_per_min, burn.unit)}/min` : "—",
@@ -175,7 +177,10 @@
 
 <div class="detail" style={accentStyle} data-tauri-drag-region={false}>
   <div class="detail__head">
-    <span class="detail__title">{snapshot.provider_display_name}</span>
+    <span class="detail__title-group">
+      <ProviderLogo {kind} size={16} accent={accent ?? null} />
+      <span class="detail__title">{snapshot.provider_display_name}</span>
+    </span>
     <span class="detail__window">
       {critical ? WINDOW_LABELS[critical.key] : "暂无窗口"}
     </span>
@@ -267,7 +272,16 @@
     flex: none;
   }
 
+  .detail__title-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
   .detail__title {
+    min-width: 0;
     font-size: var(--tum-font-size-sm);
     font-weight: 600;
     color: var(--tum-text-primary);
