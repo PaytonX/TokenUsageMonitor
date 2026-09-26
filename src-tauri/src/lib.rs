@@ -436,13 +436,33 @@ pub fn run() {
             let dash = app
                 .get_webview_window("dashboard")
                 .expect("dashboard window must exist");
+            // 显示形态是持久的：上次停在 compact 胶囊态就先按胶囊尺寸贴边定好位置，
+            // 再显示窗口（配置里 visible=false）—— 否则启动会先闪一个 400x680 的全窗。
+            // 前端挂载后会按窗宽自行对齐视图，因此这里不需要额外通知。
+            if app.state::<AppState>().settings.compact_mode_now() {
+                let _ = dash.set_size(tauri::LogicalSize::new(168u32, 56u32));
+                ipc::dock_window(&dash);
+                app.state::<AppState>()
+                    .compact_mode
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            let _ = dash.show();
             let startup_clamped = std::sync::atomic::AtomicBool::new(false);
             let dash_for_clamp = dash.clone();
+            let clamp_app = app.handle().clone();
             dash.on_window_event(move |event| {
                 if matches!(event, tauri::WindowEvent::Focused(true))
                     && !startup_clamped.swap(true, std::sync::atomic::Ordering::SeqCst)
                 {
-                    ipc::clamp_window_to_work_area(&dash_for_clamp, 8.0);
+                    if clamp_app
+                        .state::<AppState>()
+                        .compact_mode
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        ipc::dock_window(&dash_for_clamp);
+                    } else {
+                        ipc::clamp_window_to_work_area(&dash_for_clamp, 8.0);
+                    }
                 }
             });
 

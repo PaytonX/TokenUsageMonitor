@@ -255,6 +255,13 @@ impl SettingsStore {
         self.cache.try_read().map(|s| s.edge_snap).unwrap_or(true)
     }
 
+    /// Sync, non-async read of `compact_mode`. Same rationale as
+    /// `close_to_tray_now`. Used at startup to decide whether to size and
+    /// dock the window as a compact pill before it is shown.
+    pub fn compact_mode_now(&self) -> bool {
+        self.cache.try_read().map(|s| s.compact_mode).unwrap_or(false)
+    }
+
     pub async fn save(&self, new_settings: Settings) -> Result<()> {
         // Write atomically: tmp file + rename.
         let tmp = self.config_path.with_extension("toml.tmp");

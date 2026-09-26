@@ -12,6 +12,7 @@
     onProviderError,
     onSettingsChanged,
     setWindowMode,
+    saveSettings,
     syncPeekWindow,
     emitPeekShow,
     onPeekHover,
@@ -738,6 +739,16 @@
     // compact：重建把手（Rust 侧建窗 + 定位 + 交出/接管鼠标）并取回贴靠边；
     // dashboard：set_window_mode 已在 Rust 里销毁把手并恢复鼠标交互。
     await syncPeek();
+    // 记住显示形态：Rust 下次启动会在显示窗口前按此设定尺寸与贴边，
+    // 因此这里必须持久化，否则「常态即胶囊」在重启后会丢。
+    if (settings) {
+      settings = { ...settings, compact_mode: next === "compact" };
+      try {
+        await saveSettings(settings);
+      } catch {
+        // 持久化失败不影响本次切换本身。
+      }
+    }
   }
 
   async function refresh() {
