@@ -208,7 +208,13 @@
   // Measure the overlay content box whenever it mounts or its size changes.
   // ResizeObserver callbacks run before paint, so reveal-after-measure has
   // no visible flash. The initial synchronous apply covers same-frame mount.
+  // Re-run when the displayed snapshot changes, not only when the element
+  // mounts: crossing between two equal-height cards does not resize the box,
+  // so ResizeObserver would not fire and the overlay could stay hidden.
+  // $effect runs after the DOM patch, so the synchronous apply() below
+  // measures the new content and reveals it without waiting for a resize.
   $effect(() => {
+    void detailSnapshot;
     const el = overlayEl;
     if (!el) return;
     const apply = () => {
