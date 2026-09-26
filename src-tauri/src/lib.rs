@@ -486,6 +486,20 @@ pub fn run() {
                 }
             });
 
+            // Windows 11 会在窗口尺寸变化时重画 DWM 边框与圆角：启动时对 400x680
+            // 设过一次的「不圆角 + 无边框」属性在缩到 168x56（以及明细展开/收起）后
+            // 会失效，四角重新变成可见的矩形。故每次 resize 后重设一次。
+            #[cfg(windows)]
+            let corner_dash = dash.clone();
+            #[cfg(windows)]
+            let corner_dash_inner = corner_dash.clone();
+            #[cfg(windows)]
+            corner_dash.on_window_event(move |event| {
+                if matches!(event, tauri::WindowEvent::Resized(_)) {
+                    dwm_corner::disable_corner_artifacts(&corner_dash_inner);
+                }
+            });
+
             // Windows 11: kill the DWM rounded-corner mask + 1px window
             // border so the four corners of the transparent window stay
             // fully invisible behind the rounded UI content.
