@@ -56,6 +56,12 @@
   // 实验性来源由 kind 推导；集合与 brand-glyphs 的 EXPERIMENTAL_KINDS 同源，
   // 避免 ProviderCard 与焦点胶囊两处各维护一份而漂移。
   let isExperimental = $derived(EXPERIMENTAL_KINDS.has(kind));
+  // 实验小标：品牌色 22% 底（与焦点胶囊的 .ps__exp 同口径）；accent 不是 6 位
+  // hex 时返回空串，此时由 .card__exp 的白色 8% 兜底。
+  const expStyle = $derived.by(() => {
+    const rgb = accent ? hexToRgb(accent) : null;
+    return rgb ? `background: rgba(${rgb}, 0.22)` : "";
+  });
   let balanceLabel = $derived.by(() => {
     if (!w.balance) return null;
     return `${formatUsage(w.balance.total, "cny")}`;
@@ -162,7 +168,7 @@
       </span>
       <span class="card__name">{snapshot.provider_display_name}</span>
       {#if isExperimental}
-        <span class="card__exp" title="实验性支持：数据可能不完整或口径调整中">实验</span>
+        <span class="card__exp" style={expStyle} title="实验性支持：数据可能不完整或口径调整中">实验</span>
       {/if}
     </button>
     {#if snapshot.plan_tier}
@@ -307,7 +313,8 @@
     white-space: nowrap;
     font-size: var(--tum-font-size-xs);
     font-weight: 600;
-    /* 品牌色 22% 底 + 圆角 6（spec 决策 12）；文字继承卡片强调色。 */
+    /* 品牌色 22% 底由内联 style 注入（与 .ps__exp 同口径）；拿不到 hex 时
+       退回白色 8%。圆角 6（spec 决策 12）；文字继承卡片强调色。 */
     color: var(--acct-accent, var(--tum-accent));
     background: rgba(255, 255, 255, 0.08);
     border: none;
