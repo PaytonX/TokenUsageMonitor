@@ -175,7 +175,7 @@
   </svg>
   {#if markKind}
     <span class="ring__mark" style={`width:${markSize}px;height:${markSize}px`}>
-      <ProviderLogo kind={markKind} size={markSize} />
+      <ProviderLogo kind={markKind} size={markSize} {accent} />
     </span>
   {/if}
 </span>

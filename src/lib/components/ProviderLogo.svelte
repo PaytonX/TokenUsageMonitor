@@ -33,9 +33,10 @@
   };
 
   const glyph = $derived(glyphFor(kind));
-  const brandColor = $derived(
-    glyph?.color ?? accent ?? FALLBACK_BRAND_COLOR,
-  );
+  // 着色优先级：账户自定义强调色（用户在设置里选的颜色）优先，其次注册表品牌色，
+  // 最后兜底色。Kimi 那种 tile 分支是多色成品（黑底 + 蓝点 + 白 K），无法被单色
+  // 强调色套色，仍按自身颜色渲染。
+  const brandColor = $derived(accent ?? glyph?.color ?? FALLBACK_BRAND_COLOR);
   const initial = $derived(
     INITIAL_OVERRIDES[normalizeKind(kind)] ??
       (kind.trim() ? kind.trim().charAt(0).toUpperCase() : "?"),
