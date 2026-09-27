@@ -151,6 +151,23 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 左键当前是否按下。原生拖拽是系统模态循环，前端拿不到 pointerup，只有按键
+/// 状态能权威判定「拖拽已经结束」；仅凭窗口停稳会在用户按住不动的中途误判。
+#[cfg(windows)]
+pub(crate) fn lbutton_down() -> bool {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetAsyncKeyState(v_key: i32) -> i16;
+    }
+    // 最高位为 1 表示当前按下。
+    unsafe { GetAsyncKeyState(0x01) < 0 }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn lbutton_down() -> bool {
+    false
+}
+
 /// Load any saved credentials for the configured accounts into the in-memory
 /// cache. Failures (no creds saved, keyring unavailable) are silently skipped
 /// - the cache just stays empty and the provider returns NotConfigured.
@@ -559,7 +576,12 @@ pub fn run() {
                         continue;
                     }
                     let last = state.pill_last_move_ms.load(Ordering::SeqCst);
-                    if last == 0 || crate::now_ms().saturating_sub(last) < 400 {
+                    // 必须「左键已松开」才算手势结束：用户按住不动超过阈值时，
+                    // 只凭停稳会在拖拽中途误判，随后的贴边结算会把窗口拽回边缘。
+                    if last == 0
+                        || crate::now_ms().saturating_sub(last) < 150
+                        || crate::lbutton_down()
+                    {
                         continue;
                     }
                     state.pill_drag.store(false, Ordering::SeqCst);

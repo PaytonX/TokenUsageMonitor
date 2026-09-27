@@ -377,10 +377,18 @@ fn dock_rect(
 /// 把手的物理位置：贴死所在边缘，纵向中心对齐胶囊主行（`row_h` 为物理像素）。
 fn peek_rect(
     dash_y: f64, row_h: f64, is_right: bool,
+    visible_w: f64, actual_w: f64,
     area_x: f64, area_y: f64, area_w: f64, area_h: f64,
-    peek_w: f64, peek_h: f64,
+    peek_h: f64,
 ) -> (f64, f64) {
-    let x = if is_right { area_x + area_w - peek_w } else { area_x };
+    // 系统最小窗口宽度会把把手窗撑到 ~136px。可见的那 7px 必须贴住屏幕边，
+    // 多出来的部分一律推到屏幕外——否则贴左边时那一整条透明区域会持续吞掉
+    // 桌面上的鼠标事件（点什么都点不到）。
+    let x = if is_right {
+        area_x + area_w - visible_w
+    } else {
+        area_x - (actual_w - visible_w).max(0.0)
+    };
     let y = dash_y + row_h / 2.0 - peek_h / 2.0;
     let max_y = (area_y + area_h - peek_h).max(area_y);
     (x, y.clamp(area_y, max_y))
@@ -452,15 +460,25 @@ fn peek_placement(window: &WebviewWindow) -> Option<(bool, PhysicalPosition<i32>
         f64::from(area.position.x),
         f64::from(area.size.width),
     );
+    let visible_w = PEEK_W * scale;
+    // 把手窗可能已被系统最小宽度撑大：按真实宽度定位，把多余部分推出屏幕。
+    let actual_w = window
+        .app_handle()
+        .get_webview_window("peek")
+        .and_then(|p| p.outer_size().ok())
+        .map(|s| f64::from(s.width))
+        .unwrap_or(visible_w)
+        .max(visible_w);
     let (px, py) = peek_rect(
         f64::from(pos.y),
         PILL_ROW_H * scale,
         is_right,
+        visible_w,
+        actual_w,
         f64::from(area.position.x),
         f64::from(area.position.y),
         f64::from(area.size.width),
         f64::from(area.size.height),
-        PEEK_W * scale,
         PEEK_H * scale,
     );
     Some((is_right, PhysicalPosition::new(px.round() as i32, py.round() as i32)))
@@ -624,6 +642,11 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
             };
 
             let _ = peek.set_position(pos);
+            // 刚建出来时还不知道系统实际最小宽度：拿到真实尺寸后立刻校正一次，
+            // 保证多出来的宽度落在屏幕外（贴左边时尤其关键）。
+            if let Some((_, fixed)) = peek_placement(&dash) {
+                let _ = peek.set_position(fixed);
+            }
             let _ = peek.show();
             // 鼠标捕获：两个窗口必须一致切换。走 best-effort 但带兜底 —— 停靠态
             // 主窗是穿透的，把手一旦不能捕获鼠标就再也唤不醒胶囊，此时直接让主窗
@@ -643,7 +666,6 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
 
     Ok(if is_right { "right" } else { "left" }.to_string())
 }
-
 /// 前端在开始原生拖拽时置位、手势结束（或收到 pointerup 快路径）时清零。
 /// 与 Rust 侧的「窗口停止移动」检测配合判定拖拽结束。
 #[tauri::command]
@@ -1260,17 +1282,28 @@ mod dock_tests {
 
     #[test]
     fn peek_rect_sits_flush_and_centres_on_the_pill_row() {
-        let (x, y) = peek_rect(100.0, 56.0, true, AREA_X, AREA_Y, AREA_W, AREA_H, 7.0, 58.0);
+        let args = (100.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        let (x, y) = peek_rect(args.0, args.1, true, 7.0, 7.0, args.2, args.3, args.4, args.5, args.6);
         assert_eq!((x, y), (1913.0, 99.0));
-        let (lx, _) = peek_rect(100.0, 56.0, false, AREA_X, AREA_Y, AREA_W, AREA_H, 7.0, 58.0);
+        let (lx, _) = peek_rect(args.0, args.1, false, 7.0, 7.0, args.2, args.3, args.4, args.5, args.6);
         assert_eq!(lx, 0.0);
     }
 
     #[test]
+    fn peek_rect_pushes_the_extra_width_off_screen() {
+        // 系统最小窗口宽度把把手窗撑到 136px：可见的 7px 仍贴住屏幕边，
+        // 多出的 129px 必须落在屏幕外，否则会吞掉桌面上的鼠标事件。
+        let (lx, _) = peek_rect(100.0, 56.0, false, 7.0, 136.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        assert_eq!(lx, -129.0);
+        let (rx, _) = peek_rect(100.0, 56.0, true, 7.0, 136.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        assert_eq!(rx, 1913.0);
+    }
+
+    #[test]
     fn peek_rect_clamps_to_the_work_area() {
-        let (_, top) = peek_rect(0.0, 56.0, true, AREA_X, AREA_Y, AREA_W, AREA_H, 7.0, 58.0);
+        let (_, top) = peek_rect(0.0, 56.0, true, 7.0, 7.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
         assert_eq!(top, 0.0);
-        let (_, bottom) = peek_rect(1020.0, 56.0, true, AREA_X, AREA_Y, AREA_W, AREA_H, 7.0, 58.0);
+        let (_, bottom) = peek_rect(1020.0, 56.0, true, 7.0, 7.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
         assert_eq!(bottom, 982.0);
     }
 }

@@ -389,10 +389,16 @@
     // 把手只存在于贴边态（浮动态没有把手窗口），因此这两个全局事件只在贴边时生效。
     unlistenFns.push(
       await onPeekHover(() => {
-        if (pillDocked && !pillCollapsing) void revealPill();
+        if (pillDocked && !pillCollapsing && !pillDragActive) void revealPill();
       }),
     );
-    unlistenFns.push(await onPeekLeave(() => scheduleDockPill()));
+    unlistenFns.push(
+      await onPeekLeave(() => {
+        // 把手滑入时必然先隐去自己并发一次 peek-leave，而此刻指针已经落在滑入的
+        // 胶囊上——这不是「离开」。据此收起会造成「唤出即被收回」。
+        if (!pillHovered) scheduleDockPill();
+      }),
+    );
     unlistenFns.push(await onPeekReveal(() => void revealPill()));
     unlistenFns.push(await onPillDragSettled(() => void settlePillAfterDrag()));
 
@@ -550,6 +556,12 @@
   // 收起动画进行中：此期间忽略把手 hover，避免刚收边就被立刻唤回（动画结束即恢复，
   // 不像旧的布防闩锁那样要求用户先把指针移开）。
   let pillCollapsing = $state(false);
+  // 指针是否在胶囊层内：把手的 hover/leave 会与滑入动画交错，用这一位区分
+  // 「擦过把手」与「确实离开胶囊」。
+  let pillHovered = $state(false);
+  // 原生拖拽进行中：冻结一切 hover 导致的收起判定与在途计时器，否则拖到一半
+  // 会被收边链路（collapsePill + syncPeek("docked")）拽回屏幕边缘。
+  let pillDragActive = $state(false);
   let pillExpanded = $state(false);
   let pillResizeGen = 0;
   let peekGen = 0;
@@ -579,10 +591,13 @@
   /** 与后端同步「谁捕获鼠标 + 胶囊贴哪一边」。三态由 pillDocked/pillRevealed 推出。 */
   async function syncPeek(): Promise<void> {
     if (mode !== "compact") return;
+    const nextState = pillDocked
+      ? pillRevealed
+        ? "revealed"
+        : "docked"
+      : "floating";
     try {
-      pillSide = await syncPeekWindow(
-        pillDocked ? (pillRevealed ? "revealed" : "docked") : "floating",
-      );
+      pillSide = await syncPeekWindow(nextState);
       // 贴边收起态顺带让把手显形自愈：把手页只在收到 peek-show 时清除自己的
       // is-hidden，若之前因异常时序（例如重载、模式竞态）停在隐藏态，它就
       // 既看不见也点不到 —— 那样胶囊再也唤不出来。这里与停靠状态一并纠正。
@@ -662,6 +677,8 @@
    *  的「复活」路径。少了它，把手会永久停在 opacity:0 + pointer-events:none，
    *  胶囊再也无法被唤醒（等于应用不可达）。 */
   async function dockPill() {
+    // 拖拽期间绝不允许收起链路介入：collapsePill/syncPeek 会把窗口拽回边缘。
+    if (pillDragActive) return;
     const gen = ++peekGen;
     clearMiniTimer();
     pillCollapsing = true;
@@ -694,6 +711,7 @@
   /** 指针进入胶囊层：取消待收起的停靠计时；层可见时安排明细展开（浮动态也生效）。 */
   function onPillPointerEnter() {
     if (mode !== "compact") return;
+    pillHovered = true;
     clearDockTimer();
     if (!pillDocked || pillRevealed) scheduleExpandPill();
   }
@@ -701,6 +719,9 @@
   /** 指针离开胶囊层：贴边态沿用 320ms 收起链路；浮动态只收明细、不隐藏窗口。 */
   function onPillPointerLeave() {
     if (mode !== "compact") return;
+    pillHovered = false;
+    // 拖拽中窗口跟着指针走，中途的 leave/enter 事件不可信，一律忽略。
+    if (pillDragActive) return;
     if (pillDocked) {
       scheduleDockPill();
       return;
@@ -717,6 +738,8 @@
 
   function onPillPointerDown(event: PointerEvent) {
     if (event.button !== 0) return;
+    // 按下即冻结收边链路：否则刚按下就可能被 320ms 的收起计时器收走。
+    clearDockTimer();
     pillDragStart = {
       x: event.clientX,
       y: event.clientY,
@@ -734,6 +757,8 @@
     const dy = event.clientY - pillDragStart.y;
     if (!pillDidDrag && Math.hypot(dx, dy) > PILL_DRAG_THRESHOLD_PX) {
       pillDidDrag = true;
+      pillDragActive = true;
+      clearDockTimer();
       void setPillDragging(true);
       void getCurrentWindow().startDragging();
     }
@@ -748,7 +773,8 @@
     if (!didDrag && !fromControl) {
       void toggleMode();
     } else if (didDrag) {
-      // pointerup 能收到时的快路径；Rust 侧窗口停稳检测是可靠的兜底路径。
+      // pointerup 能收到时的快路径；Rust 侧「左键已松开 + 停稳」是可靠兜底。
+      pillDragActive = false;
       void setPillDragging(false);
       void settlePillAfterDrag();
     }
@@ -757,6 +783,7 @@
   /** 拖拽结束：贴近左/右边缘（40 逻辑 px 内）→ 贴边收起；否则恢复常态浮动。 */
   async function settlePillAfterDrag() {
     if (mode !== "compact") return;
+    pillDragActive = false;
     void setPillDragging(false);
     clearDockTimer();
     try {
