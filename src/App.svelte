@@ -1532,13 +1532,15 @@
 
   /* 贴边胶囊：收起态物理窗 168x56（与 Rust set_window_mode 的 LogicalSize 一致），
      展开时按 PILL_EXPANDED_BASE/ROW 增高。
+     半径 28 = 收起态高 56 的一半：端部为完整半圆，与内层徽章（22px 高、
+     11px 半径）的胶囊端同族；展开态内容缩进 10/8px，28px 也不会裁到明细行。
      data-tone 三态：<80% 静默 / 80-95% 琥珀 / >=95% 红色呼吸（spec §5.2 CompactPill）。 */
   .pill {
     height: 100%;
     display: flex;
     flex-direction: column;
     padding: 0 10px;
-    border-radius: 22px;
+    border-radius: 28px;
     background: var(--tum-glass);
     /* 不画投影：胶囊填满窗口、四角被圆角切掉，投影的深色像素只会从这四个缺口
        漏出来（表现为「四角没全透明」），而窗口会把窗外的投影全部裁掉，
