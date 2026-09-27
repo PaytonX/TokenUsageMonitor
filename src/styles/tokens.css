@@ -83,6 +83,7 @@
      正文（#e6e8ea）对比度充足。 */
   --tum-glass: rgba(22, 25, 31, 0.92);
   --tum-ease-spring: cubic-bezier(0.33, 1, 0.68, 1);
+  --tum-ease-dock-exit: cubic-bezier(0.32, 0, 0.67, 0); /* 收起滑出：加速钻边 */
   --tum-ease-ring: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   /* Kept for compatibility; no component currently references it */

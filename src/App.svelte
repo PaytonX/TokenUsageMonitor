@@ -300,8 +300,8 @@
   const PILL_EXPANDED_ROW = PILL_MINI_ROW + PILL_MINI_GAP; // 30
   const PILL_EXPANDED_BASE =
     PILL_COLLAPSED_H + PILL_MINI_PAD_TOP + PILL_MINI_PAD_BOTTOM - PILL_MINI_GAP; // 60
-  const PILL_SLIDE_MS = 150; // 与 .pill-layer 的 transition 时长一致
-  const PILL_PEEK_BACK_MS = 90; // 滑出完成后把手复现的延迟
+  const PILL_SLIDE_MS = 200; // 与 .pill-layer.is-docked 的滑出时长一致
+  const PILL_PEEK_LEAD_MS = 120; // 滑出进行中就让把手接回鼠标并复现（时间线重叠）
   const PILL_REVEAL_MINI_MS = 120; // 滑入开始后展开明细的延迟
   const PILL_DOCK_DELAY_MS = 320; // 指针离开后停留多久才收起
   const PILL_DOCK_THRESHOLD_PX = 40; // 松手时距左/右边缘多少逻辑像素内算「拖到边缘」
@@ -669,7 +669,10 @@
     }, PILL_DOCK_DELAY_MS);
   }
 
-  /** 折叠 → 滑出 150ms → 再 90ms 后把手复现、主窗恢复穿透。
+  /** 收起采用「时间线重叠」三段式：t=0 置滑出态，胶囊立刻开始 200ms 滑出
+   *  （此时窗口尚未缩小，滑出全程可见）；t=120ms 滑出未结束就让把手提前接回
+   *  鼠标并从屏幕边缘复现；t=200ms 滑出播完后再缩窗裁剪。三段互相重叠，
+   *  消除「胶囊瞬消 → 空窗 → 把手突现」的割裂感。
    *
    *  ⚠️ 不要在这里加 `if (!pillRevealed) return` 之类的短路：即使胶囊从未滑入
    *  （指针 60ms 内刷过把手就离开，把手已把自己隐去，而 peek-hover 被防抖抑制
@@ -682,17 +685,23 @@
     const gen = ++peekGen;
     clearMiniTimer();
     pillCollapsing = true;
-    await collapsePill();
-    pillRevealed = false;
+    pillRevealed = false; // t=0：立即触发 .pill-layer.is-docked 的 200ms 滑出
     setTimeout(async () => {
-      pillCollapsing = false;
       if (gen !== peekGen) return;
+      // t=120ms：滑出未结束就把主窗切回 docked 布局，让把手提前接管。
       // 先取回最新贴靠边（用户可能刚把胶囊拖到屏幕另一侧），再把边随
       // peek-show 发给把手页，让它纠正圆角朝向并复现自己。
       await syncPeek(); // docked=true：把手接回鼠标
       if (gen !== peekGen) return;
       void emitPeekShow(pillSide).catch(() => {});
-    }, PILL_SLIDE_MS + PILL_PEEK_BACK_MS);
+    }, PILL_PEEK_LEAD_MS);
+    setTimeout(async () => {
+      // t=200ms：滑出播完再缩窗。先清锁再校验代际：即便本代已被唤醒取代，
+      // 也不能让 pillCollapsing 永久卡在 true（否则 revealPill 被永久抑制）。
+      pillCollapsing = false;
+      if (gen !== peekGen) return;
+      await collapsePill();
+    }, PILL_SLIDE_MS);
   }
 
   // Compact pill three-state tone (spec §5.2): ringPercent is aggregate
@@ -1235,6 +1244,12 @@
     display: flex;
     flex-direction: column;
     transition: transform 150ms var(--tum-ease-spring);
+  }
+
+  /* 贴边收起的滑出走 ease-in 曲线（200ms，加速钻边）：CSS transition 读取的是
+     变化后的目标状态，基态规则只服务滑入（spring），本规则只服务滑出。 */
+  .pill-layer.is-docked {
+    transition: transform 200ms var(--tum-ease-dock-exit);
   }
 
   .pill-layer.is-docked[data-side="right"] {

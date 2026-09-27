@@ -16,7 +16,7 @@ const side: Side = window.__PEEK_SIDE__ === "left" ? "left" : "right";
 
 const host = document.getElementById("peek");
 if (host) {
-  host.className = "peek";
+  host.className = "peek is-hidden";
   host.dataset.side = side;
   host.innerHTML = '<span class="grip"></span>';
 
@@ -34,11 +34,16 @@ if (host) {
          只用高不透明度深色保证对比度。 */
       background: rgba(22, 25, 31, 0.92);
       border: 1px solid rgba(255, 255, 255, 0.16);
-      transition: opacity 110ms ease;
+      /* 复现时从屏幕边缘横向展开（scaleX 0.4 → 1），与胶囊滑出重叠进行。 */
+      transform: scaleX(1);
+      transform-origin: right center;
+      transition:
+        opacity 160ms cubic-bezier(0.33, 1, 0.68, 1),
+        transform 160ms cubic-bezier(0.33, 1, 0.68, 1);
       cursor: default;
     }
-    .peek[data-side="right"] { border-radius: 4px 0 0 4px; border-right: none; }
-    .peek[data-side="left"] { border-radius: 0 4px 4px 0; border-left: none; }
+    .peek[data-side="right"] { border-radius: 4px 0 0 4px; border-right: none; transform-origin: right center; }
+    .peek[data-side="left"] { border-radius: 0 4px 4px 0; border-left: none; transform-origin: left center; }
     .grip {
       width: 2px;
       height: 22px;
@@ -52,7 +57,7 @@ if (host) {
        会让浏览器改判 hover 目标并派发一次假的 pointerleave，于是主窗收到
        peek-leave、刚滑入的胶囊 320ms 后就被收回（表现为「弹出即收回」）。
        把手能否接收鼠标由 Rust 的 set_ignore_cursor_events 在窗口级托管。 */
-    .peek.is-hidden { opacity: 0; }
+    .peek.is-hidden { opacity: 0; transform: scaleX(0.4); }
     @media (prefers-reduced-motion: reduce) {
       .peek, .grip { transition-duration: 0.001ms; }
     }

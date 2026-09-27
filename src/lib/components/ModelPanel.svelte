@@ -7,7 +7,6 @@
   import type { LocalModelUsage, LocalToolsPayload } from "../types";
   import { displayCurrency, formatCost, normalizeCurrency, toUsd } from "../currency";
   import type { Currency } from "../currency";
-  import PillsOrSelect from "./PillsOrSelect.svelte";
   import TrendLineChart from "./TrendLineChart.svelte";
 
   interface Props {
@@ -113,6 +112,91 @@
 
   let active = $derived(modelList.find((m) => m.id === activeId) ?? null);
 
+  // —— 模型占比圆环（替代原 PillsOrSelect 选择行）：手写 SVG 环图。
+  // ≤6 个模型全量直显；否则保留 Top5 且占比 ≥2% 的切片，其余归并为灰色
+  // 「其他」（不可选，悬停提示成员明细）。
+  const RING_MAX_SLICES = 5;
+  const RING_MIN_SHARE = 0.02;
+  const RING_COLORS = ["#5fd4a2", "#f2b35b", "#f27b9b", "#7b93f2", "#4cc2ff"];
+  const RING_OTHER_COLOR = "rgba(140, 148, 163, 0.8)";
+
+  interface RingSlice {
+    id: string;
+    name: string;
+    total: number;
+    share: number;
+    color: string;
+    isOther: boolean;
+    members: string[];
+  }
+  interface RingArc extends RingSlice {
+    dasharray: string;
+    dashoffset: number;
+  }
+
+  let hoverSliceId = $state<string | null>(null);
+
+  let ringSlices = $derived.by(() => {
+    const grand = modelList.reduce((sum, m) => sum + m.total, 0);
+    if (grand <= 0) return [] as RingSlice[];
+    const shareOf = (m: { total: number }) => m.total / grand;
+    let picked: RingSlice[];
+    if (modelList.length <= 6) {
+      picked = modelList.map((m, i) => ({
+        id: m.id,
+        name: m.name,
+        total: m.total,
+        share: shareOf(m),
+        color: RING_COLORS[i % RING_COLORS.length],
+        isOther: false,
+        members: [],
+      }));
+    } else {
+      const head = modelList.filter(
+        (m, i) => i < RING_MAX_SLICES && shareOf(m) >= RING_MIN_SHARE,
+      );
+      picked = head.map((m, i) => ({
+        id: m.id,
+        name: m.name,
+        total: m.total,
+        share: shareOf(m),
+        color: RING_COLORS[i % RING_COLORS.length],
+        isOther: false,
+        members: [],
+      }));
+      const restTotal = grand - head.reduce((sum, m) => sum + m.total, 0);
+      if (restTotal / grand >= RING_MIN_SHARE) {
+        picked.push({
+          id: "__other__",
+          name: "其他",
+          total: restTotal,
+          share: restTotal / grand,
+          color: RING_OTHER_COLOR,
+          isOther: true,
+          members: modelList
+            .filter((m) => !head.includes(m))
+            .map((m) => `${m.name} · ${fmtTokens(m.total)}`),
+        });
+      }
+    }
+    return picked;
+  });
+
+  let ringArcs = $derived.by(() => {
+    const C = 2 * Math.PI * 42;
+    let cum = 0;
+    return ringSlices.map((s) => {
+      const arc = Math.max(1, s.share * C - 2);
+      const out: RingArc = { ...s, dasharray: `${arc} ${C - arc}`, dashoffset: -cum };
+      cum += s.share * C;
+      return out;
+    });
+  });
+
+  let centerSlice = $derived(
+    ringSlices.find((s) => s.id === hoverSliceId) ?? ringSlices[0] ?? null,
+  );
+
   let lineDays = $derived.by(() => {
     if (!active) return [] as { date: string; label: string; parts: { id: string; value: number }[]; total: number }[];
     const today = new Date();
@@ -176,11 +260,69 @@
   {:else if modelList.length === 0}
     <div class="mp__empty">暂未上报模型级用量</div>
   {:else}
-    <PillsOrSelect
-      items={modelList.map((m) => ({ id: m.id, label: `${m.name} · ${fmtTokens(m.total)}` }))}
-      value={activeId}
-      onPick={(id) => { activeId = id; writePref("tum.model.tab", id); }}
-    />
+    <div class="mp__ring">
+      <div class="ring">
+        <svg viewBox="0 0 110 110" role="img" aria-label="模型用量占比">
+          <g class="ring__dial">
+            <circle class="ring__track" cx="55" cy="55" r="42" />
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex:
+                 circle 通过动态 role="button" 成为可交互控件，静态分析无法识别动态 role -->
+            {#each ringArcs as a (a.id)}
+              <circle
+                class="ring__seg"
+                class:ring__seg--active={hoverSliceId === a.id || (!hoverSliceId && a.id === ringSlices[0]?.id)}
+                style="stroke: {a.color};"
+                cx="55"
+                cy="55"
+                r="42"
+                stroke-dasharray={a.dasharray}
+                stroke-dashoffset={a.dashoffset}
+                onpointerenter={() => { hoverSliceId = a.id; }}
+                onpointerleave={() => { if (hoverSliceId === a.id) hoverSliceId = null; }}
+                onpointerdown={(e) => e.stopPropagation()}
+                onclick={() => { if (!a.isOther) { activeId = a.id; writePref("tum.model.tab", a.id); } }}
+                onkeydown={(e) => {
+                  if (a.isOther) return;
+                  if (e.key === "Enter" || e.key === " ") {
+                    activeId = a.id;
+                    writePref("tum.model.tab", a.id);
+                  }
+                }}
+                role={a.isOther ? "presentation" : "button"}
+                tabindex={a.isOther ? -1 : 0}
+              >
+                <title>{a.isOther ? `其他：${a.members.join("、")}` : `${a.name} · ${fmtTokens(a.total)}（${(a.share * 100).toFixed(1)}%）`}</title>
+              </circle>
+            {/each}
+          </g>
+        </svg>
+        {#if centerSlice}
+          <div class="ring__center">
+            <span class="ring__center-num">{(centerSlice.share * 100).toFixed(centerSlice.share * 100 >= 10 ? 0 : 1)}%</span>
+            <span class="ring__center-label">{centerSlice.isOther ? "其他" : centerSlice.name}</span>
+          </div>
+        {/if}
+      </div>
+      <div class="ring-legend">
+        {#each ringSlices as s (s.id)}
+          <button
+            type="button"
+            class="ring-legend__item"
+            class:ring-legend__item--active={activeId === s.id}
+            class:ring-legend__item--other={s.isOther}
+            disabled={s.isOther}
+            title={s.isOther ? `其他：${s.members.join("、")}` : `${s.name} · ${fmtTokens(s.total)}`}
+            onpointerenter={() => { hoverSliceId = s.id; }}
+            onpointerleave={() => { if (hoverSliceId === s.id) hoverSliceId = null; }}
+            onclick={() => { if (!s.isOther) { activeId = s.id; writePref("tum.model.tab", s.id); } }}
+          >
+            <span class="ring-legend__dot" style="background: {s.color};"></span>
+            <span class="ring-legend__name">{s.name}</span>
+            <span class="ring-legend__pct">{(s.share * 100).toFixed(s.share * 100 >= 10 ? 0 : 1)}%</span>
+          </button>
+        {/each}
+      </div>
+    </div>
 
     {#if active}
       <div class="mp__stats">
@@ -317,5 +459,116 @@
   }
   .mp__empty--err {
     color: var(--tum-danger);
+  }
+
+  /* —— 模型占比圆环 + 图例（替代原 PillsOrSelect 选择行）—— */
+  .mp__ring {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .ring {
+    position: relative;
+    width: 118px;
+    height: 118px;
+    flex: none;
+  }
+  .ring svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .ring__dial {
+    transform: rotate(-90deg);
+    transform-origin: 55px 55px;
+  }
+  .ring__track {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.14);
+    stroke-width: 13;
+  }
+  .ring__seg {
+    fill: none;
+    stroke-width: 13;
+    transition: stroke-width 120ms var(--tum-ease-spring);
+    cursor: pointer;
+    outline: none;
+  }
+  .ring__seg--active {
+    stroke-width: 15;
+  }
+  .ring__center {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    pointer-events: none;
+  }
+  .ring__center-num {
+    font-family: var(--tum-font-mono);
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--tum-text-primary);
+  }
+  .ring__center-label {
+    font-size: 10px;
+    color: var(--tum-text-secondary);
+    max-width: 74px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ring-legend {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+  }
+  .ring-legend__item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--tum-text-secondary);
+    font-size: 11px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .ring-legend__item:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .ring-legend__item--active {
+    background: rgba(255, 255, 255, 0.09);
+    color: var(--tum-text-primary);
+  }
+  .ring-legend__item--other {
+    cursor: default;
+    opacity: 0.75;
+  }
+  .ring-legend__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .ring-legend__name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ring-legend__pct {
+    font-family: var(--tum-font-mono);
+    color: var(--tum-text-primary);
   }
 </style>
