@@ -1,0 +1,79 @@
+# 未来优化想法池
+
+> 定位：记录未来优化想法，持续追加；仅记录，不承诺实施时间。
+> 创建：2026-09-27（基于 HEAD `c9a37b1`，文中的 file:line 行号以此为准，随代码演进可能漂移）
+> 状态图例：待办 ／ 待调研 ／ 已实施
+
+---
+
+## 1. hover 详情弹窗改回贴附卡片形态 — 状态：待办
+
+**想法原文**：「主界面，但鼠标滑到卡片上的弹窗，感觉还是最初的模式好一些，需要改回去」
+
+**现状定位**：详情卡当前为窗口级独立浮层
+- `src/App.svelte` L140-154 浮层状态（hoveredId / anchorRect / OVERLAY_GAP=8）、L156-174 350ms 宽限期、L188-209 placeOverlay 定位、L219-235 ResizeObserver 先测量后显示、L1179-1199 浮层 JSX（fly 过渡）、L1702-1717 CSS `position:fixed; z-index:60; width:320px`
+- 触发源：`src/lib/components/ProviderCard.svelte` L33-36 `onHover` props、L138-144 pointerenter/leave
+
+**git 演变链**（`git log -S` 考古）：
+- `44a6ba3` 最初形态：DetailCard 贴附卡片本体
+- `49612fd` 改为窗口级浮层（动机：修复小卡内容裁切，反馈 #2）
+- `6cf0947` anchor 到卡片旁 + provider logo
+
+**已确认目标形态**：改回「贴附卡片的详情形态」；实施时必须一并解决当初促成浮层改动的小卡内容裁切问题（否则会回退掉反馈 #2 的修复）。
+
+**初步方向**：恢复 DetailCard 渲染在卡片内部/紧贴布局，同时以「卡片尺寸自适应内容」或「内容精简/折叠」解决裁切，替代窗口级定位方案。
+
+---
+
+## 2. 剩余时间 >24h 换算为天/时/分 — 状态：待办
+
+**想法原文**：「主界面卡片上的剩余时间，特别周和月倒计时，但>24h时，换算成天，时，分的显示模式更直观」
+
+**现状定位**：`src/lib/components/ResetCountdown.svelte` L21-30，格式化仅有 h/m/s 三档、无「天」档位；月窗口倒计时显示为「719h 59m」式长小时数，不直观。
+
+**初步方向**：>24h 时显示 `Xd Yh Zm`（天/时/分三段），24h 以内维持现有 h/m/s。相关但不受影响的：`src/lib/components/DetailCard.svelte` L77-87 resetLabel（显示时间点，非倒计时）。
+
+---
+
+## 3. 多端同步 P2P + 鉴权替代 hub — 状态：待调研
+
+**想法原文**：「现在的多端模式是基于hub, 我在想能不能基于p2p+鉴权的方式进行连接同步，这可能需要先看看有没有成熟的实现方案」
+
+**现状定位**：多端同步基于中心 hub——`src-tauri/src/hub.rs` 手写 HTTP/1.1（POST /ingest、GET /devices、可选 Bearer 鉴权、SQLite 持久化）；`src-tauri/src/lib.rs` L350-391 agent 模式 30s 循环上报近 90 天摘要；`src-tauri/src/settings.rs` hub_mode 默认 off、hub_port 43210。
+
+**初步方向**：先调研成熟方案再定架构，候选：libp2p、mDNS 局域网直连 + 配对鉴权、Tailscale 等组网方案、CRDT 冲突合并。产出调研结论前不动代码。
+
+---
+
+## 4. 工具页 codex 90 天未用仍被扫描加入 — 状态：待办
+
+**想法原文**：「工具页面，我都没有90天内使用codex,但是扫描还是把它加进去了，感觉没有意义，需要优化一下逻辑」
+
+**现状定位**：`src-tauri/src/local/mod.rs` L54-56 保留规则 `tools.retain(|t| !t.daily.is_empty() || cache::tool_installed(&t.id))`——「有近 90 天数据 OR 已安装」；`src-tauri/src/local/cache.rs` L100-109 codex 的「已安装」判定 = `.codex/sessions` 目录存在（历史会话残留即算装了）。TOOL_IDS 见 `src-tauri/src/local/mod.rs` L61；codex 扫描含 Windows + WSL（`src-tauri/src/local/codex.rs`，KEEP_DAYS=90）。
+
+**初步方向（三选一，实施时定）**：
+- a) 纯 installed 无数据且超 N 天未更新的不再显示
+- b) 给用户「隐藏未使用工具」开关
+- c) 安装判定加时效性（如按最近会话文件 mtime）
+
+---
+
+## 5. 新增工具适配器：DeepSeek harness / Trae CN — 状态：待办（数据源待确认）
+
+**想法原文**：「工具支持添加：DeepSeek harness支持 / Trae CN 支持」
+
+**现状定位**：`src-tauri/src/providers/mod.rs` Provider trait（L506-522）、PRESETS（L171-288）、PROVIDER_REGISTRY（L591-616，12 个 kind）、L643-693 注册表自检单测。既有 7 步新增适配器清单：新建模块 → mod 声明 → PRESETS → PROVIDER_REGISTRY → 前端 `src/lib/types.ts` L340-356 SHORT_KIND_NAMES → `src/lib/brand-glyphs.ts` L13-36 BRAND_GLYPHS/EXPERIMENTAL_KINDS → 单测。
+
+**待决问题**：两者的用量数据源（API 端点 / 本地日志格式）需先确认，才能定走 API 型（Provider trait）还是本地日志型（local/ 模块）。
+
+---
+
+## 6. 关于页常驻内存占用信息错误 — 状态：待办
+
+**想法原文**：「关于页面更新，现在的常驻内存占用信息是错的」
+
+**现状定位**：`src/Settings.svelte` L1146 硬编码静态文案 `<li>最小化资源占用：常驻内存 ≈ 39 MB</li>`；全仓库无任何运行时内存采样代码。
+
+**初步方向（二选一，实施时定）**：
+- a) 直接删除/改写该文案（低成本）
+- b) Rust 侧实测当前进程 RSS（Tauri command + 前端动态显示），更准确但需新增 command
