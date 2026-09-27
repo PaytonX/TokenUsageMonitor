@@ -703,12 +703,24 @@ pub async fn open_settings(app: AppHandle) -> Result<(), String> {
     .transparent(true)
     .always_on_top(false)
     .skip_taskbar(false)
+    .shadow(false)
     .center()
     .build()
     .map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
     crate::dwm_corner::disable_corner_artifacts(&window);
+    #[cfg(windows)]
+    {
+        // Win11 在窗口尺寸变化后会重画 DWM 边框/圆角，放大后上边缘会重新
+        // 出现 1px 描边；复用 dashboard 的模式，每次 Resized 后重设。
+        let win_for_event = window.clone();
+        window.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Resized(_)) {
+                crate::dwm_corner::disable_corner_artifacts(&win_for_event);
+            }
+        });
+    }
 
     // Restore previous position/size if the window-state plugin has saved it.
     let _ = window.show();
@@ -751,12 +763,24 @@ pub async fn open_trend_window(app: AppHandle) -> Result<(), String> {
     .transparent(true)
     .always_on_top(false)
     .skip_taskbar(false)
+    .shadow(false)
     .center()
     .build()
     .map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
     crate::dwm_corner::disable_corner_artifacts(&window);
+    #[cfg(windows)]
+    {
+        // Win11 在窗口尺寸变化后会重画 DWM 边框/圆角，放大后上边缘会重新
+        // 出现 1px 描边；复用 dashboard 的模式，每次 Resized 后重设。
+        let win_for_event = window.clone();
+        window.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Resized(_)) {
+                crate::dwm_corner::disable_corner_artifacts(&win_for_event);
+            }
+        });
+    }
     let _ = window.show();
     let _ = window.set_focus();
     Ok(())
@@ -787,12 +811,24 @@ pub async fn open_tool_window(app: AppHandle) -> Result<(), String> {
     .transparent(true)
     .always_on_top(false)
     .skip_taskbar(false)
+    .shadow(false)
     .center()
     .build()
     .map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
     crate::dwm_corner::disable_corner_artifacts(&window);
+    #[cfg(windows)]
+    {
+        // Win11 在窗口尺寸变化后会重画 DWM 边框/圆角，放大后上边缘会重新
+        // 出现 1px 描边；复用 dashboard 的模式，每次 Resized 后重设。
+        let win_for_event = window.clone();
+        window.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Resized(_)) {
+                crate::dwm_corner::disable_corner_artifacts(&win_for_event);
+            }
+        });
+    }
     let _ = window.show();
     let _ = window.set_focus();
     Ok(())
@@ -830,7 +866,9 @@ pub async fn save_settings(
 ) -> Result<(), String> {
     // Capture before save(): saving overwrites the cached settings, after
     // which the old proxy would be unobservable.
-    let old_proxy_url = state.settings.get().await.proxy_url.clone();
+    let old_settings = state.settings.get().await;
+    let old_proxy_url = old_settings.proxy_url.clone();
+    let old_autostart = old_settings.autostart;
 
     state
         .settings
@@ -842,6 +880,19 @@ pub async fn save_settings(
     // handlers (close-to-tray, edge snap) pick up the change immediately.
     state.close_to_tray.store(new_settings.close_to_tray, std::sync::atomic::Ordering::SeqCst);
     state.edge_snap.store(new_settings.edge_snap, std::sync::atomic::Ordering::SeqCst);
+
+    // 开机自启对账：设置里开关变化时立即同步注册表项；注册表写入失败则
+    // 让本次保存返回错误（设置已落盘，与 proxy 分支的行为一致）。
+    if old_autostart != new_settings.autostart {
+        use tauri_plugin_autostart::ManagerExt;
+        let autolaunch = app.autolaunch();
+        let sync = if new_settings.autostart {
+            autolaunch.enable()
+        } else {
+            autolaunch.disable()
+        };
+        sync.map_err(|e| e.to_string())?;
+    }
 
     if proxy_changed(&old_proxy_url, &new_settings.proxy_url) {
         // Build the replacement first. On failure, settings are already
@@ -925,6 +976,32 @@ pub async fn save_settings(
     // Wake polling loops immediately so interval/enable edits apply now
     // instead of after the current period.
     let _ = state.settings_wake.send(());
+    Ok(())
+}
+
+/// 直接切换开机自启：先写注册表项，成功后再落盘设置；注册表写入失败时
+/// 不改动存储，保证复选框与系统实际状态不出现分歧。
+#[tauri::command]
+pub async fn set_autostart(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let autolaunch = app.autolaunch();
+        if enabled {
+            autolaunch.enable().map_err(|e| e.to_string())?;
+        } else {
+            autolaunch.disable().map_err(|e| e.to_string())?;
+        }
+    }
+
+    let mut current = state.settings.get().await;
+    if current.autostart != enabled {
+        current.autostart = enabled;
+        state.settings.save(current).await.map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 

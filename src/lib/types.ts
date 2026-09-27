@@ -243,7 +243,8 @@ export interface Settings {
   dashboard_x: number | null;
   dashboard_y: number | null;
   compact_mode: boolean;
-  autostart_hint_shown: boolean;
+  /** Whether to launch automatically at system boot (Windows HKCU Run key). */
+  autostart: boolean;
   /** Close button hides to tray instead of quitting (B4). */
   close_to_tray: boolean;
   /** Whether to fire OS notifications on threshold breach. */

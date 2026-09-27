@@ -66,6 +66,7 @@
   let pollInterval = $state<number>(0);
   let ringWindow = $state<string>("auto");
   let edgeSnap = $state(true);
+  let autostart = $state(false);
   let notifyEnabled = $state(true);
   let notifyWarn = $state<number>(80);
   let notifyCrit = $state<number>(95);
@@ -156,6 +157,7 @@
       pollInterval = s.poll_interval_seconds ?? 0;
       ringWindow = s.ring_window ?? "auto";
       edgeSnap = s.edge_snap ?? true;
+      autostart = s.autostart ?? false;
       notifyEnabled = s.notify_enabled ?? true;
       notifyWarn = s.notify_warn_percent ?? 80;
       notifyCrit = s.notify_crit_percent ?? 95;
@@ -425,6 +427,7 @@
         poll_interval_seconds: pollInterval,
         ring_window: ringWindow,
         edge_snap: edgeSnap,
+        autostart,
         notify_enabled: notifyEnabled,
         notify_warn_percent: clampPercent(notifyWarn),
         notify_crit_percent: clampPercent(notifyCrit),
@@ -983,6 +986,17 @@ async function handleMinimize() {
               </div>
               <label class="toggle">
                 <input type="checkbox" bind:checked={edgeSnap} />
+                <span class="toggle__track"><span class="toggle__thumb"></span></span>
+              </label>
+            </div>
+
+            <div class="behavior-row">
+              <div class="behavior-info">
+                <span class="behavior-label">开机自启</span>
+                <span class="behavior-hint">开机后自动运行本程序（写入当前用户注册表，点保存后生效）。</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" bind:checked={autostart} />
                 <span class="toggle__track"><span class="toggle__thumb"></span></span>
               </label>
             </div>

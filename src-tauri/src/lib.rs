@@ -228,11 +228,26 @@ pub fn run() {
         .try_init();
 
     tauri::Builder::default()
+        // 单例插件必须注册在最前：第二实例启动时由它唤起本实例的 dashboard
+        // 后自动退出，其余插件只在唯一实例内初始化。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // 第二实例启动时本回调在第一实例内执行，第二实例进程随后由插件
+            // 自动退出；面板此前收进托盘也能被唤起。
+            if let Some(dash) = app.get_webview_window("dashboard") {
+                let _ = dash.unminimize();
+                let _ = dash.show();
+                let _ = dash.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         // Restore window POSITION only. Restoring SIZE poisons startup: the
         // saved size can come from an older build or the other UI mode, while
         // the frontend always boots in dashboard mode, so the startup size
@@ -255,6 +270,19 @@ pub fn run() {
             );
             let settings_store = settings::SettingsStore::new(data_dir)
                 .expect("loading settings store");
+
+            // 启动自愈：自启开启时注册表项可能被用户或安全软件清除，启动时
+            // 按设置对账一次；失败不阻断启动。
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let s = settings_store.read_blocking();
+                if s.autostart {
+                    let autolaunch = app.autolaunch();
+                    if !autolaunch.is_enabled().unwrap_or(false) {
+                        let _ = autolaunch.enable();
+                    }
+                }
+            }
 
             // Shared, swappable HTTP client. A saved proxy URL that fails to
             // build falls back to a direct client instead of aborting launch.
@@ -620,6 +648,7 @@ pub fn run() {
             ipc::get_hub_devices,
             ipc::get_exchange_rates,
             ipc::refresh_exchange_rates,
+            ipc::set_autostart,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

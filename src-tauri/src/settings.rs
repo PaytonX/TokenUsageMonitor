@@ -31,10 +31,10 @@ pub struct Settings {
     /// Compact-mode flag.
     #[serde(default)]
     pub compact_mode: bool,
-    /// Whether to autostart on system boot (informational; the user must add
-    /// a shortcut to shell:startup themselves for now).
+    /// Whether to launch automatically at system boot (Windows: HKCU Run key,
+    /// managed via tauri-plugin-autostart).
     #[serde(default)]
-    pub autostart_hint_shown: bool,
+    pub autostart: bool,
     /// Close button hides to tray instead of quitting. Default true.
     #[serde(default = "default_close_to_tray")]
     pub close_to_tray: bool,
@@ -143,7 +143,7 @@ impl Default for Settings {
             dashboard_x: None,
             dashboard_y: None,
             compact_mode: false,
-            autostart_hint_shown: false,
+            autostart: false,
             close_to_tray: default_close_to_tray(),
             notify_enabled: default_notify_enabled(),
             notify_warn_percent: default_notify_warn_percent(),
@@ -301,6 +301,20 @@ mod settings_defaults_tests {
     use super::Settings;
 
     #[test]
+    fn autostart_field_parses_and_round_trips() {
+        let raw = "\
+enabled_providers = []
+poll_interval_seconds = 60
+autostart = true
+";
+        let parsed: Settings = toml::from_str(raw).expect("parse config with autostart");
+        assert!(parsed.autostart);
+        let dumped = toml::to_string(&parsed).expect("serialize settings");
+        let reparsed: Settings = toml::from_str(&dumped).expect("reparse dumped settings");
+        assert!(reparsed.autostart);
+    }
+
+    #[test]
     fn old_toml_without_new_fields_gets_defaults() {
         let raw = "\
 enabled_providers = [\"minimax\"]
@@ -316,6 +330,9 @@ autostart_hint_shown = false
         assert_eq!(parsed.notify_crit_percent, 95);
         assert!(parsed.rate_overrides.is_empty());
         assert!(parsed.proxy_url.is_none());
+        // Legacy configs carry autostart_hint_shown; serde ignores the
+        // unknown key and the new field defaults to false.
+        assert!(!parsed.autostart);
     }
 
     #[test]
