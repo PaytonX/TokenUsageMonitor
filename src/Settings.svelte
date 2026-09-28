@@ -1143,7 +1143,7 @@ async function handleMinimize() {
               Plan、DeepSeek API 与火山引擎 AgentPlan。
             </p>
             <ul class="about-list">
-              <li>最小化资源占用：常驻内存 ≈ 39 MB</li>
+              <li>常驻后台：仅托盘图标与数据轮询，无弹窗打扰</li>
               <li>支持多账户：同一来源可添加多个独立账户</li>
               <li>凭证由 Windows 凭据管理器（DPAPI）加密保存</li>
               <li>热力图历史数据存储于本地 SQLite</li>
