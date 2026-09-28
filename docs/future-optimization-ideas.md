@@ -168,9 +168,22 @@
 - **安全：解压上限约束的是"解压后输出"**（初版误套在压缩输入上，形同虚设）。
   限流器置于 decoder 之外，多读 1 字节以判超限；超限整份丢弃而非返回截断内容——
   否则会把残缺会话当完整数据解析，悄悄少算。
-- **未标记模型**：`data.model` 在实测版本中不存在，token 落入 `UNCLASSIFIED_MODEL`（"未标记模型"）桶，
-  保证按模型视图与按日总量能对账，不臆测模型名。
-- **验证（2026-09-28）**：`cargo test` **161 passed / 0 failed**（dsh 测试 19 个）；
+- **✅ 模型拆分（2026-09-28 修复，模型字段就在 usage 同一事件上）**：
+  此前判断"model 需跨事件关联、暂不拆分"是**错的**——`assistant/message` 自身就带 model：
+  `data.message.source.model`（镜像于 `data.message.source.replayState.response.model`）。
+  实测 **924/924** 条 usage 行都带 model，两处取值 100% 一致，无需任何跨事件推断。
+  - **取值用 `source.model`（请求模型），不用 `responseModel`**：后者是服务端版本化别名
+    （如 `deepseek-v4-flash-ga-260731`），而价目表按请求模型 id 前缀匹配，
+    误用它会让所有行匹配不到费率、整桶无成本。
+  - **会话中途确实会切模型**：`MiniMax-M3` 675 行 / `deepseek-v4-flash` 249 行，
+    所以按模型拆分是实质区分而非装饰。
+  - **两个模型均可计价**：`deepseek-v4-flash` 命中兜底 `deepseek` 档，
+    `MiniMax-M3` 归一化后命中 `minimax-m3` 档。
+  - 仍保留 `data.model` 作为旧版回退；完全无 model 的行照旧进 `UNCLASSIFIED_MODEL`，保证对账。
+  - **真实结果**：`MiniMax-M3` 4 天 / in 1,285,538 / cache 54,842,825 / out 250,887 / 估算 **$285.66**；
+    `deepseek-v4-flash` 2 天 / in 5,982,124 / cache 25,241,344 / out 342,845 / 估算 **$8.81**；
+    **按模型合计 = 按日合计 = 总计 87,945,563，对账一致**。
+- **验证（2026-09-28）**：`cargo test` **166 passed / 0 failed**（dsh 测试 24 个）；
   `cargo clippy` 对 dsh.rs 零告警；`dsh.rs` rustfmt 干净；`npx svelte-check` 0 错误；`npx vite build` 成功。
 - **zstd 炸弹实测**：构造 16 KB → 512 MB（压缩比 32000:1）的恶意文件，
   在 8 MB / 64 MB / 256 MB 三档上限下耗时 31 ms / 198 ms / 1.01 s **严格线性增长**，
@@ -197,10 +210,12 @@
 - **部署形态**：DeepSeek Harness 是 **Windows 桌面应用**
   （`AppData\Local\Programs\DeepSeek Harness`，非 CLI，故无 `dsh` 命令），
   会话日志仅落在 Windows 侧；WSL 侧 `.dsh/sessions` 存在但无用量记录。
-- **已知限制**：模型归属依赖 `data.model`，实测版本缺失，故暂无按模型拆分
-  （`request/header` 里虽有 `model: deepseek-v4-flash`，但与 usage 行不在同一事件上，暂不跨事件关联）；
-  真实用量需先修复 dsh 的 API key 才能看到数字；WSL 侧仅经 `existing_dotdirs` 通用路径扫描，
-  未针对 dsh 单独验证读取性能。
+- **已知限制**：成本为按公开价目表的**估算**（`cost_estimated = true`），
+  与 dsh 实际计费（`volcanoagentplan` 渠道价）可能有偏差；
+  缓存读取（`cacheReadTokens`）按输入费率计入——`compute_cost` 现有实现即如此，
+  真实缓存折扣因模型而异，故 $285.66 可能偏高；
+  WSL 侧仅经 `existing_dotdirs` 通用路径扫描，未针对 dsh 单独验证读取性能；
+  若 dsh 后续把 model 移出 `message.source`，需回退到"未标记模型"。
 
 ---
 

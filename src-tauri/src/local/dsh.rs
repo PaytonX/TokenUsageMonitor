@@ -32,6 +32,26 @@
 //! attempt stream for sessions that predate it — we must **not** sum both, or
 //! sessions carrying both layouts would be counted twice.
 //!
+//! ## Where the model name comes from
+//!
+//! Unlike the legacy attempt layout, each `assistant/message` carries its own
+//! model on the same line as the usage, under
+//! `data.message.source.model` (mirrored at
+//! `data.message.source.replayState.response.model`).
+//!
+//! We read `source.model` — the **requested** model — rather than the sibling
+//! `responseModel` (e.g. `deepseek-v4-flash-ga-260731`). The pricing table is
+//! keyed by requested model id and matched by prefix, so the server-side
+//! versioned alias would miss every tier and leave the row unpriced. On a real
+//! machine the two model fields agreed on 924 of 924 usage lines, so reading
+//! the requested one loses nothing.
+//!
+//! Sessions do switch models mid-run (observed: `MiniMax-M3` 675 lines,
+//! `deepseek-v4-flash` 249), so the per-model split is a real distinction
+//! rather than a cosmetic one. Lines with no model at all still fall into the
+//! unclassified bucket so the per-model view still reconciles with the daily
+//! total.
+//!
 //! ## Cache reads are tracked separately
 //!
 //! `totalTokens` is **not** `inputTokens + outputTokens`: the difference is
@@ -103,12 +123,14 @@ pub(crate) fn parse_line(line: &str) -> Option<(f64, f64, f64, String, String)> 
         .and_then(day_of_epoch_millis)
         .unwrap_or_default();
 
-    // The model is not stamped on the usage line itself; older builds put it on
-    // `data.model`. Otherwise the row falls into the unclassified bucket so the
-    // per-model view still reconciles with the per-day total.
+    // The model rides along on the message itself. We prefer the requested model
+    // over `responseModel` because the price table is keyed by requested id;
+    // `data.model` is kept as a fallback for older builds that stamped it
+    // there. Anything unresolved falls into the unclassified bucket.
     let model = v
-        .pointer("/data/model")
+        .pointer("/data/message/source/model")
         .and_then(|m| m.as_str())
+        .or_else(|| v.pointer("/data/model").and_then(|m| m.as_str()))
         .unwrap_or_default()
         .to_string();
 
@@ -345,6 +367,15 @@ mod tests {
         )
     }
 
+    /// The real shape: `source` also carries `replayState.response` with a
+    /// versioned `responseModel`. Only `source.model` is the requested model.
+    fn message_line_with_model(input: u32, output: u32, model: &str) -> String {
+        format!(
+            r#"{{"type":"assistant/message","seq":9,"time":1790577965809,"data":{{"turn":1,"step":2,"usage":{{"inputTokens":{input},"cacheReadTokens":0,"outputTokens":{output},"totalTokens":{}}},"message":{{"role":"assistant","content":[],"source":{{"kind":"model","provider":"volcanoagentplan","model":"{model}","replayState":{{"response":{{"kind":"pi-ai","model":"{model}","responseModel":"{model}-ga-260731"}}}}}}}}}}}}"#,
+            input + output
+        )
+    }
+
     #[test]
     fn parses_usage_from_nested_stream_chunk() {
         let line = line_with(&usage_chunk(1200, 340));
@@ -432,6 +463,111 @@ mod tests {
         assert_eq!(input, 0.0);
         assert_eq!(cache_read, 9472.0);
         assert_eq!(output, 0.0);
+    }
+
+    /// The model rides on the message, so per-model splitting needs no
+    /// cross-event correlation. Verified against real logs: 924/924 usage
+    /// lines carry it, split across two models mid-session.
+    #[test]
+    fn reads_model_from_message_source() {
+        let line = message_line_with_model(9677, 427, "deepseek-v4-flash");
+        let (_, _, _, _, model) = parse_line(&line).expect("should parse");
+        assert_eq!(model, "deepseek-v4-flash");
+    }
+
+    /// `replayState.response.responseModel` is a server-side versioned alias
+    /// (`deepseek-v4-flash-ga-260731`). The price table is keyed by the
+    /// requested id, so picking it would leave every row unpriced.
+    #[test]
+    fn prefers_requested_model_over_response_model() {
+        let line = message_line_with_model(100, 10, "MiniMax-M3");
+        let (_, _, _, _, model) = parse_line(&line).expect("should parse");
+        assert_eq!(
+            model, "MiniMax-M3",
+            "must not pick the -ga- versioned alias"
+        );
+        assert!(
+            crate::pricing::compute_cost(&crate::providers::TokenBreakdown {
+                input: 1_000_000.0,
+                cache_read: 0.0,
+                output: 1_000_000.0,
+                model_id: Some(model.clone()),
+            })
+            .is_some(),
+            "the extracted model must resolve to a price tier"
+        );
+    }
+
+    /// Both observed models must be priceable, otherwise splitting them buys
+    /// two unpriced buckets instead of one.
+    #[test]
+    fn observed_models_are_priceable() {
+        for m in ["deepseek-v4-flash", "MiniMax-M3"] {
+            let line = message_line_with_model(10, 5, m);
+            let (_, _, _, _, model) = parse_line(&line).expect("should parse");
+            assert_eq!(model, m);
+            assert!(
+                crate::pricing::compute_cost(&crate::providers::TokenBreakdown {
+                    input: 1_000.0,
+                    cache_read: 0.0,
+                    output: 1_000.0,
+                    model_id: Some(model),
+                })
+                .is_some(),
+                "{m} should resolve to a price tier"
+            );
+        }
+    }
+
+    /// A message with no `source` at all still yields an empty model, which the
+    /// aggregator maps to the unclassified bucket so totals still reconcile.
+    #[test]
+    fn message_without_source_leaves_model_unset() {
+        let line = message_line(100, 0, 50, 150);
+        let (_, _, _, _, model) = parse_line(&line).expect("should parse");
+        assert!(model.is_empty(), "expected unclassified, got {model}");
+    }
+
+    /// Sessions switch models mid-run; aggregation must keep them in separate
+    /// buckets while the per-day total stays the sum of both.
+    #[test]
+    fn aggregation_splits_models_and_still_reconciles() {
+        let text = format!(
+            "{}\n{}\n{}",
+            message_line_with_model(1000, 100, "MiniMax-M3"),
+            message_line_with_model(4000, 40, "deepseek-v4-flash"),
+            message_line_with_model(500, 50, "MiniMax-M3"),
+        );
+        let mut by_day = BTreeMap::new();
+        let mut by_model = BTreeMap::new();
+        aggregate_lines(&text, &mut by_day, &mut by_model);
+
+        let day_total: f64 = by_day.values().map(|v| v.0 + v.1 + v.2).sum();
+        let model_total: f64 = by_model
+            .values()
+            .flat_map(|m| m.values())
+            .map(|v| v.0 + v.1 + v.2)
+            .sum();
+        assert_eq!(day_total, 5690.0, "1000+100+4000+40+500+50");
+        assert_eq!(
+            model_total, day_total,
+            "per-model must reconcile with per-day"
+        );
+
+        let mm: f64 = by_model
+            .get("MiniMax-M3")
+            .unwrap()
+            .values()
+            .map(|v| v.0 + v.1 + v.2)
+            .sum();
+        assert_eq!(mm, 1650.0, "1500 + 150");
+        let ds: f64 = by_model
+            .get("deepseek-v4-flash")
+            .unwrap()
+            .values()
+            .map(|v| v.0 + v.1 + v.2)
+            .sum();
+        assert_eq!(ds, 4040.0);
     }
 
     #[test]
