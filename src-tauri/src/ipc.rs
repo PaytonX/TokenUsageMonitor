@@ -869,6 +869,10 @@ pub async fn save_settings(
     let old_settings = state.settings.get().await;
     let old_proxy_url = old_settings.proxy_url.clone();
     let old_autostart = old_settings.autostart;
+    // Classify the edit while the "before" image is still in hand - save()
+    // overwrites the cache, so the diff has to happen here. Poll loops use this
+    // to skip a fetch when nothing they depend on moved.
+    let delta = crate::settings_delta::SettingsDelta::compute(&old_settings, &new_settings);
 
     state
         .settings
@@ -974,8 +978,10 @@ pub async fn save_settings(
     // immediately instead of waiting for a poll that no longer happens.
     let _ = app.emit("settings-changed", &new_settings);
     // Wake polling loops immediately so interval/enable edits apply now
-    // instead of after the current period.
-    let _ = state.settings_wake.send(());
+    // instead of after the current period. The delta tells each loop whether
+    // a fetch is warranted; a display-only save still wakes them so they can
+    // re-read enabled state, but costs no request.
+    let _ = state.settings_wake.send(delta);
     Ok(())
 }
 
@@ -1023,6 +1029,7 @@ pub async fn upsert_account(
     }
 
     let mut settings = state.settings.get().await;
+    let old_settings = settings.clone();
     if let Some(existing) = settings
         .accounts
         .iter_mut()
@@ -1033,6 +1040,10 @@ pub async fn upsert_account(
     } else {
         settings.accounts.push(account.clone());
     }
+    // A brand-new account has no snapshot, so this is poll-relevant; editing
+    // only the label or colour of an existing one is not. Computed before
+    // save() because that call consumes the "after" image.
+    let delta = crate::settings_delta::SettingsDelta::compute(&old_settings, &settings);
     state
         .settings
         .save(settings)
@@ -1050,7 +1061,7 @@ pub async fn upsert_account(
         }
     }
     drop(registry);
-    let _ = state.settings_wake.send(());
+    let _ = state.settings_wake.send(delta);
     Ok(instance_id)
 }
 
@@ -1061,7 +1072,11 @@ pub async fn remove_account(
     instance_id: String,
 ) -> Result<(), String> {
     let mut settings = state.settings.get().await;
+    let old_settings = settings.clone();
     settings.accounts.retain(|a| a.instance_id != instance_id);
+    // A removal is a membership change: the loop for this id retires at its
+    // next still_registered check, and the other accounts must not refetch.
+    let delta = crate::settings_delta::SettingsDelta::compute(&old_settings, &settings);
     state
         .settings
         .save(settings)
@@ -1073,7 +1088,7 @@ pub async fn remove_account(
     state.credentials.write().await.remove(&instance_id);
     state.registry.write().await.remove(&instance_id);
     state.state.write().await.remove(&instance_id);
-    let _ = state.settings_wake.send(());
+    let _ = state.settings_wake.send(delta);
     Ok(())
 }
 

@@ -40,13 +40,6 @@ pub fn default_interval_for(provider_id: &str) -> u64 {
     }
 }
 
-/// Whether an account instance is currently enabled in `Settings::accounts`.
-fn account_enabled(s: &crate::settings::Settings, instance_id: &str) -> bool {
-    s.accounts
-        .iter()
-        .any(|a| a.instance_id == instance_id && a.enabled)
-}
-
 /// Effective polling period: a positive global override in Settings wins;
 /// 0 means "use the per-provider default".
 fn effective_interval(provider_id: &str, global_seconds: u32) -> Duration {
@@ -262,10 +255,11 @@ async fn poll_loop(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
                 if !still_registered(&app, &provider, &id).await {
                     break;
                 }
-                let enabled = account_enabled(
-                    &app.state::<AppState>().settings.get().await,
-                    &id,
-                );
+                let (enabled, _) = app
+                    .state::<AppState>()
+                    .settings
+                    .poll_view(&id)
+                    .await;
                 if !enabled {
                     continue;
                 }
@@ -282,21 +276,32 @@ async fn poll_loop(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
                 if !still_registered(&app, &provider, &id).await {
                     break;
                 }
-                let (enabled, new_period) = {
-                    let s = app.state::<AppState>().settings.get().await;
-                    (
-                        account_enabled(&s, &id),
-                        effective_interval(provider.kind(), s.poll_interval_seconds),
-                    )
-                };
+                // The payload says whether this save can change when or whether
+                // we poll. A display-only edit (currency, ring window, edge
+                // snap) still re-reads enabled state and the interval below,
+                // but must not cost a request.
+                let poll_relevant = settings_rx.borrow_and_update().poll_relevant;
+                let (enabled, global_seconds) = app
+                    .state::<AppState>()
+                    .settings
+                    .poll_view(&id)
+                    .await;
+                let new_period = effective_interval(provider.kind(), global_seconds);
                 if new_period != period {
                     period = new_period;
                     let mut rebuilt = interval_at(Instant::now() + period, period);
                     rebuilt.set_missed_tick_behavior(MissedTickBehavior::Delay);
                     tick = rebuilt;
                 }
+                // A watch channel keeps only the newest value, so a
+                // poll-relevant save followed within one select iteration by a
+                // display-only one coalesces into "nothing changed". The only
+                // case where that loses data is an account that has no
+                // snapshot at all, so probe for it before skipping the fetch.
+                let needs_first_fetch = !poll_relevant
+                    && !app.state::<AppState>().state.read().await.contains_key(&id);
                 // Enable/disable or interval edits refresh immediately.
-                if enabled && !*pause_rx.borrow() {
+                if (poll_relevant || needs_first_fetch) && enabled && !*pause_rx.borrow() {
                     if let Err(e) = poll_one(&app, &provider).await {
                         tracing::warn!(provider = %id, error = %e,
                             "poll after settings change failed");

@@ -19,6 +19,7 @@ pub mod pricing;
 pub mod providers;
 pub mod scheduler;
 pub mod settings;
+pub mod settings_delta;
 pub mod signing;
 pub mod storage;
 
@@ -61,7 +62,10 @@ pub struct AppState {
     pub pause_tx: Arc<watch::Sender<bool>>,
     /// A ping on this channel wakes every polling task so interval edits and
     /// enable/disable changes apply immediately instead of after one period.
-    pub settings_wake: Arc<watch::Sender<()>>,
+    /// The payload says which fields actually changed, so a display-only edit
+    /// (currency, ring window, edge snap) does not cost one request per
+    /// provider. See [`settings_delta::SettingsDelta`].
+    pub settings_wake: Arc<watch::Sender<settings_delta::SettingsDelta>>,
     /// Swappable shared HTTP client. A proxy change replaces the client under
     /// the write lock and rebuilds the whole registry; access sites take a
     /// read lock and clone the cheap inner Arc.
@@ -545,8 +549,11 @@ pub fn run() {
             let (pause_tx, _pause_rx) = watch::channel(false);
             let pause_tx = Arc::new(pause_tx);
 
-            // Settings-change wake ping, same pattern.
-            let (settings_wake, _wake_rx) = watch::channel(());
+            // Settings-change wake ping, same pattern. The initial value is an
+            // empty delta: a subscriber that has not seen a send yet must not
+            // treat the seeded value as a change.
+            let (settings_wake, _wake_rx) =
+                watch::channel(settings_delta::SettingsDelta::default());
             let settings_wake = Arc::new(settings_wake);
 
             // Mirror close-to-tray / edge-snap into atomics so the synchronous
