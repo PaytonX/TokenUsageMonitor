@@ -13,7 +13,6 @@
   import ProgressRing from "./ProgressRing.svelte";
   import PulseDot from "./PulseDot.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
-  import DetailCard from "./DetailCard.svelte";
   import { brandColorFor, EXPERIMENTAL_KINDS } from "../brand-glyphs";
 
   interface Props {
@@ -31,6 +30,10 @@
     countdown?: boolean;
     /** Called when the user clicks this card; App links it to focus + heatmap. */
     onSelect?: () => void;
+    /** Reported as the pointer enters/leaves the card; drives the floating
+     *  detail overlay in App (small cards no longer clip the detail). The
+     *  rect is the card's viewport box at enter time (overlay anchoring). */
+    onHover?: (id: string, hovering: boolean, rect?: DOMRect) => void;
   }
 
   let {
@@ -43,6 +46,7 @@
     accent,
     countdown = true,
     onSelect,
+    onHover,
   }: Props = $props();
 
   let w = $derived(snapshot.windows);
@@ -119,36 +123,6 @@
   });
 
   let expanded = $state(false);
-
-  // 详情卡贴附在卡片本体上（最初的形态）：hover 或点击展开时，卡片"长高"
-  // 容纳完整详情。关键约束：.shell 是 overflow:hidden、.shell__cards 是
-  // overflow-y:auto，两层都会裁切任何绝对定位的溢出内容——所以详情必须
-  // 参与正常文档流让卡片真实增高，而不是浮出去（那正是当初改成浮层的
-  // 起因：小卡放不下就被裁）。长高后由滚动容器自然承接，不会裁切。
-  let hovered = $state(false);
-  let showDetail = $derived(hovered || expanded);
-
-  // 指针从卡片移向刚长出的详情区时不应闪回收起，留一帧宽限再判定。
-  let leaveTimer: ReturnType<typeof setTimeout> | null = null;
-  function enterCard() {
-    if (leaveTimer) {
-      clearTimeout(leaveTimer);
-      leaveTimer = null;
-    }
-    hovered = true;
-  }
-  function leaveCard() {
-    if (leaveTimer) clearTimeout(leaveTimer);
-    leaveTimer = setTimeout(() => {
-      hovered = false;
-      leaveTimer = null;
-    }, 200);
-  }
-
-  // 卸载时清掉待执行的收起定时器，避免卡片被移除后回调仍写状态。
-  $effect(() => () => {
-    if (leaveTimer) clearTimeout(leaveTimer);
-  });
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events:
@@ -158,12 +132,16 @@
 <article
   class="card"
   class:card--expanded={expanded}
-  class:card--detail={showDetail}
   class:card--focused={focused}
   style={accentStyle}
   data-tauri-drag-region={false}
-  onpointerenter={enterCard}
-  onpointerleave={leaveCard}
+  onpointerenter={(e) =>
+    onHover?.(
+      snapshot.provider_id,
+      true,
+      (e.currentTarget as HTMLElement).getBoundingClientRect(),
+    )}
+  onpointerleave={() => onHover?.(snapshot.provider_id, false)}
   onclick={(e) => {
     // Title button already toggles expansion (and selects); a click
     // elsewhere anchors the header ring + heatmap to this provider.
@@ -255,21 +233,6 @@
       {/if}
     {/if}
   </div>
-
-  <!-- 详情贴附在卡片本体上：随 hover/展开出现，卡片随之长高，内容参与
-       文档流，因此不会被 .shell / .shell__cards 的 overflow 裁切。 -->
-  {#if showDetail}
-    <div class="card__detail">
-      <DetailCard
-        {snapshot}
-        {burn}
-        {lastRefreshAt}
-        {countdown}
-        {accent}
-        {error}
-      />
-    </div>
-  {/if}
 </article>
 
 <style>
@@ -292,39 +255,6 @@
 
   .card--expanded {
     z-index: 6;
-  }
-
-  /* 贴附详情态：卡片长高并抬升层级，保证长出的详情不被相邻卡片压住
-     （相邻卡片是 flex 流中的兄弟节点，默认按文档序绘制）。 */
-  .card--detail {
-    z-index: 6;
-  }
-
-  .card__detail {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    /* 顶边细线把"详情区"与上方用量条在视觉上分开 */
-    border-top: 1px solid var(--tum-border);
-    padding-top: var(--tum-space-2);
-    animation: detail-in 0.16s ease;
-  }
-
-  @keyframes detail-in {
-    from {
-      opacity: 0;
-      transform: translateY(-4px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .card__detail {
-      animation: none;
-    }
   }
 
   .card--focused {

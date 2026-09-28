@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
+  import { fly } from "svelte/transition";
   import { LogicalSize } from "@tauri-apps/api/dpi";
   import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
   import {
@@ -42,6 +43,7 @@
   import ProgressRing from "./lib/components/ProgressRing.svelte";
   import HeatmapGrid from "./lib/components/HeatmapGrid.svelte";
   import MiniPanel from "./lib/components/MiniPanel.svelte";
+  import DetailCard from "./lib/components/DetailCard.svelte";
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
   import TrendPanel from "./lib/components/TrendPanel.svelte";
   import ToolPanel from "./lib/components/ToolPanel.svelte";
@@ -135,6 +137,110 @@
   // Global focus: "all" (aggregate min) or one provider_id. Drives the
   // header ring, the chips row and the heatmap panel.
   let focus = $state(localStorage.getItem(FOCUS_KEY) ?? "all");
+  // Provider whose card the pointer is currently over; drives the floating
+  // detail overlay. `anchorRect` is the trigger card's viewport box so the
+  // overlay can park right beside it instead of docking at window bottom.
+  let hoveredId = $state<string | null>(null);
+  let anchorRect = $state<DOMRect | null>(null);
+  // Overlay box is measured before reveal so placement uses real dimensions
+  // (content height varies per provider). Stays hidden until first measure.
+  let overlayEl = $state<HTMLElement | null>(null);
+  let measuredW = $state(0);
+  let measuredH = $state(0);
+  let overlayX = $state(0);
+  let overlayY = $state(0);
+  let overlayReady = $state(false);
+  const OVERLAY_GAP = 8;
+  const VIEWPORT_MARGIN = 8;
+
+  // Hiding the detail overlay is deferred by a grace window so the pointer
+  // can travel from the card into the overlay (or back) without it vanishing
+  // mid-move. Entering the overlay cancels the pending hide (pinning it);
+  // leaving it re-arms a hide so it closes when you go elsewhere.
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleOverlayHide() {
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      hoveredId = null;
+      anchorRect = null;
+      hideTimer = null;
+    }, 350);
+  }
+  function cancelOverlayHide() {
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  }
+  function onCardHover(id: string, hovering: boolean, rect?: DOMRect) {
+    if (hovering) {
+      cancelOverlayHide();
+      hoveredId = id;
+      anchorRect = rect ?? null;
+      // Hide until the ResizeObserver re-measures at the new anchor — avoids
+      // a one-frame ghost at the previous card's coordinates.
+      overlayReady = false;
+    } else if (hoveredId === id) {
+      scheduleOverlayHide();
+    }
+  }
+
+  // Compute fixed coordinates for the overlay from the trigger rect and the
+  // measured content box: clamp horizontally; prefer below, flip above when
+  // the bottom edge would overflow; clamp to viewport as the last resort.
+  function placeOverlay() {
+    const rect = anchorRect;
+    if (!rect) return;
+    const w = measuredW || 320;
+    const h = measuredH;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const maxX = Math.max(VIEWPORT_MARGIN, vw - w - VIEWPORT_MARGIN);
+    overlayX = Math.min(Math.max(rect.left, VIEWPORT_MARGIN), maxX);
+    const below = rect.bottom + OVERLAY_GAP;
+    const above = rect.top - OVERLAY_GAP - h;
+    if (h <= 0 || below + h <= vh - VIEWPORT_MARGIN) {
+      overlayY = below;
+    } else if (above >= VIEWPORT_MARGIN) {
+      overlayY = above;
+    } else {
+      overlayY = Math.max(VIEWPORT_MARGIN, vh - h - VIEWPORT_MARGIN);
+    }
+  }
+
+  // Measure the overlay content box whenever it mounts or its size changes.
+  // ResizeObserver callbacks run before paint, so reveal-after-measure has
+  // no visible flash. The initial synchronous apply covers same-frame mount.
+  // Re-run when the displayed snapshot changes, not only when the element
+  // mounts: crossing between two equal-height cards does not resize the box,
+  // so ResizeObserver would not fire and the overlay could stay hidden.
+  // $effect runs after the DOM patch, so the synchronous apply() below
+  // measures the new content and reveals it without waiting for a resize.
+  $effect(() => {
+    void detailSnapshot;
+    const el = overlayEl;
+    if (!el) return;
+    const apply = () => {
+      const box = el.getBoundingClientRect();
+      if (box.width > 0 && box.height > 0) {
+        measuredW = box.width;
+        measuredH = box.height;
+        overlayReady = true;
+      }
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
+  // Reposition whenever the anchor moves or the content box changes size.
+  $effect(() => {
+    void anchorRect;
+    void measuredW;
+    void measuredH;
+    placeOverlay();
+  });
 
   // 总量页卡片拖拽排序：snapshots 保持后端到达顺序（usage-updated 刷新不打断
   // 用户排序），展示顺序由 cardOrder 偏好重排；拖拽经过时实时让位（dragOrder
@@ -377,6 +483,12 @@
     snapshots.find((s) => s.provider_id === heatmapTabId) ??
     snapshots[0] ??
     null,
+  );
+
+  // Provider behind the floating detail overlay (hovered card). Rendered once
+  // at window level so small cards (e.g. DeepSeek) can never clip its content.
+  let detailSnapshot = $derived(
+    hoveredId ? (snapshots.find((s) => s.provider_id === hoveredId) ?? null) : null,
   );
 
   // HeatmapGrid self-fetches per provider via get_heatmap, so every provider
@@ -980,6 +1092,7 @@
               focused={focus === snap.provider_id}
               accent={accentById[snap.provider_id]}
               countdown={displayRemaining}
+              onHover={onCardHover}
               onSelect={() => {
                 focus = snap.provider_id;
                 heatmapTabId = snap.provider_id;
@@ -1062,6 +1175,28 @@
       </span>
       <span class="shell__count">共 {snapshots.length} 个 Provider</span>
     </footer>
+
+    {#if detailSnapshot}
+      <div
+        class="detail-overlay"
+        role="group"
+        data-tauri-drag-region={false}
+        style={`left:${overlayX}px;top:${overlayY}px;visibility:${overlayReady ? "visible" : "hidden"};`}
+        onpointerenter={cancelOverlayHide}
+        onpointerleave={scheduleOverlayHide}
+        transition:fly={{ y: 6, duration: 120 }}
+        bind:this={overlayEl}
+      >
+        <DetailCard
+          snapshot={detailSnapshot}
+          burn={burns[detailSnapshot.provider_id] ?? null}
+          {lastRefreshAt}
+          countdown={displayRemaining}
+          accent={accentById[detailSnapshot.provider_id]}
+          error={errors[detailSnapshot.provider_id] ?? null}
+        />
+      </div>
+    {/if}
   {/if}
 </main>
 
@@ -1562,5 +1697,22 @@
     opacity: 1;
     outline: 2px solid var(--tum-accent);
     outline-offset: -2px;
+  }
+
+  /* Floating detail overlay anchored beside the hovered card: rendered at
+     window level so the full detail (rows + chart) is never clipped by a
+     small card. Position + width are set inline after measuring the content
+     box; it flips above the card when the viewport bottom is tight. Parking
+     the pointer on it keeps it pinned so the actions inside are reachable. */
+  .detail-overlay {
+    position: fixed;
+    z-index: 60;
+    width: 320px;
+    max-width: calc(100vw - 16px);
+    pointer-events: auto;
+  }
+
+  .detail-overlay :global(.detail) {
+    padding: 10px 12px;
   }
 </style>

@@ -254,16 +254,14 @@
 </div>
 
 <style>
-  /* 贴附在 ProviderCard 卡片本体上的详情面板（历史的最初形态）：参与父卡片
-     的文档流，随卡片一起长高，因此不再需要 float 定位，也就不会被
-     .shell / .shell__cards 的 overflow 裁切（inset:0 + overflow:hidden 的
-     拉伸裁切是当初改为浮层的起因）。此处只做内嵌面板的视觉：去掉外框
-     描边与投影，让它读起来是卡片的一部分而非另一个浮层。 */
   .detail {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    min-width: 0;
+    border-radius: var(--tum-radius-md);
+    border: 1px solid var(--tum-border-strong);
+    background: rgba(36, 38, 42, 0.95);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
   }
 
   .detail__head {
