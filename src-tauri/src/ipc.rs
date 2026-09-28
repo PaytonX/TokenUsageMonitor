@@ -322,7 +322,7 @@ pub async fn force_refresh(
         // Per-provider failures are already surfaced via the provider-error
         // event inside poll_one; keep refreshing the remaining targets.
         if let Err(e) = crate::scheduler::poll_one(&app, &provider).await {
-            tracing::warn!(provider = %provider.id(), error = %e,
+            tracing::warn!(target: "tum.poll", provider = %provider.id(), error = %e,
                 "manual refresh failed");
         }
     }
@@ -601,7 +601,7 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
                 let _ = peek.destroy();
             }
             if let Err(e) = dash.set_ignore_cursor_events(false) {
-                tracing::warn!("dashboard set_ignore_cursor_events failed: {e}");
+                tracing::warn!(target: "tum.window", "dashboard set_ignore_cursor_events failed: {e}");
             }
         }
         "revealed" | "docked" => {
@@ -653,12 +653,12 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
             // 把胶囊唤出来（peek-reveal），宁可少一层交互也不能让应用不可达。
             let docked = state == "docked";
             if let Err(e) = peek.set_ignore_cursor_events(!docked) {
-                tracing::warn!("peek set_ignore_cursor_events failed: {e}");
+                tracing::warn!(target: "tum.window", "peek set_ignore_cursor_events failed: {e}");
                 if docked {
                     let _ = dash.emit("peek-reveal", ());
                 }
             } else if let Err(e) = dash.set_ignore_cursor_events(docked) {
-                tracing::warn!("dashboard set_ignore_cursor_events failed: {e}");
+                tracing::warn!(target: "tum.window", "dashboard set_ignore_cursor_events failed: {e}");
             }
         }
         other => return Err(format!("unknown peek state: {other}")),

@@ -49,6 +49,7 @@ impl ErrorDeduper {
         match self.last_emitted.get(&key) {
             Some(&last) if now.duration_since(last) < self.cooldown => {
                 tracing::trace!(
+                    target: "tum.notify",
                     provider = provider_id,
                     error,
                     "suppressed duplicate provider-error"
@@ -203,7 +204,7 @@ impl NotifyState {
 pub fn deliver(app: &tauri::AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
-        tracing::warn!(error = %e, "failed to show notification");
+        tracing::warn!(target: "tum.notify", error = %e, "failed to show notification");
     }
 }
 

@@ -256,7 +256,7 @@ fn parse_heatmap(text: &str, beijing: FixedOffset) -> Option<Vec<HeatmapCell>> {
     let parsed: UsageDetailsResponse = match serde_json::from_str(text) {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(error = %e, body_chars = text.len(), "GetUsageDetails: parse failed");
+            tracing::warn!(target: "tum.provider", error = %e, body_chars = text.len(), "GetUsageDetails: parse failed");
             return None;
         }
     };
@@ -264,7 +264,7 @@ fn parse_heatmap(text: &str, beijing: FixedOffset) -> Option<Vec<HeatmapCell>> {
     if cells.is_empty() {
         None
     } else {
-        tracing::debug!(cells = cells.len(), "GetUsageDetails: heatmap cells built");
+        tracing::debug!(target: "tum.provider", cells = cells.len(), "GetUsageDetails: heatmap cells built");
         Some(cells)
     }
 }
@@ -442,7 +442,7 @@ impl Provider for VolcengineProvider {
         let api_heatmap: Option<Vec<HeatmapCell>> = match details_resp {
             Ok(text) => parse_heatmap(&text, beijing),
             Err(e) => {
-                tracing::warn!(error = %e, "GetUsageDetails: request failed, skipping heatmap");
+                tracing::warn!(target: "tum.provider", error = %e, "GetUsageDetails: request failed, skipping heatmap");
                 None
             }
         };

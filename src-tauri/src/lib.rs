@@ -542,7 +542,7 @@ pub fn run() {
                             None => {
                                 let _ = app_fx.emit("rates-updated", &snap);
                             }
-                            Some(w) => tracing::warn!("exchange rate refresh: {w}"),
+                            Some(w) => tracing::warn!(target: "tum.exchange", "exchange rate refresh: {w}"),
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
                     }

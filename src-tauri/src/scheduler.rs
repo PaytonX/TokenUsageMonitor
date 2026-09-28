@@ -264,7 +264,7 @@ async fn poll_loop(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
                     continue;
                 }
                 if let Err(e) = poll_one(&app, &provider).await {
-                    tracing::warn!(provider = %id, error = %e, "poll failed");
+                    tracing::warn!(target: "tum.poll", provider = %id, error = %e, "poll failed");
                 }
             }
             changed = settings_rx.changed() => {
@@ -303,7 +303,7 @@ async fn poll_loop(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
                 // Enable/disable or interval edits refresh immediately.
                 if (poll_relevant || needs_first_fetch) && enabled && !*pause_rx.borrow() {
                     if let Err(e) = poll_one(&app, &provider).await {
-                        tracing::warn!(provider = %id, error = %e,
+                        tracing::warn!(target: "tum.poll", provider = %id, error = %e,
                             "poll after settings change failed");
                     }
                 }
