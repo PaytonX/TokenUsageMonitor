@@ -1,4 +1,4 @@
-//! Persisted second-level cache for local tool scanning.
+﻿//! Persisted second-level cache for local tool scanning.
 //!
 //! Full scans re-parse every log/db source (Claude Code alone walks 200+ JSONL
 //! files). Most of the time nothing changed between refreshes, so we gate the
@@ -27,6 +27,10 @@ pub fn src_fingerprint() -> String {
     // 2) Codex JSONL sessions.
     for root in super::wsl::existing_dotdirs(".codex/sessions") {
         hash_jsonl_tree(&root, &mut hasher);
+    }
+    // 2b) DeepSeek Harness sessions (zstd-compressed JSONL).
+    for root in super::wsl::existing_dotdirs(".dsh/sessions") {
+        hash_session_tree_with_zstd(&root, &mut hasher);
     }
     // 3) Hermes SQLite (+ its WAL/shm side files).
     for hermes in super::wsl::existing_dotdirs(".hermes") {
@@ -58,6 +62,27 @@ fn hash_jsonl_tree(dir: &Path, hasher: &mut DefaultHasher) {
     }
 }
 
+/// Same as [`hash_jsonl_tree`] but also matches dsh's `*.jsonl.zstd` session
+/// files. Kept separate rather than widening the former, which is shared with
+/// Claude Code / Codex and must keep hashing plain JSONL only.
+fn hash_session_tree_with_zstd(dir: &Path, hasher: &mut DefaultHasher) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            hash_session_tree_with_zstd(&path, hasher);
+        } else if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".jsonl") || n.ends_with(".jsonl.zstd"))
+        {
+            hash_file(&path, hasher);
+        }
+    }
+}
+
 /// 计算单个工具的源指纹（metadata 级），用于 watch 判定"该工具日志是否变化"。
 /// 未变 → 工具也不重扫；变了 → 仅重扫该工具（增量）。
 pub fn tool_fingerprint(tool_id: &str) -> String {
@@ -71,6 +96,11 @@ pub fn tool_fingerprint(tool_id: &str) -> String {
         "codex" => {
             for root in super::wsl::existing_dotdirs(".codex/sessions") {
                 hash_jsonl_tree(&root, &mut hasher);
+            }
+        }
+        "deepseek-harness" => {
+            for root in super::wsl::existing_dotdirs(".dsh/sessions") {
+                hash_session_tree_with_zstd(&root, &mut hasher);
             }
         }
         "hermes" => {
@@ -102,9 +132,72 @@ pub fn tool_installed(tool_id: &str) -> bool {
         "claude-code" => !super::wsl::existing_dotdirs(".claude/projects").is_empty(),
         "codex" => !super::wsl::existing_dotdirs(".codex/sessions").is_empty(),
         "hermes" => !super::wsl::existing_dotdirs(".hermes").is_empty(),
+        "deepseek-harness" => !super::wsl::existing_dotdirs(".dsh/sessions").is_empty(),
         "cherry-studio" => cherry_db().is_some(),
         "minimax-code" => !minimax_dbs().is_empty(),
         _ => false,
+    }
+}
+
+/// A tool that is installed but whose logs have not been touched for this many
+/// days is treated as abandoned: it stays out of the panel unless it still has
+/// usage rows inside the 90-day window.
+///
+/// Directory existence is a poor liveness signal — Codex's `.codex/sessions`
+/// keeps every session from months ago, so the tool looks "installed forever"
+/// long after the user stopped using it. Requiring recent activity keeps the
+/// panel to tools actually in rotation, while a tool that *is* still being used
+/// never disappears (its logs are written continuously).
+pub const STALE_DAYS: i64 = 30;
+
+/// Unix-seconds timestamp of the most recent log activity for `tool_id`, or
+/// `None` when the tool is not installed / nothing readable was found.
+///
+/// SQLite-backed tools report the database file's own mtime; session-log tools
+/// report the newest file under their log tree. The tree walk is bounded
+/// (depth + entry budget) so a large history cannot stall the tools page.
+pub fn tool_last_active_at(tool_id: &str) -> Option<i64> {
+    /// Deep enough for Codex (`sessions/YYYY/MM/DD/rollout-*.jsonl`) while
+    /// still shallow enough to stay cheap on large histories.
+    const MAX_DEPTH: usize = 4;
+    /// Upper bound on directory entries visited per tool.
+    const BUDGET: usize = 2_000;
+
+    fn newest_of_dirs(dirs: &[std::path::PathBuf]) -> Option<i64> {
+        dirs.iter().filter_map(|d| super::wsl::newest_mtime(d, MAX_DEPTH, BUDGET)).max()
+    }
+    fn newest_of_files(files: &[std::path::PathBuf]) -> Option<i64> {
+        files.iter().filter_map(|p| super::wsl::newest_mtime(p, 0, 1)).max()
+    }
+
+    match tool_id {
+        "claude-code" => newest_of_dirs(&super::wsl::existing_dotdirs(".claude/projects")),
+        "codex" => newest_of_dirs(&super::wsl::existing_dotdirs(".codex/sessions")),
+        "hermes" => newest_of_dirs(&super::wsl::existing_dotdirs(".hermes")),
+        "deepseek-harness" => newest_of_dirs(&super::wsl::existing_dotdirs(".dsh/sessions")),
+        "cherry-studio" => cherry_db().and_then(|db| newest_of_files(&[db])),
+        "minimax-code" => newest_of_files(&minimax_dbs()),
+        _ => None,
+    }
+}
+
+/// Whether a tool is installed **and** still in active use (log activity within
+/// [`STALE_DAYS`]). Callers use this to keep an installed-but-idle tool off the
+/// panel; an unknown timestamp is treated as active so we never hide a tool
+/// merely because its clock could not be read.
+pub fn tool_recently_active(tool_id: &str) -> bool {
+    match tool_last_active_at(tool_id) {
+        Some(secs) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(secs);
+            let age_days = (now - secs) / 86_400;
+            age_days <= STALE_DAYS
+        }
+        // No readable timestamp (not installed, or an unreadable tree). Fall
+        // back to the plain existence check so behaviour matches the old rule.
+        None => tool_installed(tool_id),
     }
 }
 

@@ -1,4 +1,4 @@
-//! User settings: provider enable list, polling intervals, dashboard position.
+﻿//! User settings: provider enable list, polling intervals, dashboard position.
 //! Non-sensitive data lives in `config.toml` under the OS app data dir.
 //! Sensitive credentials (API keys, secret keys) are stored in the OS
 //! credential manager via the `keyring` crate (Windows DPAPI).
@@ -31,10 +31,10 @@ pub struct Settings {
     /// Compact-mode flag.
     #[serde(default)]
     pub compact_mode: bool,
-    /// Whether to autostart on system boot (informational; the user must add
-    /// a shortcut to shell:startup themselves for now).
+    /// Whether to launch automatically at system boot (Windows: HKCU Run key,
+    /// managed via tauri-plugin-autostart).
     #[serde(default)]
-    pub autostart_hint_shown: bool,
+    pub autostart: bool,
     /// Close button hides to tray instead of quitting. Default true.
     #[serde(default = "default_close_to_tray")]
     pub close_to_tray: bool,
@@ -64,9 +64,10 @@ pub struct Settings {
     /// Currency code used to render estimated costs (USD/CNY/...). Display-only.
     #[serde(default = "default_display_currency")]
     pub display_currency: String,
-    /// Multi-device hub role: "off" | "hub" | "agent". "hub" listens on
+    /// Multi-device hub role: "off" | "hub" | "agent" | "lan". "hub" listens on
     /// `hub_port` for other instances to report; "agent" reports up to
-    /// `hub_base`. Default off.
+    /// `hub_base`; "lan" additionally discovers same-subnet peers via mDNS and
+    /// reports to each of them (full mesh). Default off.
     #[serde(default = "default_hub_mode")]
     pub hub_mode: String,
     /// Local port the hub listener binds to when `hub_mode == "hub"`.
@@ -84,6 +85,14 @@ pub struct Settings {
     /// `/ingest` and `/devices`. Empty disables auth (trusted LAN only).
     #[serde(default)]
     pub hub_token: String,
+    /// Whether the user has ever explicitly configured `hub_token`.
+    ///
+    /// Distinguishes "never set" from "deliberately cleared to disable auth":
+    /// a missing flag (all pre-existing configs) means "never set", so enabling
+    /// hub mints a secret once. Once the user has saved the setting — including
+    /// saving it empty — we never overwrite their choice.
+    #[serde(default)]
+    pub hub_token_configured: bool,
     /// 用户手动覆盖的汇率（币种代码 → 每 1 USD 兑该币种数值）。覆盖值优先于
     /// 网络拉取值；键须为受支持币种（USD/CNY/TWD/HKD/JPY/EUR/GBP），非法值忽略。
     #[serde(default)]
@@ -100,6 +109,24 @@ fn default_hub_port() -> u16 {
 
 fn default_hub_mode() -> String {
     "off".to_string()
+}
+
+/// 生成一个新的 hub 共享密钥（32 位十六进制 = 128 bit 随机熵）。
+///
+/// hub 过去允许 `hub_token` 留空并直接放行所有请求，在局域网里等于没有
+/// 鉴权。改为「启用 hub 时若未设置密钥就自动生成并落盘」，让默认路径
+/// 始终是安全的：用户若真想关闭鉴权，仍可显式清空该字段。
+///
+/// 熵源来自 `getrandom`（Windows 下即 BCryptGenRandom），不引入新依赖；
+/// 不使用时间播种的伪随机——密钥强度直接决定 hub 的访问控制边界。
+pub fn generate_hub_token() -> String {
+    let mut buf = [0u8; 16];
+    // 取不到系统随机源时退回全零，并由调用方决定是否启用；这里的失败
+    // 概率极低（getrandom 在受支持的平台不会失败），不引入 panic。
+    if getrandom::fill(&mut buf).is_err() {
+        return "0".repeat(32);
+    }
+    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn default_display_currency() -> String {
@@ -143,7 +170,7 @@ impl Default for Settings {
             dashboard_x: None,
             dashboard_y: None,
             compact_mode: false,
-            autostart_hint_shown: false,
+            autostart: false,
             close_to_tray: default_close_to_tray(),
             notify_enabled: default_notify_enabled(),
             notify_warn_percent: default_notify_warn_percent(),
@@ -157,6 +184,7 @@ impl Default for Settings {
             hub_base: String::new(),
             report_on: false,
             hub_token: String::new(),
+            hub_token_configured: false,
             rate_overrides: HashMap::new(),
             proxy_url: None,
         }
@@ -255,6 +283,13 @@ impl SettingsStore {
         self.cache.try_read().map(|s| s.edge_snap).unwrap_or(true)
     }
 
+    /// Sync, non-async read of `compact_mode`. Same rationale as
+    /// `close_to_tray_now`. Used at startup to decide whether to size and
+    /// dock the window as a compact pill before it is shown.
+    pub fn compact_mode_now(&self) -> bool {
+        self.cache.try_read().map(|s| s.compact_mode).unwrap_or(false)
+    }
+
     pub async fn save(&self, new_settings: Settings) -> Result<()> {
         // Write atomically: tmp file + rename.
         let tmp = self.config_path.with_extension("toml.tmp");
@@ -294,6 +329,64 @@ mod settings_defaults_tests {
     use super::Settings;
 
     #[test]
+    fn generate_hub_token_is_32_hex_and_unique() {
+        let a = super::generate_hub_token();
+        let b = super::generate_hub_token();
+        assert_eq!(a.len(), 32, "token should be 32 hex chars: {a}");
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "not hex: {a}");
+        assert_ne!(a, b, "two tokens must differ (CSPRNG sanity)");
+        assert_ne!(a, "0".repeat(32), "must not be the failure fallback");
+    }
+
+    #[test]
+    fn old_config_without_token_flag_is_treated_as_unset() {
+        // A pre-existing config has hub_token = "" and no hub_token_configured
+        // key at all. serde(default) must yield false so the hub mints a secret
+        // exactly once instead of silently running unauthenticated.
+        let raw = "\
+enabled_providers = []
+poll_interval_seconds = 60
+hub_mode = \"hub\"
+hub_port = 43210
+";
+        let parsed: Settings = toml::from_str(raw).expect("parse legacy config");
+        assert!(parsed.hub_token.is_empty());
+        assert!(
+            !parsed.hub_token_configured,
+            "missing flag must default to false"
+        );
+    }
+
+    #[test]
+    fn explicitly_cleared_token_is_preserved_on_round_trip() {
+        // User deliberately clears the secret to disable auth: the flag must
+        // survive a save/load cycle, otherwise the next hub start would refill
+        // it and silently re-enable authentication they turned off.
+        let mut s = Settings::default();
+        s.hub_mode = "hub".into();
+        s.hub_token = String::new();
+        s.hub_token_configured = true;
+        let dumped = toml::to_string(&s).expect("serialize");
+        let back: Settings = toml::from_str(&dumped).expect("deserialize");
+        assert!(back.hub_token_configured, "flag lost on round trip");
+        assert!(back.hub_token.is_empty());
+    }
+
+    #[test]
+    fn autostart_field_parses_and_round_trips() {
+        let raw = "\
+enabled_providers = []
+poll_interval_seconds = 60
+autostart = true
+";
+        let parsed: Settings = toml::from_str(raw).expect("parse config with autostart");
+        assert!(parsed.autostart);
+        let dumped = toml::to_string(&parsed).expect("serialize settings");
+        let reparsed: Settings = toml::from_str(&dumped).expect("reparse dumped settings");
+        assert!(reparsed.autostart);
+    }
+
+    #[test]
     fn old_toml_without_new_fields_gets_defaults() {
         let raw = "\
 enabled_providers = [\"minimax\"]
@@ -309,6 +402,9 @@ autostart_hint_shown = false
         assert_eq!(parsed.notify_crit_percent, 95);
         assert!(parsed.rate_overrides.is_empty());
         assert!(parsed.proxy_url.is_none());
+        // Legacy configs carry autostart_hint_shown; serde ignores the
+        // unknown key and the new field defaults to false.
+        assert!(!parsed.autostart);
     }
 
     #[test]

@@ -29,7 +29,8 @@
         "y": 100,
         "minimizable": false,
         "maximizable": false,
-        "fullscreen": false
+        "fullscreen": false,
+        "visible": false
       }
     ],
     "security": {

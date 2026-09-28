@@ -66,6 +66,7 @@
   let pollInterval = $state<number>(0);
   let ringWindow = $state<string>("auto");
   let edgeSnap = $state(true);
+  let autostart = $state(false);
   let notifyEnabled = $state(true);
   let notifyWarn = $state<number>(80);
   let notifyCrit = $state<number>(95);
@@ -156,6 +157,7 @@
       pollInterval = s.poll_interval_seconds ?? 0;
       ringWindow = s.ring_window ?? "auto";
       edgeSnap = s.edge_snap ?? true;
+      autostart = s.autostart ?? false;
       notifyEnabled = s.notify_enabled ?? true;
       notifyWarn = s.notify_warn_percent ?? 80;
       notifyCrit = s.notify_crit_percent ?? 95;
@@ -425,6 +427,7 @@
         poll_interval_seconds: pollInterval,
         ring_window: ringWindow,
         edge_snap: edgeSnap,
+        autostart,
         notify_enabled: notifyEnabled,
         notify_warn_percent: clampPercent(notifyWarn),
         notify_crit_percent: clampPercent(notifyCrit),
@@ -435,6 +438,11 @@
         hub_base: hubBase,
         report_on: reportOn,
         hub_token: hubToken,
+        // Mark it as "the user has made a choice about the secret" — including
+        // choosing an empty one to run without auth. Without this flag the
+        // backend would mint a secret on every hub start, undoing a
+        // deliberately cleared field.
+        hub_token_configured: true,
         rate_overrides: buildRateOverrides(),
         proxy_url: proxyEnabled && proxyUrl.trim() ? proxyUrl.trim() : null,
       };
@@ -986,23 +994,55 @@ async function handleMinimize() {
                 <span class="toggle__track"><span class="toggle__thumb"></span></span>
               </label>
             </div>
+
+            <div class="behavior-row">
+              <div class="behavior-info">
+                <span class="behavior-label">开机自启</span>
+                <span class="behavior-hint">开机后自动运行本程序（写入当前用户注册表，点保存后生效）。</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" bind:checked={autostart} />
+                <span class="toggle__track"><span class="toggle__thumb"></span></span>
+              </label>
+            </div>
           </div>
 
           <div class="section">
             <h3 class="section__title">多端同步</h3>
-            <p class="hint">本机作为 hub 接收其它设备上报；或以 agent 把本机用量上报到指定 hub。改动需重启应用生效。</p>
+            <p class="hint">本机作为 hub 接收其它设备上报；或以 agent 把本机用量上报到指定 hub；或用局域网模式自动发现同网段设备并互相同步。改动需重启应用生效。</p>
             <label class="interval">
               <select class="interval-select" bind:value={hubMode}>
                 <option value="off">关闭</option>
+                <option value="lan">局域网模式（自动发现同网段设备）</option>
                 <option value="hub">本机作为 hub（接收上报）</option>
                 <option value="agent">作为 agent（上报到远端 hub）</option>
               </select>
             </label>
-            {#if hubMode === "hub"}
+            {#if hubMode === "hub" || hubMode === "lan"}
               <label class="interval">
                 <input type="number" min="1024" max="65535" bind:value={hubPort} />
                 <span class="interval__hint">监听端口（默认 43210）</span>
               </label>
+            {/if}
+            {#if hubMode === "lan"}
+              <p class="hint">
+                同一局域网内的实例会通过 mDNS 自动互相发现并互相同步，无需填写任何地址。
+                每台机器都会在设备页看到全部同网段设备。跨网段（不同路由器 / 办公网与家中）无法通过 mDNS 发现，
+                请改用「作为 agent」手动填写 hub 地址，或把其中一台设为 hub。
+              </p>
+              <div class="behavior-row">
+                <div class="behavior-info">
+                  <span class="behavior-label">上报本机用量</span>
+                  <span class="behavior-hint">每 30 秒向每个已发现的同网段设备上报；本机同时也会接收它们的用量。</span>
+                </div>
+                <label class="toggle">
+                  <input type="checkbox" bind:checked={reportOn} />
+                  <span class="toggle__track"><span class="toggle__thumb"></span></span>
+                </label>
+              </div>
+              <p class="hint">
+                首次启用时若共享密钥为空，会自动生成并保存。其它设备需填写<strong>同一密钥</strong>才能互相同步。
+              </p>
             {/if}
             {#if hubMode === "agent"}
               <label class="interval">
@@ -1129,7 +1169,7 @@ async function handleMinimize() {
               Plan、DeepSeek API 与火山引擎 AgentPlan。
             </p>
             <ul class="about-list">
-              <li>最小化资源占用：常驻内存 ≈ 39 MB</li>
+              <li>常驻后台：仅托盘图标与数据轮询，无弹窗打扰</li>
               <li>支持多账户：同一来源可添加多个独立账户</li>
               <li>凭证由 Windows 凭据管理器（DPAPI）加密保存</li>
               <li>热力图历史数据存储于本地 SQLite</li>

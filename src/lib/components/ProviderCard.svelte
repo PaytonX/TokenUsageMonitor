@@ -13,6 +13,7 @@
   import ProgressRing from "./ProgressRing.svelte";
   import PulseDot from "./PulseDot.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
+  import { brandColorFor, EXPERIMENTAL_KINDS } from "../brand-glyphs";
 
   interface Props {
     snapshot: UsageSnapshot;
@@ -29,10 +30,10 @@
     countdown?: boolean;
     /** Called when the user clicks this card; App links it to focus + heatmap. */
     onSelect?: () => void;
-    /** Reported as the pointer enters/leaves the card; drives the floating
-     *  detail overlay in App (small cards no longer clip the detail). The
-     *  rect is the card's viewport box at enter time (overlay anchoring). */
-    onHover?: (id: string, hovering: boolean, rect?: DOMRect) => void;
+    /** Reported as the pointer enters/leaves the card; drives the bottom-docked
+     *  detail overlay in App, which covers the calendar-heatmap area. No rect
+     *  is needed: the overlay is docked to the window, not anchored to the card. */
+    onHover?: (id: string, hovering: boolean) => void;
   }
 
   let {
@@ -52,11 +53,15 @@
   // Brand/logo normalization mirrors App.svelte header avatars: the first
   // segment of a credential-scoped provider_id is the provider kind.
   let kind = $derived(snapshot.provider_id.split("-")[0]);
-  // UsageSnapshot carries no preset metadata, so experimental status is
-  // derived from kind. Keep this set in sync with presets flagged
-  // `experimental` (Task 13): codex is best-effort / billing-unstable.
-  const EXPERIMENTAL_KINDS = new Set(["codex"]);
+  // 实验性来源由 kind 推导；集合与 brand-glyphs 的 EXPERIMENTAL_KINDS 同源，
+  // 避免 ProviderCard 与焦点胶囊两处各维护一份而漂移。
   let isExperimental = $derived(EXPERIMENTAL_KINDS.has(kind));
+  // 实验小标：品牌色 22% 底（与焦点胶囊的 .ps__exp 同口径）。色源与卡片其余
+  // 品牌视觉一致：账户自定义色优先，否则用品牌注册表的品牌色。
+  const expStyle = $derived.by(() => {
+    const rgb = hexToRgb(accent ?? brandColorFor(kind));
+    return rgb ? `background: rgba(${rgb}, 0.22)` : "";
+  });
   let balanceLabel = $derived.by(() => {
     if (!w.balance) return null;
     return `${formatUsage(w.balance.total, "cny")}`;
@@ -130,12 +135,7 @@
   class:card--focused={focused}
   style={accentStyle}
   data-tauri-drag-region={false}
-  onpointerenter={(e) =>
-    onHover?.(
-      snapshot.provider_id,
-      true,
-      (e.currentTarget as HTMLElement).getBoundingClientRect(),
-    )}
+  onpointerenter={() => onHover?.(snapshot.provider_id, true)}
   onpointerleave={() => onHover?.(snapshot.provider_id, false)}
   onclick={(e) => {
     // Title button already toggles expansion (and selects); a click
@@ -163,7 +163,7 @@
       </span>
       <span class="card__name">{snapshot.provider_display_name}</span>
       {#if isExperimental}
-        <span class="card__exp" title="实验性支持：数据可能不完整或口径调整中">实验</span>
+        <span class="card__exp" style={expStyle} title="实验性支持：数据可能不完整或口径调整中">实验</span>
       {/if}
     </button>
     {#if snapshot.plan_tier}
@@ -307,12 +307,14 @@
     flex: none;
     white-space: nowrap;
     font-size: var(--tum-font-size-xs);
-    font-weight: 500;
-    color: var(--tum-warn);
-    background: rgba(255, 200, 61, 0.12);
-    border: 1px solid rgba(255, 200, 61, 0.4);
-    padding: 1px 6px;
-    border-radius: var(--tum-radius-xs);
+    font-weight: 600;
+    /* 品牌色 22% 底由内联 style 注入（色源 = 账户强调色 ?? 品牌色，与 .ps__exp
+       同口径）；hex 解析失败时退回白色 8%。圆角 6（spec 决策 12）。 */
+    color: var(--acct-accent, var(--tum-accent));
+    background: rgba(255, 255, 255, 0.08);
+    border: none;
+    padding: 1px 5px;
+    border-radius: 6px;
     letter-spacing: 0.5px;
   }
 

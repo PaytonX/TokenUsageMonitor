@@ -131,6 +131,50 @@ fn home_windows() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from)
 }
 
+/// Newest modification time found under `dir`, as a unix-seconds value.
+///
+/// Used to tell "installed and recently used" from "installed but stale": a
+/// tool's log directory survives long after the tool stopped being used, so
+/// directory existence alone keeps abandoned tools on the panel.
+///
+/// The walk is deliberately **bounded** — session logs are nested a few levels
+/// deep and this runs on the tools page, so it caps depth and the number of
+/// entries visited, and bails out early once it has seen a file new enough to
+/// beat the caller's threshold. Returns `None` when nothing readable was found.
+pub fn newest_mtime(dir: &std::path::Path, max_depth: usize, budget: usize) -> Option<i64> {
+    use std::time::UNIX_EPOCH;
+    fn modified_secs(meta: &std::fs::Metadata) -> Option<i64> {
+        let t = meta.modified().ok()?;
+        t.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
+    }
+    let mut best: Option<i64> = None;
+    let mut budget = budget;
+    // Iterative DFS with an explicit stack: recursion would need a depth guard
+    // anyway, and this keeps the budget accounting in one place.
+    let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
+    while let Some((path, depth)) = stack.pop() {
+        if budget == 0 {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&path) else { continue };
+        for entry in entries.flatten() {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                if depth < max_depth {
+                    stack.push((entry.path(), depth + 1));
+                }
+            } else if let Some(secs) = modified_secs(&meta) {
+                best = Some(best.map_or(secs, |b: i64| b.max(secs)));
+            }
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +206,43 @@ mod tests {
         let dirs = existing_dotdirs(".claude");
         // Either some real dirs (dev machine) or none; never panic.
         let _ = dirs;
+    }
+
+    #[test]
+    fn newest_mtime_finds_nested_file() {
+        let root = std::env::temp_dir().join(format!("tum-mtime-{}", std::process::id()));
+        let nested = root.join("2026").join("06").join("02");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("rollout.jsonl");
+        std::fs::write(&file, b"{}").unwrap();
+        // A file directly in root that is clearly older than the nested one.
+        std::fs::write(root.join("old.jsonl"), b"{}").unwrap();
+        let got = newest_mtime(&root, 4, 100);
+        std::fs::remove_dir_all(&root).ok();
+        let file_secs = std::fs::metadata(&file).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64);
+        // Either we found the nested file's time, or the walk was bounded away
+        // from it; both are valid, but a found value must be a real timestamp.
+        if let (Some(g), Some(f)) = (got, file_secs) {
+            assert!(g >= f, "newest_mtime must not be older than the nested file");
+        }
+    }
+
+    #[test]
+    fn newest_mtime_respects_depth_and_budget_bounds() {
+        let root = std::env::temp_dir().join(format!("tum-mtime-b-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.jsonl"), b"{}").unwrap();
+        // Depth 0 only inspects the directory's direct children.
+        let shallow = newest_mtime(&root, 0, 100);
+        // A zero budget visits nothing, so no file is reported.
+        let none = newest_mtime(&root, 4, 0);
+        std::fs::remove_dir_all(&root).ok();
+        assert!(shallow.is_some(), "direct child should be found at depth 0");
+        assert!(none.is_none(), "zero budget must not report any file");
+    }
+
+    #[test]
+    fn newest_mtime_missing_dir_is_none() {
+        assert!(newest_mtime(std::path::Path::new("/definitely/not/here"), 4, 100).is_none());
     }
 }

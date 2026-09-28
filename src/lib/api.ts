@@ -2,7 +2,7 @@
 // defined in `src-tauri/src/ipc.rs`.
 
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { emit, emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AccountMeta,
   BurnInfo,
@@ -10,6 +10,8 @@ import type {
   DetectedCodexToken,
   DeviceInfo,
   HeatmapCell,
+  PeekSide,
+  PeekState,
   ProviderCatalog,
   ProviderError,
   ProviderState,
@@ -71,6 +73,47 @@ export async function togglePolling(paused: boolean): Promise<boolean> {
 
 export async function setWindowMode(mode: WindowMode): Promise<void> {
   await invoke<void>("set_window_mode", { mode });
+}
+
+/** 贴边把手与主胶囊的会话状态切换。三态：
+ * `floating` —— 常态浮动：主窗可交互、不移动位置、不建把手窗口；
+ * `revealed` —— 胶囊已贴边滑入：把手存在但不捕获、主窗捕获鼠标；
+ * `docked` —— 胶囊收起贴边：先把主窗贴死边缘，再让把手捕获鼠标、主窗穿透。
+ * 返回胶囊贴靠的水平边，供前端决定滑入方向。 */
+export async function syncPeekWindow(state: PeekState): Promise<PeekSide> {
+  return invoke<PeekSide>("sync_peek_window", { state });
+}
+
+/** 告知后端「用户开始/结束原生拖拽」：拖拽结束判定在 Rust 侧完成。 */
+export async function setPillDragging(active: boolean): Promise<void> {
+  await invoke<void>("set_pill_dragging", { active });
+}
+
+/** Rust → 主窗：窗口停止移动、判定为拖拽结束，可以结算贴边/浮动了。 */
+export function onPillDragSettled(cb: () => void): Promise<UnlistenFn> {
+  return listen("pill-drag-settled", () => cb());
+}
+
+/** 把手 → 主窗：指针进入（60ms 防抖后由把手页发出）。 */
+export function onPeekHover(cb: () => void): Promise<UnlistenFn> {
+  return listen("peek-hover", () => cb());
+}
+
+/** 把手 → 主窗：指针离开。 */
+export function onPeekLeave(cb: () => void): Promise<UnlistenFn> {
+  return listen("peek-leave", () => cb());
+}
+
+/** Rust → 主窗：胶囊必须常显可交互的兜底信号（托盘恢复 compact 主窗、或把手
+ *  捕获鼠标失败已无法唤醒胶囊时发出）。收到即调用 revealPill()。 */
+export function onPeekReveal(cb: () => void): Promise<UnlistenFn> {
+  return listen("peek-reveal", () => cb());
+}
+
+/** 主窗 → 把手：滑出完成，把手可复现；payload 是此刻胶囊贴靠的边（用于
+ *  纠正把手的圆角朝向，否则拖到屏幕另一侧后把手会一直朝错方向）。 */
+export function emitPeekShow(side: PeekSide): Promise<void> {
+  return emitTo("peek", "peek-show", side);
 }
 
 export async function openSettings(): Promise<void> {

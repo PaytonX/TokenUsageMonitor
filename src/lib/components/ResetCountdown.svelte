@@ -21,9 +21,14 @@
   let countdown = $derived.by(() => {
     if (remainingMs <= 0) return "已重置";
     const totalSec = Math.floor(remainingMs / 1000);
-    const h = Math.floor(totalSec / 3600);
+    const d = Math.floor(totalSec / 86400);
+    const h = Math.floor((totalSec % 86400) / 3600);
     const m = Math.floor((totalSec % 3600) / 60);
     const s = totalSec % 60;
+    // Weekly and monthly windows run to hundreds of hours, which reads far
+    // better as days: "29d 23h 59m" instead of "719h 59m". Under 24h the
+    // hour/minute/second tiers are kept — a leading "0d" would only add noise.
+    if (d > 0) return `${d}d ${h}h ${m}m`;
     if (h > 0) return `${h}h ${m}m`;
     if (m > 0) return `${m}m ${s}s`;
     return `${s}s`;

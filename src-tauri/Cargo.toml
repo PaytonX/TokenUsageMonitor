@@ -22,6 +22,8 @@ tauri-plugin-notification = "2"
 tauri-plugin-os = "2"
 tauri-plugin-process = "2"
 tauri-plugin-window-state = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
 
 # Async runtime + HTTP
 tokio = { version = "1", features = ["full"] }
@@ -46,6 +48,10 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 
+# CSPRNG for the hub shared secret (already present as a transitive
+# dependency; declared directly because settings.rs uses it)
+getrandom = "0.3"
+
 # Errors
 thiserror = "1"
 anyhow = "1"
@@ -59,6 +65,8 @@ toml = "0.8"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+mdns-sd = "0.21.4"
+zstd = "0.14.0"
 
 [features]
 # This feature is used for production builds or when `devUrl` points to the filesystem

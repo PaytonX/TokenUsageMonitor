@@ -224,6 +224,12 @@ export interface LocalToolsPayload {
 
 export type WindowMode = "dashboard" | "compact";
 
+/** 贴边把手所在的水平边。 */
+export type PeekSide = "left" | "right";
+
+/** 贴边把手的三种会话状态：浮动（无把手）/ 贴边但胶囊已滑入 / 贴边且把手可唤回。 */
+export type PeekState = "floating" | "revealed" | "docked";
+
 /** User-facing settings persisted in config.toml. Mirrors Rust `Settings`. */
 export interface Settings {
   /** Legacy enable list (pre multi-account). Seeded into `accounts` on first
@@ -237,7 +243,8 @@ export interface Settings {
   dashboard_x: number | null;
   dashboard_y: number | null;
   compact_mode: boolean;
-  autostart_hint_shown: boolean;
+  /** Whether to launch automatically at system boot (Windows HKCU Run key). */
+  autostart: boolean;
   /** Close button hides to tray instead of quitting (B4). */
   close_to_tray: boolean;
   /** Whether to fire OS notifications on threshold breach. */
@@ -265,6 +272,10 @@ export interface Settings {
   report_on: boolean;
   /** Shared secret the hub requires (Bearer). Empty = no auth. */
   hub_token: string;
+  /** Whether the user has ever explicitly set `hub_token` (even to "").
+   *  Absent in older configs, which means "never set" → the backend mints a
+   *  secret on first hub start. Saved as `true` on every settings write. */
+  hub_token_configured?: boolean;
   /** 用户手动覆盖的汇率（币种代码 → 每 1 USD 兑该币种数值）。非法值后端忽略。 */
   rate_overrides: Record<string, number>;
   /** Optional outbound proxy (http/https/socks5). Null/empty/blank = direct.
@@ -362,21 +373,6 @@ export function hexToRgb(hex: string): string | null {
   if (!m) return null;
   const n = parseInt(m[1], 16);
   return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
-}
-
-/** Lighten a "#RRGGBB" color by `amt` (0..1) toward white — used to build a
- * two-stop arc gradient from a single per-account accent. */
-export function lightenHex(hex: string, amt = 0.35): string {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex.trim());
-  if (!m) return hex;
-  const n = parseInt(m[1], 16);
-  const r = (n >> 16) & 255;
-  const g = (n >> 8) & 255;
-  const b = n & 255;
-  const c = (v: number) => Math.round(v + (255 - v) * amt);
-  return `#${[c(r), c(g), c(b)]
-    .map((v) => v.toString(16).padStart(2, "0"))
-    .join("")}`;
 }
 
 /** Helper to format a usage value with the right unit suffix. */

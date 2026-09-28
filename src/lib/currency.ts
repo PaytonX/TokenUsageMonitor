@@ -186,10 +186,30 @@ function isGeneric(model: string): boolean {
 }
 
 /**
- * Estimate the USD cost of a `TokenBreakdown`. Returns `null` when the model is
- * unknown, missing, or bare (no price identity) — mirroring the backend guard,
- * so callers can show "成本未知" instead of a guess. Cache-read tokens bill at
- * the input rate.
+ * Cache-read tokens bill at a fraction of the input rate. Mirrors the backend's
+ * `CACHE_READ_DISCOUNT` — the two must stay in sync or the same breakdown would
+ * price differently on each side.
+ */
+const CACHE_READ_DISCOUNT = 0.1;
+
+/**
+ * Master switch for price-based cost estimation — mirrors the backend's
+ * `COST_ESTIMATION_ENABLED`; the two must agree or the detail card and the
+ * model panel would disagree about the same tokens.
+ *
+ * Off by default: the price table has to be hand-maintained against vendors who
+ * ship new models and reprice old ones, so any estimate silently rots. Costs a
+ * tool or provider reports about itself do not go through here and are
+ * unaffected.
+ */
+export const COST_ESTIMATION_ENABLED = false;
+
+/**
+ * Estimate the USD cost of a `TokenBreakdown`. Returns `null` when estimation is
+ * disabled, or when the model is unknown, missing, or bare (no price identity) —
+ * callers then render nothing rather than a guess. Cache reads bill at
+ * `CACHE_READ_DISCOUNT` × the input rate, so they are passed separately rather
+ * than folded into `input`.
  */
 export function estimateCostUsd(tokens: {
   input: number;
@@ -197,6 +217,7 @@ export function estimateCostUsd(tokens: {
   output: number;
   model_id?: string;
 }): number | null {
+  if (!COST_ESTIMATION_ENABLED) return null;
   const raw = tokens.model_id ?? "";
   let norm = raw.trim().toLowerCase();
   if (norm.includes("(")) norm = norm.slice(0, norm.indexOf("("));
@@ -210,9 +231,10 @@ export function estimateCostUsd(tokens: {
   const pair = PRICE_TABLE.find(([prefix]) => norm.startsWith(prefix));
   if (!pair) return null;
   const [_, tier] = pair;
-  const inputCost = (tokens.input + (tokens.cache_read ?? 0)) / 1_000_000 * tier.inputPer1m;
+  const inputCost = tokens.input / 1_000_000 * tier.inputPer1m;
+  const cacheCost = (tokens.cache_read ?? 0) / 1_000_000 * tier.inputPer1m * CACHE_READ_DISCOUNT;
   const outputCost = tokens.output / 1_000_000 * tier.outputPer1m;
-  return inputCost + outputCost;
+  return inputCost + cacheCost + outputCost;
 }
 
 // Rate bootstrap: preload the effective table once per window, then follow

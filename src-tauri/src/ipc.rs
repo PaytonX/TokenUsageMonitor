@@ -12,6 +12,7 @@ use crate::settings::Settings;
 use crate::AppState;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewWindow, WebviewWindowBuilder};
 
 /// A configured account plus its credential/registry state, for the Settings UI.
@@ -349,6 +350,50 @@ fn clamp_rect(
     (x.clamp(area_x + margin, max_x), y.clamp(area_y + margin, max_y))
 }
 
+/// 把手窗与胶囊主行的逻辑尺寸（DIP）。主行固定取收起态的 56，这样明细
+/// 展开时把手不会跟着下移，收起后也无需重新对齐。
+const PEEK_W: f64 = 7.0;
+const PEEK_H: f64 = 58.0;
+const PILL_ROW_H: f64 = 56.0;
+
+/// 胶囊应贴靠的水平边。比较窗口中心与工作区中心；正中时归右侧（默认边）。
+fn dock_side(x: f64, w: f64, area_x: f64, area_w: f64) -> bool {
+    x + w / 2.0 >= area_x + area_w / 2.0
+}
+
+/// 把窗口横向贴死到最近的水平边缘，纵向保留原位置但夹在工作区内。
+/// 把手画在屏幕边缘，胶囊必须紧贴边缘二者才能对齐；纵向是用户自由选择的位置。
+fn dock_rect(
+    x: f64, y: f64, w: f64, h: f64,
+    area_x: f64, area_y: f64, area_w: f64, area_h: f64,
+) -> (f64, f64) {
+    let left = area_x;
+    let right = (area_x + area_w - w).max(area_x);
+    let nx = if dock_side(x, w, area_x, area_w) { right } else { left };
+    let max_y = (area_y + area_h - h).max(area_y);
+    (nx, y.clamp(area_y, max_y))
+}
+
+/// 把手的物理位置：贴死所在边缘，纵向中心对齐胶囊主行（`row_h` 为物理像素）。
+fn peek_rect(
+    dash_y: f64, row_h: f64, is_right: bool,
+    visible_w: f64, actual_w: f64,
+    area_x: f64, area_y: f64, area_w: f64, area_h: f64,
+    peek_h: f64,
+) -> (f64, f64) {
+    // 系统最小窗口宽度会把把手窗撑到 ~136px。可见的那 7px 必须贴住屏幕边，
+    // 多出来的部分一律推到屏幕外——否则贴左边时那一整条透明区域会持续吞掉
+    // 桌面上的鼠标事件（点什么都点不到）。
+    let x = if is_right {
+        area_x + area_w - visible_w
+    } else {
+        area_x - (actual_w - visible_w).max(0.0)
+    };
+    let y = dash_y + row_h / 2.0 - peek_h / 2.0;
+    let max_y = (area_y + area_h - peek_h).max(area_y);
+    (x, y.clamp(area_y, max_y))
+}
+
 pub fn clamp_window_to_work_area(window: &WebviewWindow, margin_logical: f64) -> bool {
     let Ok(pos) = window.outer_position() else { return false; };
     let Ok(size) = window.outer_size() else { return false; };
@@ -374,6 +419,79 @@ pub fn clamp_window_to_work_area(window: &WebviewWindow, margin_logical: f64) ->
         ));
     }
     changed
+}
+
+/// 把窗口横向贴死到最近的左/右边缘，纵向夹在工作区内。compact 胶囊专用。
+pub fn dock_window(window: &WebviewWindow) -> bool {
+    let Ok(pos) = window.outer_position() else { return false; };
+    let Ok(size) = window.outer_size() else { return false; };
+    let Ok(Some(monitor)) = window.current_monitor() else { return false; };
+    let area = monitor.work_area();
+    let (nx, ny) = dock_rect(
+        f64::from(pos.x),
+        f64::from(pos.y),
+        f64::from(size.width),
+        f64::from(size.height),
+        f64::from(area.position.x),
+        f64::from(area.position.y),
+        f64::from(area.size.width),
+        f64::from(area.size.height),
+    );
+    let changed = nx != f64::from(pos.x) || ny != f64::from(pos.y);
+    if changed {
+        let _ = window.set_position(PhysicalPosition::new(
+            nx.round() as i32,
+            ny.round() as i32,
+        ));
+    }
+    changed
+}
+
+/// 贴边把手的物理位置 + 所在边（true = 右侧）。窗口无监视器时返回 None。
+fn peek_placement(window: &WebviewWindow) -> Option<(bool, PhysicalPosition<i32>)> {
+    let Ok(pos) = window.outer_position() else { return None; };
+    let Ok(size) = window.outer_size() else { return None; };
+    let Ok(Some(monitor)) = window.current_monitor() else { return None; };
+    let area = monitor.work_area();
+    let scale = f64::from(monitor.scale_factor());
+    let is_right = dock_side(
+        f64::from(pos.x),
+        f64::from(size.width),
+        f64::from(area.position.x),
+        f64::from(area.size.width),
+    );
+    let visible_w = PEEK_W * scale;
+    // 把手窗可能已被系统最小宽度撑大：按真实宽度定位，把多余部分推出屏幕。
+    let actual_w = window
+        .app_handle()
+        .get_webview_window("peek")
+        .and_then(|p| p.outer_size().ok())
+        .map(|s| f64::from(s.width))
+        .unwrap_or(visible_w)
+        .max(visible_w);
+    let (px, py) = peek_rect(
+        f64::from(pos.y),
+        PILL_ROW_H * scale,
+        is_right,
+        visible_w,
+        actual_w,
+        f64::from(area.position.x),
+        f64::from(area.position.y),
+        f64::from(area.size.width),
+        f64::from(area.size.height),
+        PEEK_H * scale,
+    );
+    Some((is_right, PhysicalPosition::new(px.round() as i32, py.round() as i32)))
+}
+
+/// 让把手跟随 Dashboard 胶囊的纵向位置。把手尚未创建时为空操作。
+pub fn reposition_peek(window: &WebviewWindow) {
+    let Some(peek) = window.app_handle().get_webview_window("peek") else { return; };
+    let Some((_, pos)) = peek_placement(window) else { return; };
+    if peek.outer_position().map(|cur| cur == pos).unwrap_or(false) {
+        return;
+    }
+    let _ = peek.set_position(pos);
 }
 
 /// Snap the window to the nearest screen edge when it is dragged within
@@ -425,22 +543,138 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
         .get_webview_window("dashboard")
         .ok_or_else(|| "dashboard window not found".to_string())?;
 
+    let compact = app.state::<AppState>().compact_mode.clone();
+
     match mode.as_str() {
         "dashboard" => {
             window
                 .set_size(LogicalSize::new(400u32, 680u32))
                 .map_err(|e| e.to_string())?;
+            // 全窗态是普通窗口：恢复鼠标交互，贴边把手在此模式下没有意义。
+            let _ = window.set_ignore_cursor_events(false);
+            if let Some(peek) = app.get_webview_window("peek") {
+                let _ = peek.close();
+            }
+            compact.store(false, Ordering::SeqCst);
+            clamp_window_to_work_area(&window, 8.0);
         }
         "compact" => {
-            // Mini pill: single row 150x44 (ring + name + divider + dot + close).
+            // 迷你胶囊 168x56：主行 = 圆环 + 百分比 + 分隔线 + 品牌芯片。
             window
-                .set_size(LogicalSize::new(150u32, 44u32))
+                .set_size(LogicalSize::new(168u32, 56u32))
                 .map_err(|e| e.to_string())?;
+            compact.store(true, Ordering::SeqCst);
+            // 常态浮动：胶囊停在原处，只把越界的位置拉回屏内 —— 不再强制贴边；
+            // 只有用户把它拖到屏幕边缘松手，才由 sync_peek_window("docked") 贴死。
+            clamp_window_to_work_area(&window, 8.0);
         }
         other => return Err(format!("unknown window mode: {other}")),
     }
 
-    clamp_window_to_work_area(&window, 8.0);
+    Ok(())
+}
+
+/// 创建/定位贴边把手，并把「谁捕获鼠标」交给本命令统一托管（三态）：
+/// `floating`（常态浮动）→ 销毁把手、主窗可交互、不移动主窗；
+/// `revealed`（胶囊已贴边滑入）→ 把手存在但不捕获、主窗捕获、不移动主窗；
+/// `docked`（胶囊收起贴边）→ 先贴死边缘，再让把手捕获鼠标、主窗穿透。
+/// 返回胶囊贴靠的水平边，供前端决定滑入方向。
+#[tauri::command]
+pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, String> {
+    let dash = app
+        .get_webview_window("dashboard")
+        .ok_or_else(|| "dashboard window not found".to_string())?;
+    let Some((is_right, pos)) = peek_placement(&dash) else {
+        return Err("dashboard window has no monitor".to_string());
+    };
+
+    // 只在 compact 胶囊态才有把手；dashboard 态（可能是模式切换竞态）直接
+    // 返回所在边，不重建刚被 set_window_mode 关掉的窗口。
+    if !app.state::<AppState>().compact_mode.load(Ordering::SeqCst) {
+        return Ok(if is_right { "right" } else { "left" }.to_string());
+    }
+
+    match state.as_str() {
+        "floating" => {
+            // 常态浮动：不需要把手窗口，主窗接管鼠标，位置保持不变（用户可自由拖动）。
+            if let Some(peek) = app.get_webview_window("peek") {
+                let _ = peek.destroy();
+            }
+            if let Err(e) = dash.set_ignore_cursor_events(false) {
+                tracing::warn!("dashboard set_ignore_cursor_events failed: {e}");
+            }
+        }
+        "revealed" | "docked" => {
+            // 贴边态：胶囊必须紧贴左/右边缘，7px 把手才能与之对齐。收起（docked）
+            // 由前端在拖拽结束时判定，这里才真正贴死；滑入（revealed）时窗口已贴边，
+            // 不再移动，避免每帧校正造成抖动。
+            if state == "docked" {
+                dock_window(&dash);
+            }
+
+            let peek = match app.get_webview_window("peek") {
+                Some(existing) => existing,
+                None => {
+                    // 把手页通过初始化脚本拿到所在边，决定 4px 圆角朝向。
+                    let side = if is_right { "\"right\"" } else { "\"left\"" };
+                    let built = WebviewWindowBuilder::new(
+                        &app,
+                        "peek",
+                        tauri::WebviewUrl::App("peek.html".into()),
+                    )
+                    .title("TokenUsageMonitor · 贴边把手")
+                    .inner_size(PEEK_W, PEEK_H)
+                    .resizable(false)
+                    .decorations(false)
+                    .transparent(true)
+                    .always_on_top(true)
+                    .skip_taskbar(true)
+                    .shadow(false)
+                    .focused(false)
+                    .visible(false)
+                    .initialization_script(format!("window.__PEEK_SIDE__ = {side};"))
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                    #[cfg(windows)]
+                    crate::dwm_corner::disable_corner_artifacts(&built);
+                    built
+                }
+            };
+
+            let _ = peek.set_position(pos);
+            // 刚建出来时还不知道系统实际最小宽度：拿到真实尺寸后立刻校正一次，
+            // 保证多出来的宽度落在屏幕外（贴左边时尤其关键）。
+            if let Some((_, fixed)) = peek_placement(&dash) {
+                let _ = peek.set_position(fixed);
+            }
+            let _ = peek.show();
+            // 鼠标捕获：两个窗口必须一致切换。走 best-effort 但带兜底 —— 停靠态
+            // 主窗是穿透的，把手一旦不能捕获鼠标就再也唤不醒胶囊，此时直接让主窗
+            // 把胶囊唤出来（peek-reveal），宁可少一层交互也不能让应用不可达。
+            let docked = state == "docked";
+            if let Err(e) = peek.set_ignore_cursor_events(!docked) {
+                tracing::warn!("peek set_ignore_cursor_events failed: {e}");
+                if docked {
+                    let _ = dash.emit("peek-reveal", ());
+                }
+            } else if let Err(e) = dash.set_ignore_cursor_events(docked) {
+                tracing::warn!("dashboard set_ignore_cursor_events failed: {e}");
+            }
+        }
+        other => return Err(format!("unknown peek state: {other}")),
+    }
+
+    Ok(if is_right { "right" } else { "left" }.to_string())
+}
+/// 前端在开始原生拖拽时置位、手势结束（或收到 pointerup 快路径）时清零。
+/// 与 Rust 侧的「窗口停止移动」检测配合判定拖拽结束。
+#[tauri::command]
+pub async fn set_pill_dragging(state: State<'_, AppState>, active: bool) -> Result<(), String> {
+    state.pill_drag.store(active, Ordering::SeqCst);
+    if active {
+        state.pill_last_move_ms
+            .store(crate::now_ms(), Ordering::SeqCst);
+    }
     Ok(())
 }
 
@@ -469,12 +703,24 @@ pub async fn open_settings(app: AppHandle) -> Result<(), String> {
     .transparent(true)
     .always_on_top(false)
     .skip_taskbar(false)
+    .shadow(false)
     .center()
     .build()
     .map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
     crate::dwm_corner::disable_corner_artifacts(&window);
+    #[cfg(windows)]
+    {
+        // Win11 在窗口尺寸变化后会重画 DWM 边框/圆角，放大后上边缘会重新
+        // 出现 1px 描边；复用 dashboard 的模式，每次 Resized 后重设。
+        let win_for_event = window.clone();
+        window.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Resized(_)) {
+                crate::dwm_corner::disable_corner_artifacts(&win_for_event);
+            }
+        });
+    }
 
     // Restore previous position/size if the window-state plugin has saved it.
     let _ = window.show();
@@ -517,12 +763,24 @@ pub async fn open_trend_window(app: AppHandle) -> Result<(), String> {
     .transparent(true)
     .always_on_top(false)
     .skip_taskbar(false)
+    .shadow(false)
     .center()
     .build()
     .map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
     crate::dwm_corner::disable_corner_artifacts(&window);
+    #[cfg(windows)]
+    {
+        // Win11 在窗口尺寸变化后会重画 DWM 边框/圆角，放大后上边缘会重新
+        // 出现 1px 描边；复用 dashboard 的模式，每次 Resized 后重设。
+        let win_for_event = window.clone();
+        window.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Resized(_)) {
+                crate::dwm_corner::disable_corner_artifacts(&win_for_event);
+            }
+        });
+    }
     let _ = window.show();
     let _ = window.set_focus();
     Ok(())
@@ -553,12 +811,24 @@ pub async fn open_tool_window(app: AppHandle) -> Result<(), String> {
     .transparent(true)
     .always_on_top(false)
     .skip_taskbar(false)
+    .shadow(false)
     .center()
     .build()
     .map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
     crate::dwm_corner::disable_corner_artifacts(&window);
+    #[cfg(windows)]
+    {
+        // Win11 在窗口尺寸变化后会重画 DWM 边框/圆角，放大后上边缘会重新
+        // 出现 1px 描边；复用 dashboard 的模式，每次 Resized 后重设。
+        let win_for_event = window.clone();
+        window.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Resized(_)) {
+                crate::dwm_corner::disable_corner_artifacts(&win_for_event);
+            }
+        });
+    }
     let _ = window.show();
     let _ = window.set_focus();
     Ok(())
@@ -596,7 +866,9 @@ pub async fn save_settings(
 ) -> Result<(), String> {
     // Capture before save(): saving overwrites the cached settings, after
     // which the old proxy would be unobservable.
-    let old_proxy_url = state.settings.get().await.proxy_url.clone();
+    let old_settings = state.settings.get().await;
+    let old_proxy_url = old_settings.proxy_url.clone();
+    let old_autostart = old_settings.autostart;
 
     state
         .settings
@@ -608,6 +880,19 @@ pub async fn save_settings(
     // handlers (close-to-tray, edge snap) pick up the change immediately.
     state.close_to_tray.store(new_settings.close_to_tray, std::sync::atomic::Ordering::SeqCst);
     state.edge_snap.store(new_settings.edge_snap, std::sync::atomic::Ordering::SeqCst);
+
+    // 开机自启对账：设置里开关变化时立即同步注册表项；注册表写入失败则
+    // 让本次保存返回错误（设置已落盘，与 proxy 分支的行为一致）。
+    if old_autostart != new_settings.autostart {
+        use tauri_plugin_autostart::ManagerExt;
+        let autolaunch = app.autolaunch();
+        let sync = if new_settings.autostart {
+            autolaunch.enable()
+        } else {
+            autolaunch.disable()
+        };
+        sync.map_err(|e| e.to_string())?;
+    }
 
     if proxy_changed(&old_proxy_url, &new_settings.proxy_url) {
         // Build the replacement first. On failure, settings are already
@@ -691,6 +976,32 @@ pub async fn save_settings(
     // Wake polling loops immediately so interval/enable edits apply now
     // instead of after the current period.
     let _ = state.settings_wake.send(());
+    Ok(())
+}
+
+/// 直接切换开机自启：先写注册表项，成功后再落盘设置；注册表写入失败时
+/// 不改动存储，保证复选框与系统实际状态不出现分歧。
+#[tauri::command]
+pub async fn set_autostart(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let autolaunch = app.autolaunch();
+        if enabled {
+            autolaunch.enable().map_err(|e| e.to_string())?;
+        } else {
+            autolaunch.disable().map_err(|e| e.to_string())?;
+        }
+    }
+
+    let mut current = state.settings.get().await;
+    if current.autostart != enabled {
+        current.autostart = enabled;
+        state.settings.save(current).await.map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -1002,5 +1313,74 @@ mod clamp_tests {
     fn pins_when_window_taller_than_work_area() {
         let (x, y) = clamp_rect(0.0, 500.0, 360.0, 1200.0, 0.0, 0.0, 1920.0, 1040.0, 8.0);
         assert_eq!((x, y), (8.0, 8.0));
+    }
+}
+
+#[cfg(test)]
+mod dock_tests {
+    use super::{dock_rect, dock_side, peek_rect};
+
+    const AREA_X: f64 = 0.0;
+    const AREA_Y: f64 = 0.0;
+    const AREA_W: f64 = 1920.0;
+    const AREA_H: f64 = 1040.0;
+
+    #[test]
+    fn dock_rect_flushes_to_the_left_edge() {
+        let (x, y) = dock_rect(10.0, 300.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!((x, y), (0.0, 300.0));
+    }
+
+    #[test]
+    fn dock_rect_flushes_to_the_right_edge() {
+        let (x, y) = dock_rect(1000.0, 300.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!((x, y), (1752.0, 300.0));
+    }
+
+    #[test]
+    fn dock_rect_exact_middle_docks_right() {
+        let (x, _) = dock_rect(876.0, 0.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!(x, 1752.0);
+    }
+
+    #[test]
+    fn dock_rect_keeps_vertical_but_clamps_inside() {
+        let (_, top) = dock_rect(0.0, -40.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!(top, 0.0);
+        let (_, bottom) = dock_rect(0.0, 1030.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!(bottom, 984.0);
+    }
+
+    #[test]
+    fn dock_side_mirrors_for_a_negative_origin_monitor() {
+        assert!(!dock_side(-1900.0, 168.0, -1920.0, 1920.0));
+        assert!(dock_side(-60.0, 168.0, -1920.0, 1920.0));
+    }
+
+    #[test]
+    fn peek_rect_sits_flush_and_centres_on_the_pill_row() {
+        let args = (100.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        let (x, y) = peek_rect(args.0, args.1, true, 7.0, 7.0, args.2, args.3, args.4, args.5, args.6);
+        assert_eq!((x, y), (1913.0, 99.0));
+        let (lx, _) = peek_rect(args.0, args.1, false, 7.0, 7.0, args.2, args.3, args.4, args.5, args.6);
+        assert_eq!(lx, 0.0);
+    }
+
+    #[test]
+    fn peek_rect_pushes_the_extra_width_off_screen() {
+        // 系统最小窗口宽度把把手窗撑到 136px：可见的 7px 仍贴住屏幕边，
+        // 多出的 129px 必须落在屏幕外，否则会吞掉桌面上的鼠标事件。
+        let (lx, _) = peek_rect(100.0, 56.0, false, 7.0, 136.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        assert_eq!(lx, -129.0);
+        let (rx, _) = peek_rect(100.0, 56.0, true, 7.0, 136.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        assert_eq!(rx, 1913.0);
+    }
+
+    #[test]
+    fn peek_rect_clamps_to_the_work_area() {
+        let (_, top) = peek_rect(0.0, 56.0, true, 7.0, 7.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        assert_eq!(top, 0.0);
+        let (_, bottom) = peek_rect(1020.0, 56.0, true, 7.0, 7.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        assert_eq!(bottom, 982.0);
     }
 }

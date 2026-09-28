@@ -6,6 +6,7 @@
     remainingPercent,
     type UsageSnapshot,
   } from "../types";
+  import { brandColorFor } from "../brand-glyphs";
   import PulseDot from "./PulseDot.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
 
@@ -14,11 +15,16 @@
     /** provider_id -> active flag from the latest UsageUpdate. */
     actives?: Record<string, boolean>;
     /** true = show REMAINING %; false = show USED % (see `countdown_mode`).
-     *  The fill bar always visualizes consumed amount either way. */
+     *  The fill bar follows the same direction as the displayed percentage
+     *  (countdown: remaining; otherwise: used); warn/crit tone thresholds stay
+     *  keyed to the consumed amount. */
     countdown?: boolean;
+    /** provider_id -> 账户强调色（#RRGGBB）。给了就优先于品牌注册表的颜色，
+     *  与圆环/徽章/胶囊 logo 保持同一口径。 */
+    accentFor?: (providerId: string) => string | undefined;
   }
 
-  let { snapshots, actives = {}, countdown = true }: Props = $props();
+  let { snapshots, actives = {}, countdown = true, accentFor }: Props = $props();
 </script>
 
 <div
@@ -33,19 +39,23 @@
     {@const remain = remainingPercent(s)}
     {@const money = payAsYouGoLabel(s, countdown)}
     {@const tone = usedPct >= 0.95 ? "crit" : usedPct >= 0.8 ? "warn" : "ok"}
+    {@const brand = accentFor?.(s.provider_id) ?? brandColorFor(s.provider_id.split("-")[0])}
+    {@const barPct = countdown ? remain : usedPct}
     <div
       class="mini__row"
       role="listitem"
       aria-label={`${s.provider_display_name} ${money ?? `${Math.round((countdown ? remain : usedPct) * 100)}%`}`}
     >
-      <PulseDot active={!!actives[s.provider_id]} {tone} size={7} />
+      <PulseDot active={!!actives[s.provider_id]} {tone} size={7} accent={brand} />
       <span class="mini__logo" title={s.provider_display_name}>
-        <ProviderLogo kind={s.provider_id.split("-")[0]} size={13} />
+        <ProviderLogo kind={s.provider_id.split("-")[0]} size={18} accent={brand} />
       </span>
       <span class="mini__track">
         <span
-          class={`mini__fill mini__fill--${tone}`}
-          style={`width:${(usedPct * 100).toFixed(1)}%`}
+          class="mini__fill"
+          style={`width:${(barPct * 100).toFixed(1)}%;background:${
+            tone === "ok" ? brand : `var(--tum-${tone})`
+          }`}
         ></span>
       </span>
       <span class="mini__pct">
@@ -62,7 +72,7 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    padding: 2px 0 8px;
+    padding: 2px 2px 8px;
   }
 
   .mini__row--empty {
@@ -73,12 +83,12 @@
   .mini__row {
     display: flex;
     align-items: center;
-    gap: 6px;
-    height: 18px;
+    gap: 8px;
+    height: 24px;
   }
 
   .mini__logo {
-    width: 15px;
+    width: 18px;
     flex: none;
     display: inline-flex;
     align-items: center;
@@ -88,8 +98,8 @@
   .mini__track {
     flex: 1;
     min-width: 20px;
-    height: 3px;
-    border-radius: var(--tum-radius-pill);
+    height: 4px;
+    border-radius: 2px;
     background: rgba(255, 255, 255, 0.1);
     overflow: hidden;
   }
@@ -97,31 +107,17 @@
   .mini__fill {
     display: block;
     height: 100%;
-    border-radius: var(--tum-radius-pill);
-    transition: width 0.4s ease;
-  }
-
-  .mini__fill--ok {
-    background: var(--tum-grad-ok);
-  }
-
-  .mini__fill--warn {
-    background: var(--tum-grad-warn);
-    box-shadow: 0 0 5px rgba(255, 200, 61, 0.4);
-  }
-
-  .mini__fill--crit {
-    background: var(--tum-grad-crit);
-    box-shadow: 0 0 5px rgba(255, 95, 86, 0.45);
+    border-radius: 2px;
+    transition: width 420ms var(--tum-ease-ring);
   }
 
   .mini__pct {
-    width: 30px;
+    width: 34px;
     flex: none;
     text-align: right;
     font-family: var(--tum-font-mono);
-    font-size: var(--tum-font-size-xs);
+    font-size: 10px;
     font-variant-numeric: tabular-nums;
-    color: var(--tum-text-primary);
+    color: var(--tum-text-muted);
   }
 </style>

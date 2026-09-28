@@ -3,7 +3,7 @@
   import { flip } from "svelte/animate";
   import { fly } from "svelte/transition";
   import { LogicalSize } from "@tauri-apps/api/dpi";
-  import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
+  import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
   import {
     getUsage,
     getProviderStates,
@@ -12,6 +12,14 @@
     onProviderError,
     onSettingsChanged,
     setWindowMode,
+    saveSettings,
+    syncPeekWindow,
+    setPillDragging,
+    emitPeekShow,
+    onPeekHover,
+    onPeekLeave,
+    onPeekReveal,
+    onPillDragSettled,
     forceRefresh,
     openSettings,
     onTabsChanged,
@@ -24,12 +32,12 @@
     type ProviderError,
     type Settings,
     type BurnInfo,
+    type PeekSide,
     ringWindowRemaining,
     providerShortName,
     payAsYouGoLabel,
     isPayAsYouGo,
     hexToRgb,
-    lightenHex,
   } from "./lib";
   import ProviderCard from "./lib/components/ProviderCard.svelte";
   import ProgressRing from "./lib/components/ProgressRing.svelte";
@@ -42,6 +50,7 @@
   import ModelPanel from "./lib/components/ModelPanel.svelte";
   import DevicePanel from "./lib/components/DevicePanel.svelte";
   import PillsOrSelect from "./lib/components/PillsOrSelect.svelte";
+  import { brandColorFor, EXPERIMENTAL_KINDS } from "./lib/brand-glyphs";
 
   type Mode = "dashboard" | "compact";
 
@@ -111,12 +120,6 @@
   let actives = $state<Record<string, boolean>>({});
   let mode = $state<Mode>("dashboard");
   let heatmapTabId = $state<string | null>(null);
-  const PROVIDER_COLORS: Record<string, string> = {
-    minimax: "#ff5c5c",
-    deepseek: "#4d6bfe",
-    volcengine: "#12b76a",
-    openai: "#10a37f",
-  };
   const FOCUS_FALLBACK_COLOR = "#8a8f98";
   const FOCUS_KEY = "tum.focus";
   const HEATMAP_VIEW_KEY = "tum.heatmapView";
@@ -135,31 +138,29 @@
   // header ring, the chips row and the heatmap panel.
   let focus = $state(localStorage.getItem(FOCUS_KEY) ?? "all");
   // Provider whose card the pointer is currently over; drives the floating
-  // detail overlay. `anchorRect` is the trigger card's viewport box so the
-  // overlay can park right beside it instead of docking at window bottom.
+  // detail overlay, which is docked along the window bottom so it covers the
+  // calendar-heatmap area rather than the cards themselves.
   let hoveredId = $state<string | null>(null);
-  let anchorRect = $state<DOMRect | null>(null);
-  // Overlay box is measured before reveal so placement uses real dimensions
-  // (content height varies per provider). Stays hidden until first measure.
+  // Overlay box is measured before reveal so the docked position uses the real
+  // content height (it varies per provider). Stays hidden until first measure.
   let overlayEl = $state<HTMLElement | null>(null);
-  let measuredW = $state(0);
   let measuredH = $state(0);
-  let overlayX = $state(0);
   let overlayY = $state(0);
   let overlayReady = $state(false);
-  const OVERLAY_GAP = 8;
+  // Height reserved at the bottom for the status footer, so the docked overlay
+  // sits directly above it instead of overlapping the clock/refresh line.
+  const FOOTER_CLEARANCE = 48;
   const VIEWPORT_MARGIN = 8;
 
   // Hiding the detail overlay is deferred by a grace window so the pointer
-  // can travel from the card into the overlay (or back) without it vanishing
-  // mid-move. Entering the overlay cancels the pending hide (pinning it);
-  // leaving it re-arms a hide so it closes when you go elsewhere.
+  // can travel between cards (or off them) without it vanishing mid-move.
+  // The overlay is pointer-transparent, so it is never entered directly; the
+  // grace window only smooths a fast sweep across the card row.
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
   function scheduleOverlayHide() {
     if (hideTimer) clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
       hoveredId = null;
-      anchorRect = null;
       hideTimer = null;
     }, 350);
   }
@@ -169,40 +170,30 @@
       hideTimer = null;
     }
   }
-  function onCardHover(id: string, hovering: boolean, rect?: DOMRect) {
+  function onCardHover(id: string, hovering: boolean) {
     if (hovering) {
       cancelOverlayHide();
       hoveredId = id;
-      anchorRect = rect ?? null;
-      // Hide until the ResizeObserver re-measures at the new anchor — avoids
-      // a one-frame ghost at the previous card's coordinates.
+      // Hide until the ResizeObserver re-measures the new content — avoids a
+      // one-frame ghost showing the previous card's detail at the wrong height.
       overlayReady = false;
     } else if (hoveredId === id) {
       scheduleOverlayHide();
     }
   }
 
-  // Compute fixed coordinates for the overlay from the trigger rect and the
-  // measured content box: clamp horizontally; prefer below, flip above when
-  // the bottom edge would overflow; clamp to viewport as the last resort.
+  // Dock the overlay along the bottom of the window, just above the footer, so
+  // hovering a card swaps the calendar-heatmap area for the account's detail
+  // without ever covering the cards being scanned. The width is full-bleed via
+  // CSS (left/right), so only the vertical position is computed here: sit on the
+  // footer line, and if the content is taller than the space above the footer,
+  // pin it to the top edge so the top of the detail stays readable and the
+  // panel scrolls internally.
   function placeOverlay() {
-    const rect = anchorRect;
-    if (!rect) return;
-    const w = measuredW || 320;
     const h = measuredH;
-    const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const maxX = Math.max(VIEWPORT_MARGIN, vw - w - VIEWPORT_MARGIN);
-    overlayX = Math.min(Math.max(rect.left, VIEWPORT_MARGIN), maxX);
-    const below = rect.bottom + OVERLAY_GAP;
-    const above = rect.top - OVERLAY_GAP - h;
-    if (h <= 0 || below + h <= vh - VIEWPORT_MARGIN) {
-      overlayY = below;
-    } else if (above >= VIEWPORT_MARGIN) {
-      overlayY = above;
-    } else {
-      overlayY = Math.max(VIEWPORT_MARGIN, vh - h - VIEWPORT_MARGIN);
-    }
+    const bottomDocked = vh - FOOTER_CLEARANCE - h;
+    overlayY = Math.max(VIEWPORT_MARGIN, Math.min(bottomDocked, vh - FOOTER_CLEARANCE - h));
   }
 
   // Measure the overlay content box whenever it mounts or its size changes.
@@ -220,7 +211,6 @@
     const apply = () => {
       const box = el.getBoundingClientRect();
       if (box.width > 0 && box.height > 0) {
-        measuredW = box.width;
         measuredH = box.height;
         overlayReady = true;
       }
@@ -231,10 +221,9 @@
     return () => ro.disconnect();
   });
 
-  // Reposition whenever the anchor moves or the content box changes size.
+  // Re-dock whenever the content height changes (each provider's detail is a
+  // different height, and the window can be resized).
   $effect(() => {
-    void anchorRect;
-    void measuredW;
     void measuredH;
     placeOverlay();
   });
@@ -285,8 +274,25 @@
     dragOrder = [];
   }
   const PILL_DRAG_THRESHOLD_PX = 4;
-  const PILL_FADE_DELAY_MS = 2500;
-  const PILL_EDGE_THRESHOLD_PX = 24;
+
+  // ---- 贴边 peek 双窗（spec §2 决策 1-5 / §3.2 时序）----
+  const PILL_COLLAPSED_W = 168; // 与 Rust set_window_mode 的 LogicalSize 保持一致
+  const PILL_COLLAPSED_H = 56;
+  const PILL_MINI_PAD_TOP = 2;
+  const PILL_MINI_PAD_BOTTOM = 8;
+  const PILL_MINI_ROW = 24;
+  const PILL_MINI_GAP = 6;
+  // 展开高度 = 56 + (2 + 30n + 6(n-1) + 8) = 60 + 30n；同 MiniPanel 的 CSS。
+  const PILL_EXPANDED_ROW = PILL_MINI_ROW + PILL_MINI_GAP; // 30
+  const PILL_EXPANDED_BASE =
+    PILL_COLLAPSED_H + PILL_MINI_PAD_TOP + PILL_MINI_PAD_BOTTOM - PILL_MINI_GAP; // 60
+  const PILL_SLIDE_MS = 200; // 与 .pill-layer.is-docked 的滑出时长一致
+  const PILL_PEEK_LEAD_MS = 120; // 滑出进行中就让把手接回鼠标并复现（时间线重叠）
+  const PILL_REVEAL_MINI_MS = 120; // 滑入开始后展开明细的延迟
+  const PILL_DOCK_DELAY_MS = 320; // 指针离开后停留多久才收起
+  const PILL_DOCK_THRESHOLD_PX = 40; // 松手时距左/右边缘多少逻辑像素内算「拖到边缘」
+  // 模式恢复判定阈值（逻辑像素）：介于 compact(168) 与 dashboard(400) 之间。
+  const PILL_RESTORE_MAX_W = 200;
   let settings = $state<Settings | null>(null);
 
   // Per-account accent map (instance_id -> #RRGGBB), derived from settings.
@@ -300,9 +306,9 @@
       {} as Record<string, string>,
     ),
   );
-  // Resolve a provider's emphasis colour with the legacy fallback chain.
+  // 解析某个 provider 的强调色：账户自定义色优先，否则用品牌注册表的品牌色。
   const colorOf = (id: string) =>
-    accentById[id] ?? PROVIDER_COLORS[id] ?? FOCUS_FALLBACK_COLOR;
+    accentById[id] ?? brandColorFor(id.split("-")[0]);
 
   // Countdown mode: false = show USED, true = show REMAINING (1 - used).
   let displayRemaining = $derived(settings?.countdown_mode ?? false);
@@ -365,6 +371,40 @@
         lastRefreshAt = Date.now();
       }),
     );
+
+    // 把手只存在于贴边态（浮动态没有把手窗口），因此这两个全局事件只在贴边时生效。
+    unlistenFns.push(
+      await onPeekHover(() => {
+        if (pillDocked && !pillCollapsing && !pillDragActive) void revealPill();
+      }),
+    );
+    unlistenFns.push(
+      await onPeekLeave(() => {
+        // 把手滑入时必然先隐去自己并发一次 peek-leave，而此刻指针已经落在滑入的
+        // 胶囊上——这不是「离开」。据此收起会造成「唤出即被收回」。
+        if (!pillHovered) scheduleDockPill();
+      }),
+    );
+    unlistenFns.push(await onPeekReveal(() => void revealPill()));
+    unlistenFns.push(await onPillDragSettled(() => void settlePillAfterDrag()));
+
+    // 前端可能刚被重载（HMR / WebView 崩溃恢复）：Rust 侧的窗口尺寸与 compact 标志
+    // 都还在，但这里的 mode 会回到初始值 —— 若不同步，就会在 168x56 的窗里渲染
+    // dashboard 视图（内容被裁掉、头部按钮落在窗外，用户自己点不回来）。
+    // 因此按实际窗口宽度对齐模式，并重新同步把手与鼠标捕获。
+    try {
+      const win = getCurrentWindow();
+      const [size, scale] = await Promise.all([win.innerSize(), win.scaleFactor()]);
+      if (size.width / scale <= PILL_RESTORE_MAX_W) {
+        mode = "compact";
+        // 启动恢复：Rust setup 只把窗口拉回屏内（未贴边），故为常态浮动且层可见。
+        pillDocked = false;
+        pillRevealed = true;
+        await syncPeek();
+      }
+    } catch {
+      // 取不到窗口尺寸：维持默认的 dashboard 模式。
+    }
 
     // 1-second clock tick for the timestamp header.
     const tick = setInterval(() => (now = new Date()), 1000);
@@ -479,27 +519,176 @@
   const badgeStyle = $derived.by(() => {
     const rgb = hexToRgb(focusedColor);
     if (!rgb) {
-      return "background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.2); color: var(--tum-text-primary);";
+      return "background: rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,.2); color:var(--tum-text-primary);";
     }
     return [
       `background: rgba(${rgb}, 0.16)`,
       `border: 1px solid rgba(${rgb}, 0.45)`,
-      `color: ${lightenHex(focusedColor, 0.18)}`,
+      `color: ${focusedColor}`,
     ].join("; ");
   });
   const providerFullName = $derived(
     focusedSnapshot ? focusedSnapshot.provider_display_name : "全部来源",
   );
 
-  // Pill fade machine (spec §3.4): fade to 22% after 2.5s while parked near
-  // a screen edge in compact mode; pointer enter / leaving the edge /
-  // dashboard mode restores full opacity.
-  let pillHovered = $state(false);
-  let pillFaded = $state(false);
-  let pillFadeTimer: ReturnType<typeof setTimeout> | null = null;
   let pillDragStart: { x: number; y: number; fromControl: boolean } | null = null;
   let pillDidDrag = false;
-  let pillFadeGen = 0;
+
+  // peek 双窗状态：pillDocked = 胶囊贴边（把手窗口存在）；pillRevealed = 层可见
+  // （滑入态/浮动态）。浮动态：pillDocked=false 且 pillRevealed=true（层恒可见、无把手）。
+  let pillSide = $state<PeekSide>("right");
+  let pillRevealed = $state(false);
+  let pillDocked = $state(false);
+  // 收起动画进行中：此期间忽略把手 hover，避免刚收边就被立刻唤回（动画结束即恢复，
+  // 不像旧的布防闩锁那样要求用户先把指针移开）。
+  let pillCollapsing = $state(false);
+  // 指针是否在胶囊层内：把手的 hover/leave 会与滑入动画交错，用这一位区分
+  // 「擦过把手」与「确实离开胶囊」。
+  let pillHovered = $state(false);
+  // 原生拖拽进行中：冻结一切 hover 导致的收起判定与在途计时器，否则拖到一半
+  // 会被收边链路（collapsePill + syncPeek("docked")）拽回屏幕边缘。
+  let pillDragActive = $state(false);
+  let pillExpanded = $state(false);
+  let pillResizeGen = 0;
+  let peekGen = 0;
+  let dockTimer: ReturnType<typeof setTimeout> | null = null;
+  let miniTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // 聚焦账户是否正在上报（驱动圆环的 2600ms 呼吸 halo）。
+  let pillActive = $derived(
+    !!(focusedSnapshot && actives[focusedSnapshot.provider_id]),
+  );
+
+  function clearDockTimer() {
+    if (dockTimer !== null) {
+      clearTimeout(dockTimer);
+      dockTimer = null;
+    }
+  }
+
+  function clearMiniTimer() {
+    if (miniTimer !== null) {
+      clearTimeout(miniTimer);
+      miniTimer = null;
+    }
+  }
+
+
+  /** 与后端同步「谁捕获鼠标 + 胶囊贴哪一边」。三态由 pillDocked/pillRevealed 推出。 */
+  async function syncPeek(): Promise<void> {
+    if (mode !== "compact") return;
+    const nextState = pillDocked
+      ? pillRevealed
+        ? "revealed"
+        : "docked"
+      : "floating";
+    try {
+      pillSide = await syncPeekWindow(nextState);
+      // 贴边收起态顺带让把手显形自愈：把手页只在收到 peek-show 时清除自己的
+      // is-hidden，若之前因异常时序（例如重载、模式竞态）停在隐藏态，它就
+      // 既看不见也点不到 —— 那样胶囊再也唤不出来。这里与停靠状态一并纠正。
+      if (pillDocked && !pillRevealed) void emitPeekShow(pillSide).catch(() => {});
+    } catch {
+      // 窗口正在切换模式 / 已被关闭：保持当前状态即可。
+    }
+  }
+
+  async function expandPill() {
+    if (mode !== "compact" || snapshots.length === 0) return;
+    const gen = ++pillResizeGen;
+    const height = PILL_EXPANDED_BASE + snapshots.length * PILL_EXPANDED_ROW;
+    try {
+      await getCurrentWindow().setSize(
+        new LogicalSize(PILL_COLLAPSED_W, height),
+      );
+      if (gen === pillResizeGen) pillExpanded = true;
+    } catch {
+      // IPC 失败：保持折叠。
+    }
+  }
+
+  async function collapsePill(): Promise<void> {
+    const gen = ++pillResizeGen;
+    pillExpanded = false;
+    try {
+      await getCurrentWindow().setSize(
+        new LogicalSize(PILL_COLLAPSED_W, PILL_COLLAPSED_H),
+      );
+    } catch {
+      // 忽略：窗口可能正处于模式切换中。
+    }
+  }
+
+  /** 层可见时延迟展开明细（与滑入/悬浮动画错开 120ms）。 */
+  function scheduleExpandPill() {
+    if (mode !== "compact" || pillExpanded) return;
+    clearMiniTimer();
+    const gen = peekGen;
+    miniTimer = setTimeout(() => {
+      miniTimer = null;
+      if (gen !== peekGen) return;
+      void expandPill();
+    }, PILL_REVEAL_MINI_MS);
+  }
+
+  /** 把手（或已滑入的胶囊）被唤醒：解除穿透 → 滑入 → 120ms 后展开明细。 */
+  async function revealPill() {
+    if (mode !== "compact") return;
+    const gen = ++peekGen;
+    clearDockTimer();
+    clearMiniTimer();
+    pillRevealed = true;
+    await syncPeek(); // 贴边滑入态：主窗接管鼠标，把手退出交互
+    if (gen !== peekGen) return;
+    scheduleExpandPill();
+  }
+
+  /** 指针离开：停留 320ms 未被唤醒则收起。 */
+  function scheduleDockPill() {
+    if (mode !== "compact") return;
+    clearDockTimer();
+    const gen = peekGen;
+    dockTimer = setTimeout(() => {
+      dockTimer = null;
+      if (gen !== peekGen) return;
+      void dockPill();
+    }, PILL_DOCK_DELAY_MS);
+  }
+
+  /** 收起采用「时间线重叠」三段式：t=0 置滑出态，胶囊立刻开始 200ms 滑出
+   *  （此时窗口尚未缩小，滑出全程可见）；t=120ms 滑出未结束就让把手提前接回
+   *  鼠标并从屏幕边缘复现；t=200ms 滑出播完后再缩窗裁剪。三段互相重叠，
+   *  消除「胶囊瞬消 → 空窗 → 把手突现」的割裂感。
+   *
+   *  ⚠️ 不要在这里加 `if (!pillRevealed) return` 之类的短路：即使胶囊从未滑入
+   *  （指针 60ms 内刷过把手就离开，把手已把自己隐去，而 peek-hover 被防抖抑制
+   *  或被随后的 peek-leave 取代），也必须照常走到 emitPeekShow —— 这是把手唯一
+   *  的「复活」路径。少了它，把手会永久停在 opacity:0 + pointer-events:none，
+   *  胶囊再也无法被唤醒（等于应用不可达）。 */
+  async function dockPill() {
+    // 拖拽期间绝不允许收起链路介入：collapsePill/syncPeek 会把窗口拽回边缘。
+    if (pillDragActive) return;
+    const gen = ++peekGen;
+    clearMiniTimer();
+    pillCollapsing = true;
+    pillRevealed = false; // t=0：立即触发 .pill-layer.is-docked 的 200ms 滑出
+    setTimeout(async () => {
+      if (gen !== peekGen) return;
+      // t=120ms：滑出未结束就把主窗切回 docked 布局，让把手提前接管。
+      // 先取回最新贴靠边（用户可能刚把胶囊拖到屏幕另一侧），再把边随
+      // peek-show 发给把手页，让它纠正圆角朝向并复现自己。
+      await syncPeek(); // docked=true：把手接回鼠标
+      if (gen !== peekGen) return;
+      void emitPeekShow(pillSide).catch(() => {});
+    }, PILL_PEEK_LEAD_MS);
+    setTimeout(async () => {
+      // t=200ms：滑出播完再缩窗。先清锁再校验代际：即便本代已被唤醒取代，
+      // 也不能让 pillCollapsing 永久卡在 true（否则 revealPill 被永久抑制）。
+      pillCollapsing = false;
+      if (gen !== peekGen) return;
+      await collapsePill();
+    }, PILL_SLIDE_MS);
+  }
 
   // Compact pill three-state tone (spec §5.2): ringPercent is aggregate
   // REMAINING, so used = 1 - ringPercent. <80 silent / 80-95 amber / >=95 red.
@@ -514,93 +703,38 @@
           : "ok",
   );
 
-  // The compact OS window is physically 150x44 (ipc::set_window_mode). The
-  // hover MiniPanel grows it downward via setSize; top-left anchor is kept.
-  // B4 switches the collapsed height 44 -> 40: update PILL_COLLAPSED_H there
-  // together with the Rust LogicalSize.
-  const PILL_COLLAPSED_W = 150;
-  const PILL_COLLAPSED_H = 44;
-  const PILL_EXPANDED_BASE = 48; // 44 main row + MiniPanel vertical padding
-  const PILL_EXPANDED_ROW = 24; // 18px row + 6px gap
-  let pillExpanded = $state(false);
-  let pillResizeGen = 0;
-
-  async function expandPill() {
-    if (mode !== "compact" || snapshots.length === 0) return;
-    const gen = ++pillResizeGen;
-    const height =
-      PILL_EXPANDED_BASE + snapshots.length * PILL_EXPANDED_ROW;
-    try {
-      await getCurrentWindow().setSize(
-        new LogicalSize(PILL_COLLAPSED_W, height),
-      );
-      if (gen === pillResizeGen) pillExpanded = true;
-    } catch {
-      // IPC failed — leave the pill collapsed.
-    }
+  /** 指针进入胶囊层：取消待收起的停靠计时；层可见时安排明细展开（浮动态也生效）。 */
+  function onPillPointerEnter() {
+    if (mode !== "compact") return;
+    pillHovered = true;
+    clearDockTimer();
+    if (!pillDocked || pillRevealed) scheduleExpandPill();
   }
 
-  async function collapsePill(): Promise<void> {
-    const gen = ++pillResizeGen;
-    pillExpanded = false;
-    try {
-      await getCurrentWindow().setSize(
-        new LogicalSize(PILL_COLLAPSED_W, PILL_COLLAPSED_H),
-      );
-    } catch {
-      // Ignore — window may be mid mode-switch.
+  /** 指针离开胶囊层：贴边态沿用 320ms 收起链路；浮动态只收明细、不隐藏窗口。 */
+  function onPillPointerLeave() {
+    if (mode !== "compact") return;
+    pillHovered = false;
+    // 拖拽中窗口跟着指针走，中途的 leave/enter 事件不可信，一律忽略。
+    if (pillDragActive) return;
+    if (pillDocked) {
+      scheduleDockPill();
+      return;
     }
-  }
-
-  function clearPillFadeTimer() {
-    if (pillFadeTimer !== null) {
-      clearTimeout(pillFadeTimer);
-      pillFadeTimer = null;
-    }
-  }
-
-  async function pillNearEdge(): Promise<boolean> {
-    const win = getCurrentWindow();
-    const [pos, size, monitor] = await Promise.all([
-      win.outerPosition(),
-      win.outerSize(),
-      currentMonitor(),
-    ]);
-    if (!monitor) return false;
-    const threshold = PILL_EDGE_THRESHOLD_PX * monitor.scaleFactor;
-    const area = monitor.workArea ?? { position: monitor.position, size: monitor.size };
-    const left = pos.x - area.position.x;
-    const top = pos.y - area.position.y;
-    const right = area.position.x + area.size.width - (pos.x + size.width);
-    const bottom = area.position.y + area.size.height - (pos.y + size.height);
-    return Math.min(left, top, right, bottom) < threshold;
-  }
-
-  async function refreshPillFade() {
-    // Superseded calls must not assign stale timers.
-    const gen = ++pillFadeGen;
-    clearPillFadeTimer();
-    try {
-      if (mode !== "compact" || pillHovered) {
-        pillFaded = false;
-        return;
-      }
-      if (!(await pillNearEdge())) {
-        if (gen !== pillFadeGen) return;
-        pillFaded = false;
-        return;
-      }
-      if (gen !== pillFadeGen) return;
-      pillFadeTimer = setTimeout(() => {
-        pillFaded = !pillHovered;
-      }, PILL_FADE_DELAY_MS);
-    } catch {
-      // IPC failed (e.g. window closing) — keep current fade state.
-    }
+    // 浮动态层恒可见：延迟后仅把明细收回，窗口留在原地。
+    clearDockTimer();
+    const gen = peekGen;
+    dockTimer = setTimeout(() => {
+      dockTimer = null;
+      if (gen !== peekGen) return;
+      void collapsePill();
+    }, PILL_DOCK_DELAY_MS);
   }
 
   function onPillPointerDown(event: PointerEvent) {
     if (event.button !== 0) return;
+    // 按下即冻结收边链路：否则刚按下就可能被 320ms 的收起计时器收走。
+    clearDockTimer();
     pillDragStart = {
       x: event.clientX,
       y: event.clientY,
@@ -618,8 +752,9 @@
     const dy = event.clientY - pillDragStart.y;
     if (!pillDidDrag && Math.hypot(dx, dy) > PILL_DRAG_THRESHOLD_PX) {
       pillDidDrag = true;
-      clearPillFadeTimer();
-      pillFaded = false;
+      pillDragActive = true;
+      clearDockTimer();
+      void setPillDragging(true);
       void getCurrentWindow().startDragging();
     }
   }
@@ -632,29 +767,56 @@
     pillDidDrag = false;
     if (!didDrag && !fromControl) {
       void toggleMode();
-    } else {
-      void refreshPillFade();
+    } else if (didDrag) {
+      // pointerup 能收到时的快路径；Rust 侧「左键已松开 + 停稳」是可靠兜底。
+      pillDragActive = false;
+      void setPillDragging(false);
+      void settlePillAfterDrag();
     }
   }
 
-  // Window moved (OS drag or external) → re-evaluate the pill fade state.
-  $effect(() => {
-    const win = getCurrentWindow();
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void win
-      .onMoved(() => {
-        void refreshPillFade();
-      })
-      .then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
-      });
-    return () => {
-      disposed = true;
-      if (unlisten) unlisten();
-    };
-  });
+  /** 拖拽结束：贴近左/右边缘（40 逻辑 px 内）→ 贴边收起；否则恢复常态浮动。 */
+  async function settlePillAfterDrag() {
+    if (mode !== "compact") return;
+    pillDragActive = false;
+    void setPillDragging(false);
+    clearDockTimer();
+    try {
+      const win = getCurrentWindow();
+      const [pos, size, monitor] = await Promise.all([
+        win.outerPosition(),
+        win.outerSize(),
+        currentMonitor(),
+      ]);
+      const nearEdge =
+        monitor !== null &&
+        Math.min(
+          pos.x - monitor.workArea.position.x,
+          monitor.workArea.position.x +
+            monitor.workArea.size.width -
+            (pos.x + size.width),
+        ) <= PILL_DOCK_THRESHOLD_PX * monitor.scaleFactor;
+      if (nearEdge) {
+        // 贴边：先置收起态并同步 docked —— Rust 立刻贴死边缘 + 建把手 + 主窗穿透，
+        // 随后进入正常收起链路滑出，因此胶囊滑出时窗口已经贴边。
+        pillDocked = true;
+        pillRevealed = false;
+        void syncPeek().then(() => dockPill());
+      } else {
+        // 浮动：层保持可见、主窗接管鼠标，把手窗口由 Rust 销毁。
+        pillDocked = false;
+        pillRevealed = true;
+        pillCollapsing = false;
+        void syncPeek();
+      }
+    } catch {
+      // 读不到窗口几何：按浮动处理，至少保证胶囊可交互。
+      pillDocked = false;
+      pillRevealed = true;
+      pillCollapsing = false;
+      void syncPeek();
+    }
+  }
 
   let timeLabel = $derived(
     now.toLocaleTimeString("zh-CN", {
@@ -686,13 +848,27 @@
     const next: Mode = mode === "dashboard" ? "compact" : "dashboard";
     await setWindowMode(next);
     mode = next;
-    pillHovered = false;
-    pillFaded = false;
+    // compact：常态浮动且层可见（Rust 侧不建把手，只把鼠标交回主窗）；
+    // dashboard：两者复位（set_window_mode 已在 Rust 里销毁把手并恢复鼠标交互）。
+    pillDocked = false;
+    pillRevealed = next === "compact";
+    pillCollapsing = false;
     pillExpanded = false;
     pillResizeGen++;
-    clearPillFadeTimer();
-    if (next === "compact") {
-      void refreshPillFade();
+    peekGen++;
+    void setPillDragging(false);
+    clearDockTimer();
+    clearMiniTimer();
+    await syncPeek();
+    // 记住显示形态：Rust 下次启动会在显示窗口前按此设定尺寸并拉回屏内，
+    // 因此这里必须持久化，否则「常态即胶囊」在重启后会丢。
+    if (settings) {
+      settings = { ...settings, compact_mode: next === "compact" };
+      try {
+        await saveSettings(settings);
+      } catch {
+        // 持久化失败不影响本次切换本身。
+      }
     }
   }
 
@@ -728,78 +904,83 @@
 <main class="shell" class:shell--compact={mode === "compact"} data-tauri-drag-region oncontextmenu={(e) => e.preventDefault()}>
   {#if mode === "compact"}
     <div
-      class="pill"
-      class:is-faded={pillFaded}
-      class:pill--expanded={pillExpanded}
-      data-tone={pillTone}
-      onpointerenter={() => {
-        pillHovered = true;
-        clearPillFadeTimer();
-        pillFaded = false;
-        void expandPill();
-      }}
-      onpointerleave={() => {
-        pillHovered = false;
-        // Restore the physical size FIRST so the edge-fade check measures
-        // the 150x44 pill, not the transient expanded rectangle.
-        void collapsePill().then(() => refreshPillFade());
-      }}
-      onpointerdown={onPillPointerDown}
-      onpointermove={onPillPointerMove}
-      onpointerup={onPillPointerUp}
-      oncontextmenu={(e) => e.preventDefault()}
-      role="group"
-      aria-label="迷你用量面板"
+      class="pill-layer"
+      class:is-docked={pillDocked && !pillRevealed}
+      data-side={pillSide}
+      role="presentation"
+      onpointerenter={onPillPointerEnter}
+      onpointerleave={onPillPointerLeave}
     >
-      <div class="pill__main">
-        <button
-          type="button"
-          class="pill__restore"
-          aria-label="恢复主面板"
-          onclick={(e) => {
-            e.stopPropagation();
-            void toggleMode();
-          }}
-        >
-          <span class="pill__ring">
-            {#if headerIsPayAsYouGo && focusedSnapshot}
-              <span class="pill__avatar" title={providerFullName}>
-                <ProviderLogo
-                  kind={focusedSnapshot.provider_id.split("-")[0]}
-                  size={16}
+      <div
+        class="pill"
+        data-tone={pillTone}
+        onpointerdown={onPillPointerDown}
+        onpointermove={onPillPointerMove}
+        onpointerup={onPillPointerUp}
+        oncontextmenu={(e) => e.preventDefault()}
+        role="group"
+        aria-label="迷你用量面板"
+      >
+        <div class="pill__main">
+          <button
+            type="button"
+            class="pill__restore"
+            aria-label="恢复主面板"
+            onclick={(e) => {
+              e.stopPropagation();
+              void toggleMode();
+            }}
+          >
+            <span class="pill__ring">
+              {#if headerIsPayAsYouGo && focusedSnapshot}
+                <span class="pill__avatar" title={providerFullName}>
+                  <ProviderLogo
+                    kind={focusedSnapshot.provider_id.split("-")[0]}
+                    size={22}
+                    accent={focusedColor}
+                  />
+                </span>
+              {:else}
+                <ProgressRing
+                  value={ringArcValue}
+                  label=""
+                  size={38}
+                  stroke={3.5}
+                  idle={snapshots.length === 0}
+                  countdown={displayRemaining}
+                  markKind={focusedSnapshot
+                    ? focusedSnapshot.provider_id.split("-")[0]
+                    : null}
+                  running={pillActive}
                   accent={focusedColor}
                 />
-              </span>
-            {:else}
-              <ProgressRing value={ringArcValue} label="" size={24} stroke={3} idle={snapshots.length === 0} countdown={displayRemaining} />
-            {/if}
-            <span
-              class="pill__percent"
-              class:pill__percent--crit={pillTone === "crit"}
-            >{headerMoney ?? ringArcLabel}</span>
-          </span>
-          <span class="pill__divider"></span>
-          <span
-            class="pill__badge"
-            style={badgeStyle}
-            title={providerFullName}
-          >{focusedName}</span>
-        </button>
-        <button
-          type="button"
-          class="pill__close"
-          title="关闭应用"
-          aria-label="关闭应用"
-          onpointerdown={(e) => e.stopPropagation()}
-          onclick={(e) => {
-            e.stopPropagation();
-            void closeApp();
-          }}
-        >✕</button>
+              {/if}
+              <span
+                class="pill__percent"
+                class:pill__percent--crit={pillTone === "crit"}
+              >{headerMoney ?? ringArcLabel}</span>
+            </span>
+            <span class="pill__divider"></span>
+            <span class="pill__badge" style={badgeStyle} title={providerFullName}
+              >{focusedName}</span
+            >
+          </button>
+          <button
+            type="button"
+            class="pill__close"
+            title="关闭应用"
+            aria-label="关闭应用"
+            onpointerdown={(e) => e.stopPropagation()}
+            onclick={(e) => {
+              e.stopPropagation();
+              void closeApp();
+            }}
+          >✕</button>
+        </div>
+        {#if pillExpanded}
+          <MiniPanel {snapshots} {actives} countdown={displayRemaining} accentFor={(id) => accentById[id]} />
+        {/if}
       </div>
-      {#if pillExpanded}
-        <MiniPanel {snapshots} {actives} countdown={displayRemaining} />
-      {/if}
     </div>
   {:else}
     <header class="shell__header" data-tauri-drag-region>
@@ -847,6 +1028,14 @@
             focus = id;
           }}
           dotFor={(id) => (id === "all" ? undefined : colorOf(id))}
+          brandFor={(id) =>
+            id === "all"
+              ? null
+              : {
+                  color: colorOf(id),
+                  kind: id.split("-")[0],
+                  experimental: EXPERIMENTAL_KINDS.has(id.split("-")[0]),
+                }}
         />
       </div>
     {/if}
@@ -978,9 +1167,7 @@
         class="detail-overlay"
         role="group"
         data-tauri-drag-region={false}
-        style={`left:${overlayX}px;top:${overlayY}px;visibility:${overlayReady ? "visible" : "hidden"};`}
-        onpointerenter={cancelOverlayHide}
-        onpointerleave={scheduleOverlayHide}
+        style={`top:${overlayY}px;visibility:${overlayReady ? "visible" : "hidden"};`}
         transition:fly={{ y: 6, duration: 120 }}
         bind:this={overlayEl}
       >
@@ -1020,9 +1207,10 @@
     cursor: grab;
   }
 
-  /* In compact mode, remove the shell's padding and gap so the mini pill
-     gets the full window area (150x44). */
+  /* compact 模式：去掉外壳自身的玻璃与内边距，把整窗交给胶囊层。
+     overflow:hidden 负责把滑出窗外的胶囊层裁掉。 */
   .shell--compact {
+    position: relative;
     padding: 0;
     gap: 0;
     border: none;
@@ -1030,6 +1218,30 @@
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     background: transparent;
+  }
+
+  /* 胶囊整体平移：收起时滑出窗外，唤醒时滑回 (0,0)。
+     贴左边时方向镜像。 */
+  .pill-layer {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    transition: transform 150ms var(--tum-ease-spring);
+  }
+
+  /* 贴边收起的滑出走 ease-in 曲线（200ms，加速钻边）：CSS transition 读取的是
+     变化后的目标状态，基态规则只服务滑入（spring），本规则只服务滑出。 */
+  .pill-layer.is-docked {
+    transition: transform 200ms var(--tum-ease-dock-exit);
+  }
+
+  .pill-layer.is-docked[data-side="right"] {
+    transform: translateX(100%);
+  }
+
+  .pill-layer.is-docked[data-side="left"] {
+    transform: translateX(-100%);
   }
 
   .shell:active {
@@ -1302,35 +1514,29 @@
     letter-spacing: 0.4px;
   }
 
-  /* Mini pill (compact): collapsed physical window is 150x44 (see
-     ipc::set_window_mode). Hover grows it for the MiniPanel rows.
-     Three states via data-tone: silent (<80%) / amber (80-95%) /
-     red breathe (>=95%, spec §5.2 CompactPill). */
+  /* 贴边胶囊：收起态物理窗 168x56（与 Rust set_window_mode 的 LogicalSize 一致），
+     展开时按 PILL_EXPANDED_BASE/ROW 增高。
+     半径 28 = 收起态高 56 的一半：端部为完整半圆，与内层徽章（22px 高、
+     11px 半径）的胶囊端同族；展开态内容缩进 10/8px，28px 也不会裁到明细行。
+     data-tone 三态：<80% 静默 / 80-95% 琥珀 / >=95% 红色呼吸（spec §5.2 CompactPill）。 */
   .pill {
     height: 100%;
-    position: relative;
     display: flex;
     flex-direction: column;
-    padding: 0 8px;
-    border-radius: 22px;
-    background: rgba(10, 14, 26, 0.92);
-    border: 1px solid var(--tum-border);
-    transition:
-      opacity 0.35s ease,
-      transform 0.35s ease,
-      border-color 0.3s ease,
-      border-radius 0.2s ease,
-      box-shadow 0.3s ease;
-    cursor: default;
+    padding: 0 10px;
+    border-radius: 28px;
+    background: var(--tum-glass);
+    /* 不画投影：胶囊填满窗口、四角被圆角切掉，投影的深色像素只会从这四个缺口
+       漏出来（表现为「四角没全透明」），而窗口会把窗外的投影全部裁掉，
+       等于零立体感换取一处瑕疵。 */
+    border: 1px solid var(--tum-border-strong);
     overflow: hidden;
-  }
-
-  .pill--expanded {
-    border-radius: var(--tum-radius-lg);
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    cursor: default;
   }
 
   .pill[data-tone="warn"] {
-    border-color: rgba(255, 200, 61, 0.55);
+    border-color: rgba(255, 200, 61, 0.5);
   }
 
   .pill[data-tone="crit"] {
@@ -1338,24 +1544,12 @@
     animation: pill-breathe 1.6s ease-in-out infinite;
   }
 
-  .pill.is-faded {
-    opacity: 0.22;
-    transform: scale(0.9);
-    animation: none;
-  }
-
   @keyframes pill-breathe {
     0%,
     100% {
-      border-color: rgba(255, 95, 86, 0.55);
-      box-shadow:
-        0 0 0 0 rgba(255, 95, 86, 0),
-        inset 0 0 0 1px rgba(255, 95, 86, 0.4);
+      box-shadow: inset 0 0 0 1px rgba(255, 95, 86, 0.4);
     }
     50% {
-      border-color: rgba(255, 95, 86, 0.95);
-      /* blur 大、spread 0 的柔和外发光 + 贴合圆角的内描边：
-         避免旧版 `14px 2px` 的硬边外扩在透明窗口里呈矩形块状光晕 */
       box-shadow:
         0 0 16px 0 rgba(255, 95, 86, 0.5),
         inset 0 0 0 1px rgba(255, 95, 86, 0.85);
@@ -1363,7 +1557,8 @@
   }
 
   .pill__main {
-    height: 44px;
+    /* 高度与脚本常量 PILL_COLLAPSED_H 保持一致（收起态物理窗 168×56）。 */
+    height: 56px;
     flex: none;
     display: flex;
     align-items: center;
@@ -1396,7 +1591,7 @@
   .pill__ring {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     flex-shrink: 0;
   }
 
@@ -1414,7 +1609,7 @@
   }
 
   .pill__percent {
-    font-size: var(--tum-font-size-xs);
+    font-size: 11px;
     font-family: var(--tum-font-mono);
     color: var(--tum-text-primary);
     letter-spacing: 0.3px;
@@ -1426,7 +1621,7 @@
 
   .pill__divider {
     width: 1px;
-    height: 20px;
+    height: 24px;
     background: var(--tum-border-strong);
     flex-shrink: 0;
   }
@@ -1436,13 +1631,13 @@
        展示完整 Provider 短名；底色/描边/文字色由内联 style 注入。 */
     flex: 1;
     min-width: 0;
-    height: 20px;
+    height: 22px;
     padding: 0 6px;
-    border-radius: 10px;
+    border-radius: 11px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 10px;
+    font-size: 10.5px;
     font-weight: 600;
     font-family: var(--tum-font);
     letter-spacing: 0.2px;
@@ -1467,7 +1662,10 @@
     line-height: 1;
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.2s ease, background 0.2s ease, color 0.2s ease;
+    transition:
+      opacity 0.2s ease,
+      background 0.2s ease,
+      color 0.2s ease;
   }
 
   .pill:hover .pill__close {
@@ -1485,20 +1683,34 @@
     outline-offset: -2px;
   }
 
-  /* Floating detail overlay anchored beside the hovered card: rendered at
-     window level so the full detail (rows + chart) is never clipped by a
-     small card. Position + width are set inline after measuring the content
-     box; it flips above the card when the viewport bottom is tight. Parking
-     the pointer on it keeps it pinned so the actions inside are reachable. */
+  /* Floating detail overlay: rendered at window level so the full detail
+     (rows + chart) is never clipped by a small card. It is docked along the
+     bottom (above the footer) so it covers the calendar-heatmap area — hovering
+     a card swaps that area for the account's detail — and, crucially, does NOT
+     cover the provider cards being scanned. Hit-testing passes through to what
+     is underneath, so the overlay can never cause hover flicker.
+     Height is still measured before reveal (overlayReady) so there is no
+     one-frame flash; the width is full-bleed so the detail reads as a panel
+     rather than a floating chip. */
   .detail-overlay {
     position: fixed;
+    left: 14px;
+    right: 14px;
     z-index: 60;
-    width: 320px;
-    max-width: calc(100vw - 16px);
-    pointer-events: auto;
+    max-height: calc(100vh - 96px);
+    pointer-events: none;
   }
 
   .detail-overlay :global(.detail) {
     padding: 10px 12px;
+    max-height: calc(100vh - 96px);
+    overflow-y: auto;
+  }
+
+  /* The overlay itself is pointer-transparent so hovering it passes through to
+     the cards below and can never cause flicker. The action row opts back in so
+     "refresh this account" stays clickable. */
+  .detail-overlay :global(.detail__actions) {
+    pointer-events: auto;
   }
 </style>
