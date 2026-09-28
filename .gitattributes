@@ -1,0 +1,43 @@
+# 行尾治理：仓库内统一存 LF，检出到 Windows 工作区时同样保持 LF。
+#
+# 背景：本仓库原先依赖 core.autocrlf=true，检出时把 LF 转成 CRLF。
+# 但 tauri 的 build script 与 schema 生成器会直接重写 Cargo.toml 与
+# gen/schemas/*.json 为 LF，与 git 预期的 CRLF 不一致，导致每次构建后
+# 都出现"文件被修改"的伪 diff（内容其实零差异，只是行尾不同）。
+#
+# 规则：
+#   1. 所有文本文件在仓库内一律存为 LF —— 跨平台一致，diff 干净。
+#   2. 检出到工作区时保持 LF —— 与工具链生成物行尾相同，不再产生伪 diff。
+#      Windows 上用支持 LF 的编辑器（VS Code / Notepad++）即可正常编辑。
+#   3. 二进制文件明确标记为 -text，禁止任何行尾转换。
+#   4. Windows 批处理必须 CRLF，否则 cmd.exe 无法正确解析。
+
+* text=auto eol=lf
+
+# ---- 二进制文件：禁止行尾转换 ----
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.bmp  binary
+*.webp binary
+*.pdf  binary
+*.zip  binary
+*.gz   binary
+*.7z   binary
+*.exe  binary
+*.dll  binary
+*.msi  binary
+*.node binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary
+*.mp3  binary
+*.mp4  binary
+
+# ---- Windows 批处理：必须 CRLF ----
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
