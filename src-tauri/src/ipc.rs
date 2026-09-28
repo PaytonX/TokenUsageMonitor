@@ -1201,8 +1201,47 @@ fn proxy_probe_outcome(probe: Result<u16, String>) -> ProxyTestResult {
     }
 }
 
-/// Build a temporary client through the supplied proxy and probe a lightweight
-/// 204 endpoint. Nothing is persisted; the saved client is untouched.
+/// Connectivity probes tried in order until one answers.
+///
+/// The first entry is the historical `google.com/generate_204`, kept for
+/// users behind a filtered route where it is the cheapest signal. It is *not*
+/// the only entry: on a mainland-China network google.com is unreachable with
+/// or without a working proxy, so a single hard-coded probe reports "proxy
+/// broken" for a perfectly good proxy. The rest are hosts reachable from most
+/// networks, tried in order of how cheap the response is.
+const PROXY_PROBES: &[&str] = &[
+    "http://www.msftconnecttest.com/connecttest.txt",
+    "http://captive.apple.com/hotspot-detect.html",
+    "http://www.gstatic.com/generate_204",
+    "https://www.google.com/generate_204",
+];
+
+/// Fold the ordered per-probe results into one verdict.
+///
+/// Split out from the network loop so the decision is testable without a live
+/// proxy. Rules:
+/// - the first 2xx wins and stops the sequence;
+/// - the first *response* of any status also stops it, because receiving an
+///   HTTP status at all proves the proxy completed the request - a captive
+///   portal 403 is a different diagnosis than "no route", and is far more
+///   actionable than "everything failed";
+/// - if every probe failed at the transport layer, the last error is reported.
+fn proxy_probe_verdict(attempts: Vec<Result<u16, String>>) -> ProxyTestResult {
+    let mut last_err: Option<String> = None;
+    for attempt in attempts {
+        match attempt {
+            Ok(status) => return proxy_probe_outcome(Ok(status)),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    proxy_probe_outcome(Err(last_err.unwrap_or_else(|| {
+        "代理连接失败：所有探测地址均无响应".to_string()
+    })))
+}
+
+/// Build a temporary client through the supplied proxy and probe each
+/// endpoint in [`PROXY_PROBES`] until one answers. Nothing is persisted; the
+/// saved client is untouched.
 #[tauri::command]
 pub async fn test_proxy(url: String) -> Result<ProxyTestResult, String> {
     let url = url.trim().to_string();
@@ -1214,16 +1253,22 @@ pub async fn test_proxy(url: String) -> Result<ProxyTestResult, String> {
         });
     }
     let client = crate::build_http_client(Some(&url))?;
-    let probe = async {
-        let resp = client
-            .get("https://www.google.com/generate_204")
+
+    let mut attempts = Vec::with_capacity(PROXY_PROBES.len());
+    for probe in PROXY_PROBES {
+        let status = client
+            .get(*probe)
             .send()
             .await
-            .map_err(|e| format!("代理连接失败：{e}"))?;
-        Ok::<u16, String>(resp.status().as_u16())
+            .map(|r| r.status().as_u16())
+            .map_err(|e| format!("代理连接失败：{e}"));
+        let answered = status.is_ok();
+        attempts.push(status);
+        if answered {
+            break;
+        }
     }
-    .await;
-    Ok(proxy_probe_outcome(probe))
+    Ok(proxy_probe_verdict(attempts))
 }
 
 /// Read the local Codex CLI credentials (`~/.codex/auth.json`) so the
@@ -1240,7 +1285,7 @@ pub async fn detect_codex_token() -> Result<Option<DetectedCodexToken>, String> 
 
 #[cfg(test)]
 mod proxy_tests {
-    use super::{proxy_changed, proxy_probe_outcome};
+    use super::{proxy_changed, proxy_probe_outcome, proxy_probe_verdict, PROXY_PROBES};
 
     #[test]
     fn detects_real_change() {
@@ -1287,6 +1332,61 @@ mod proxy_tests {
         assert!(!r.ok);
         assert!(r.status.is_none());
         assert_eq!(r.error.as_deref(), Some("connection refused"));
+    }
+
+    #[test]
+    fn verdict_stops_at_the_first_success() {
+        // Later probes are never reached: a 204 already proves the proxy works.
+        let r = proxy_probe_verdict(vec![
+            Err("first unreachable".to_string()),
+            Ok(204u16),
+            Err("never tried".to_string()),
+        ]);
+        assert!(r.ok);
+        assert_eq!(r.status, Some(204));
+    }
+
+    #[test]
+    fn verdict_stops_at_the_first_http_response_even_when_not_2xx() {
+        // An HTTP status at all means the proxy completed the request. A
+        // captive-portal 403 is a better diagnosis than "everything failed",
+        // so the sequence must not keep probing past it.
+        let r = proxy_probe_verdict(vec![Err("blocked".to_string()), Ok(403u16)]);
+        assert!(!r.ok);
+        assert_eq!(r.status, Some(403));
+        assert!(r.error.as_deref().unwrap().contains("403"));
+    }
+
+    #[test]
+    fn verdict_reports_the_last_error_when_all_probes_fail() {
+        let r = proxy_probe_verdict(vec![
+            Err("first".to_string()),
+            Err("second".to_string()),
+            Err("last".to_string()),
+        ]);
+        assert!(!r.ok);
+        assert!(r.status.is_none());
+        assert_eq!(r.error.as_deref(), Some("last"));
+    }
+
+    #[test]
+    fn verdict_on_an_empty_probe_list_is_a_failure_not_a_success() {
+        let r = proxy_probe_verdict(vec![]);
+        assert!(!r.ok);
+        assert!(r.error.is_some());
+    }
+
+    #[test]
+    fn probe_list_leads_with_endpoints_reachable_without_google() {
+        // Regression guard for the original bug: a single google.com probe
+        // reports a broken proxy on a mainland-China network. google must not
+        // be the only, nor the first, entry.
+        assert!(PROXY_PROBES.len() >= 2);
+        assert!(!PROXY_PROBES[0].contains("google.com"));
+        assert!(PROXY_PROBES.iter().any(|p| p.contains("google.com")));
+        for p in PROXY_PROBES {
+            assert!(p.starts_with("http://") || p.starts_with("https://"));
+        }
     }
 }
 
