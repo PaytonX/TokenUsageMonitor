@@ -26,6 +26,20 @@ struct Tier {
     output_per_1m: f64,
 }
 
+/// Cache-read tokens bill at a fraction of the input rate.
+///
+/// 0.1x is the prevailing public-list convention (Anthropic, OpenAI and
+/// DeepSeek all sell cache reads around a tenth of input). It matters a lot in
+/// practice: measured locally, cache reads are 80-98% of all tokens for dsh and
+/// 93% for Claude Code, so billing them at full input rate inflates the total
+/// by roughly 86%.
+///
+/// We keep this as one named constant rather than a per-model column because a
+/// per-model table would need real published rates for every row in
+/// `PRICE_TABLE`, and a plausible-looking but invented number is worse than an
+/// honestly uniform approximation on an already-estimated figure.
+const CACHE_READ_DISCOUNT: f64 = 0.1;
+
 /// (model-prefix, tier). Ordered longest-prefix-ish; the first prefix a model
 /// starts with wins. Keep affordable defaults; adjust as models change.
 const PRICE_TABLE: &[(&str, Tier)] = &[
@@ -218,16 +232,20 @@ fn tier_for(model: &str) -> Option<Tier> {
 }
 
 /// Estimate the USD cost of a token breakdown. Returns `None` when the model is
-/// unknown/unpriced. `cache_read` tokens are billed at the input rate (a common
-/// approximation — cache-read discounts are model-specific and often ~0.1×).
+/// unknown/unpriced.
+///
+/// `cache_read` is billed at [`CACHE_READ_DISCOUNT`] × the input rate. Callers
+/// must pass the cache portion in `cache_read` rather than pre-merging it into
+/// `input`, otherwise it is charged at full price and the discount silently
+/// never applies.
 pub fn compute_cost(breakdown: &crate::providers::TokenBreakdown) -> Option<f64> {
     let model = breakdown.model_id.as_deref()?;
     let tier = tier_for(model)?;
-    let input_tokens = breakdown.input;
-    let output_tokens = breakdown.output;
-    let input_cost = input_tokens / 1_000_000.0 * tier.input_per_1m;
-    let output_cost = output_tokens / 1_000_000.0 * tier.output_per_1m;
-    Some(input_cost + output_cost)
+    let input_cost = breakdown.input / 1_000_000.0 * tier.input_per_1m;
+    let cache_cost =
+        breakdown.cache_read / 1_000_000.0 * tier.input_per_1m * CACHE_READ_DISCOUNT;
+    let output_cost = breakdown.output / 1_000_000.0 * tier.output_per_1m;
+    Some(input_cost + cache_cost + output_cost)
 }
 
 #[cfg(test)]
@@ -267,6 +285,62 @@ mod tests {
     fn alias_normalizes_openrouter_style() {
         assert!(tier_for("openai/gpt-4o").is_some());
         assert!(tier_for("deepseek/deepseek-chat").is_some());
+    }
+
+    /// Cache reads must bill at the discounted rate, not the input rate. This
+    /// is the regression that mattered: cache is 80-98% of real traffic, so
+    /// charging it at full price inflated totals by ~86%.
+    #[test]
+    fn cache_read_bills_at_discount_rate() {
+        let full = compute_cost(&TokenBreakdown {
+            input: 0.0,
+            cache_read: 1_000_000.0,
+            output: 0.0,
+            model_id: Some("claude-3-5-sonnet".to_string()),
+        })
+        .unwrap();
+        // 1M cache @ 3.0 × 0.1 = 0.3
+        assert!((full - 0.3).abs() < 1e-6, "got {full}");
+    }
+
+    /// Routing the cache portion through `cache_read` must cost strictly less
+    /// than pre-merging it into `input` — which is what every caller used to do.
+    #[test]
+    fn pre_merged_cache_would_overcharge() {
+        let discounted = compute_cost(&TokenBreakdown {
+            input: 0.0,
+            cache_read: 1_000_000.0,
+            output: 0.0,
+            model_id: Some("claude-3-5-sonnet".to_string()),
+        })
+        .unwrap();
+        let overcharged = compute_cost(&TokenBreakdown {
+            input: 1_000_000.0,
+            cache_read: 0.0,
+            output: 0.0,
+            model_id: Some("claude-3-5-sonnet".to_string()),
+        })
+        .unwrap();
+        assert!(
+            discounted < overcharged,
+            "discounted {discounted} must beat pre-merged {overcharged}"
+        );
+        assert!((overcharged - 3.0).abs() < 1e-6);
+    }
+
+    /// A zero cache portion must not change the result — guards the new term
+    /// against perturbing models that never report cache reads.
+    #[test]
+    fn zero_cache_is_neutral() {
+        let a = compute_cost(&bd("gpt-4o", 1_000_000.0, 0.0)).unwrap();
+        let b = compute_cost(&TokenBreakdown {
+            input: 1_000_000.0,
+            cache_read: 0.0,
+            output: 0.0,
+            model_id: Some("gpt-4o".to_string()),
+        })
+        .unwrap();
+        assert!((a - b).abs() < 1e-9);
     }
 
     #[test]

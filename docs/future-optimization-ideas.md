@@ -183,7 +183,7 @@
   - **真实结果**：`MiniMax-M3` 4 天 / in 1,285,538 / cache 54,842,825 / out 250,887 / 估算 **$285.66**；
     `deepseek-v4-flash` 2 天 / in 5,982,124 / cache 25,241,344 / out 342,845 / 估算 **$8.81**；
     **按模型合计 = 按日合计 = 总计 87,945,563，对账一致**。
-- **验证（2026-09-28）**：`cargo test` **166 passed / 0 failed**（dsh 测试 24 个）；
+- **验证（2026-09-28）**：`cargo test` **169 passed / 0 failed**（dsh 测试 24 个）；
   `cargo clippy` 对 dsh.rs 零告警；`dsh.rs` rustfmt 干净；`npx svelte-check` 0 错误；`npx vite build` 成功。
 - **zstd 炸弹实测**：构造 16 KB → 512 MB（压缩比 32000:1）的恶意文件，
   在 8 MB / 64 MB / 256 MB 三档上限下耗时 31 ms / 198 ms / 1.01 s **严格线性增长**，
@@ -212,10 +212,36 @@
   会话日志仅落在 Windows 侧；WSL 侧 `.dsh/sessions` 存在但无用量记录。
 - **已知限制**：成本为按公开价目表的**估算**（`cost_estimated = true`），
   与 dsh 实际计费（`volcanoagentplan` 渠道价）可能有偏差；
-  缓存读取（`cacheReadTokens`）按输入费率计入——`compute_cost` 现有实现即如此，
-  真实缓存折扣因模型而异，故 $285.66 可能偏高；
   WSL 侧仅经 `existing_dotdirs` 通用路径扫描，未针对 dsh 单独验证读取性能；
   若 dsh 后续把 model 移出 `message.source`，需回退到"未标记模型"。
+
+---
+
+## 6.5 缓存计价修正（由想法 5 衍生，全局影响）— 状态：✅ 已实施
+
+- **问题**：`pricing::compute_cost` 的文档声称"cache_read 按输入费率计"，
+  但**函数体根本没读 `cache_read` 字段**。真正把缓存并入输入的是 4 处调用方
+  （`claude.rs` / `codex.rs` / `delta.rs` / `dsh.rs`），它们都写成
+  `input + cache_read` 合并后传 `cache_read: 0.0`——折扣永远不会生效。
+- **实测影响面远大于 dsh**：本机缓存占比 **dsh 80–97.9%**、**claude-code 93.3%**，
+  按全价计费导致 dsh 总额**高估 86.6%**。claude-code 同样被高估，只是长期未被察觉。
+- **修正（用户确认：全局修正 + 0.1× 系数）**：
+  - `pricing.rs` 新增具名常量 `CACHE_READ_DISCOUNT = 0.1`（Anthropic / OpenAI /
+    DeepSeek 等公开价目表的通行倍率），`compute_cost` 改为真正读取 `cache_read` 并按折扣计价。
+  - 4 处调用方不再手工合并，改为分别传入 `input` 与 `cache_read`。
+  - 前端 `currency.ts` 同步（否则前后端会对同一份数据给出不同成本）。
+- **为什么不做成"按模型逐个设 cache 费率"**：那需要为 `PRICE_TABLE` 每一行补真实公布费率，
+  编造看起来精确的数字比诚实的统一近似更糟——成本本就标注为估算值。
+- **修正效果（真实数据，独立重算与 scan 输出一致）**：
+
+  | 模型 | 修正前 | 修正后 |
+  |---|---|---|
+  | `MiniMax-M3` | $285.66 | **$38.87** |
+  | `deepseek-v4-flash` | $8.81 | **$2.67** |
+  | **合计** | **$294.47** | **$41.54** |
+
+- **回归防护**：新增 3 个定价测试——折扣费率本身、"预合并必然多收"、零缓存不扰动已有结果。
+- **注意**：这会**下调 claude-code / codex 等所有工具的历史成本数字**（用户已知悉并确认）。
 
 ---
 

@@ -171,11 +171,16 @@ pub fn scan() -> LocalToolReport {
         if m.cost > 0.0 {
             continue;
         }
-        let input: f64 = m.daily.iter().map(|d| d.input + d.cache_read).sum();
+        // Cache reads are billed at a discount by `compute_cost`, so they must
+        // be passed through separately. Pre-merging them into `input` would
+        // charge them at the full input rate — with cache at 80-98% of real
+        // traffic that inflated the estimate badly.
+        let input: f64 = m.daily.iter().map(|d| d.input).sum();
+        let cache_read: f64 = m.daily.iter().map(|d| d.cache_read).sum();
         let output: f64 = m.daily.iter().map(|d| d.output).sum();
         if let Some(cost) = crate::pricing::compute_cost(&crate::providers::TokenBreakdown {
             input,
-            cache_read: 0.0,
+            cache_read,
             output,
             model_id: Some(m.model.clone()),
         }) {

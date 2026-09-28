@@ -186,10 +186,18 @@ function isGeneric(model: string): boolean {
 }
 
 /**
+ * Cache-read tokens bill at a fraction of the input rate. Mirrors the backend's
+ * `CACHE_READ_DISCOUNT` — the two must stay in sync or the same breakdown would
+ * price differently on each side.
+ */
+const CACHE_READ_DISCOUNT = 0.1;
+
+/**
  * Estimate the USD cost of a `TokenBreakdown`. Returns `null` when the model is
  * unknown, missing, or bare (no price identity) — mirroring the backend guard,
- * so callers can show "成本未知" instead of a guess. Cache-read tokens bill at
- * the input rate.
+ * so callers can show "成本未知" instead of a guess. Cache reads bill at
+ * `CACHE_READ_DISCOUNT` × the input rate, so they are passed separately rather
+ * than folded into `input`.
  */
 export function estimateCostUsd(tokens: {
   input: number;
@@ -210,9 +218,10 @@ export function estimateCostUsd(tokens: {
   const pair = PRICE_TABLE.find(([prefix]) => norm.startsWith(prefix));
   if (!pair) return null;
   const [_, tier] = pair;
-  const inputCost = (tokens.input + (tokens.cache_read ?? 0)) / 1_000_000 * tier.inputPer1m;
+  const inputCost = tokens.input / 1_000_000 * tier.inputPer1m;
+  const cacheCost = (tokens.cache_read ?? 0) / 1_000_000 * tier.inputPer1m * CACHE_READ_DISCOUNT;
   const outputCost = tokens.output / 1_000_000 * tier.outputPer1m;
-  return inputCost + outputCost;
+  return inputCost + cacheCost + outputCost;
 }
 
 // Rate bootstrap: preload the effective table once per window, then follow
