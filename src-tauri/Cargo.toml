@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "token-usage-monitor"
 version = "0.1.0"
 description = "Lightweight transparent desktop widget for AI token usage monitoring"
@@ -65,6 +65,7 @@ toml = "0.8"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+mdns-sd = "0.21.4"
 
 [features]
 # This feature is used for production builds or when `devUrl` points to the filesystem

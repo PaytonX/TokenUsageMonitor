@@ -64,9 +64,10 @@ pub struct Settings {
     /// Currency code used to render estimated costs (USD/CNY/...). Display-only.
     #[serde(default = "default_display_currency")]
     pub display_currency: String,
-    /// Multi-device hub role: "off" | "hub" | "agent". "hub" listens on
+    /// Multi-device hub role: "off" | "hub" | "agent" | "lan". "hub" listens on
     /// `hub_port` for other instances to report; "agent" reports up to
-    /// `hub_base`. Default off.
+    /// `hub_base`; "lan" additionally discovers same-subnet peers via mDNS and
+    /// reports to each of them (full mesh). Default off.
     #[serde(default = "default_hub_mode")]
     pub hub_mode: String,
     /// Local port the hub listener binds to when `hub_mode == "hub"`.

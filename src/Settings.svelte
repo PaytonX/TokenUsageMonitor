@@ -1009,19 +1009,40 @@ async function handleMinimize() {
 
           <div class="section">
             <h3 class="section__title">多端同步</h3>
-            <p class="hint">本机作为 hub 接收其它设备上报；或以 agent 把本机用量上报到指定 hub。改动需重启应用生效。</p>
+            <p class="hint">本机作为 hub 接收其它设备上报；或以 agent 把本机用量上报到指定 hub；或用局域网模式自动发现同网段设备并互相同步。改动需重启应用生效。</p>
             <label class="interval">
               <select class="interval-select" bind:value={hubMode}>
                 <option value="off">关闭</option>
+                <option value="lan">局域网模式（自动发现同网段设备）</option>
                 <option value="hub">本机作为 hub（接收上报）</option>
                 <option value="agent">作为 agent（上报到远端 hub）</option>
               </select>
             </label>
-            {#if hubMode === "hub"}
+            {#if hubMode === "hub" || hubMode === "lan"}
               <label class="interval">
                 <input type="number" min="1024" max="65535" bind:value={hubPort} />
                 <span class="interval__hint">监听端口（默认 43210）</span>
               </label>
+            {/if}
+            {#if hubMode === "lan"}
+              <p class="hint">
+                同一局域网内的实例会通过 mDNS 自动互相发现并互相同步，无需填写任何地址。
+                每台机器都会在设备页看到全部同网段设备。跨网段（不同路由器 / 办公网与家中）无法通过 mDNS 发现，
+                请改用「作为 agent」手动填写 hub 地址，或把其中一台设为 hub。
+              </p>
+              <div class="behavior-row">
+                <div class="behavior-info">
+                  <span class="behavior-label">上报本机用量</span>
+                  <span class="behavior-hint">每 30 秒向每个已发现的同网段设备上报；本机同时也会接收它们的用量。</span>
+                </div>
+                <label class="toggle">
+                  <input type="checkbox" bind:checked={reportOn} />
+                  <span class="toggle__track"><span class="toggle__thumb"></span></span>
+                </label>
+              </div>
+              <p class="hint">
+                首次启用时若共享密钥为空，会自动生成并保存。其它设备需填写<strong>同一密钥</strong>才能互相同步。
+              </p>
             {/if}
             {#if hubMode === "agent"}
               <label class="interval">

@@ -14,6 +14,7 @@ pub mod ipc;
 pub mod hub;
 pub mod local;
 pub mod notify;
+pub mod p2p;
 pub mod pricing;
 pub mod providers;
 pub mod scheduler;
@@ -373,14 +374,18 @@ pub fn run() {
             // 次（每设备一行 upsert），让 hub 与 agent 的数据口径一致。
             {
                 let start = settings_store.read_blocking();
-                if start.hub_mode == "hub" {
-                    // 鉴权默认安全：启用 hub 时若尚未配置共享密钥，自动生成一个
+                // `lan` 模式 = hub 的监听 + mDNS 发现对端并向每个对端上报。
+                // 规模在 10 台以内，全连接下每台一跳即可拿到全量设备，因此
+                // 不做多跳转发（会引入重复计数与环路风险）。
+                let serves = start.hub_mode == "hub" || start.hub_mode == "lan";
+                if serves {
+                    // 鉴权默认安全：启用时若尚未配置共享密钥，自动生成一个
                     // 并立刻落盘。过去留空即放行，局域网内等同无鉴权。
                     //
                     // 只在"从未配置过"时生成：用户若在设置页显式清空该字段
                     // （有意关闭鉴权），说明这是主动选择，不应被覆盖。因此
-                    // 用一个独立的 `hub_token_set` 标记区分"未设置"与"清空"，
-                    // 避免每次启动都把用户清空的值又填回去。
+                    // 用一个独立的 `hub_token_configured` 标记区分"未设置"与
+                    // "清空"，避免每次启动都把用户清空的值又填回去。
                     let hub_start = if start.hub_token.trim().is_empty()
                         && !start.hub_token_configured
                     {
@@ -416,7 +421,7 @@ pub fn run() {
                             tokio::time::sleep(std::time::Duration::from_secs(6)).await;
                             loop {
                                 let s = settings_self.read_blocking();
-                                if s.hub_mode == "hub" {
+                                if s.hub_mode == "hub" || s.hub_mode == "lan" {
                                     let device =
                                         build_self_device(&local_self, s.accounts.len() as u64)
                                             .await;
@@ -428,6 +433,48 @@ pub fn run() {
                             }
                         });
                     }
+                }
+                // mDNS 局域网发现：仅 lan 模式启用。启动失败或网络不支持组播
+                // 时 discovery.peers() 恒为空，自动退化为"只用手动 hub"，
+                // 不影响既有功能。
+                if start.hub_mode == "lan" {
+                    let (self_id, _, _, _, _) = hub::machine_info();
+                    // Discovery 内部自带后台线程持续接收 mDNS 事件，这里只需
+                    // 周期读取其快照，因此可以直接在异步任务里轮询，无需跨
+                    // 线程搬运。
+                    let discovery = Arc::new(p2p::Discovery::start(self_id, start.hub_port));
+                    let local_mesh = local.clone();
+                    let settings_mesh = settings_store.clone();
+                    let http_mesh = http.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                        loop {
+                            let s = settings_mesh.read_blocking();
+                            if s.hub_mode == "lan" && s.report_on {
+                                let token = s.hub_token.clone();
+                                let peers = discovery.peers();
+                                if !peers.is_empty() {
+                                    let device =
+                                        build_self_device(&local_mesh, s.accounts.len() as u64)
+                                            .await;
+                                    let client = http_mesh.read().await.clone();
+                                    for peer in peers {
+                                        // 对端若为旧版本（无鉴权），带 token 会被拒；
+                                        // 忽略结果即可，下个周期会因对端下线而消失。
+                                        let base = format!("http://{}", peer.addr);
+                                        let _ = hub::report_to_hub(
+                                            &client,
+                                            &base,
+                                            &device,
+                                            &token,
+                                        )
+                                        .await;
+                                    }
+                                }
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        }
+                    });
                 }
                 if start.hub_mode == "agent" && start.report_on {
                     let store_reporter = store.clone();
