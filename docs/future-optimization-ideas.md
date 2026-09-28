@@ -6,7 +6,7 @@
 
 ---
 
-## 1. hover 详情弹窗改回贴附卡片形态 — 状态：待办（已评估，维持现状）
+## 1. hover 详情弹窗改回最初模式 — 状态：✅ 已实施（`730b953`，底部停靠覆盖热力图）
 
 **想法原文**：「主界面，但鼠标滑到卡片上的弹窗，感觉还是最初的模式好一些，需要改回去」
 
@@ -26,6 +26,18 @@
 **⚠️ 已评估并回退（`4fc5e70` 实施 → `06b448d` 撤回）**：曾按「详情参与卡片文档流、卡片长高容纳内容」实现贴附形态，替代绝对定位溢出（该方案在 `.shell` overflow:hidden + `.shell__cards` overflow-y:auto 两层裁切下确实不裁切，且经隔离 HTML 实测三个边界场景均为「卡片自溢出 false」）。但实机验证后确认**观感不符并已完整回退**：hover 会使卡片增高、下方列表重排，与预期不符。当前维持窗口级浮层（`detail-overlay`：先测量再显示、视口夹取与上下翻转、350ms 宽限期、飞入过渡），provider logo 优化不受影响。
 
 **若日后重做此条，需注意的取舍**：贴附形态无法同时满足「不重排」与「不裁切」——`4fc5e70` 选择了不裁切（代价是重排）。要两者兼得只能走第三个方向：浮层贴附卡片边缘但不占布局（如锚定到卡片右侧、随卡片滚动），而非让卡片长高。
+
+**✅ 实施结果（提交 `730b953`）**：**不是**让详情卡参与卡片布局把卡片撑高（那是第一次的误解），
+而是恢复"hover 时用详情**覆盖底部热力图区域**"的最初形态。
+
+- **最终几何**：浮层停靠在窗口底部，左右满宽（`bottom: 48px`、`left/right: 14px`），
+  正好压在主界面热力图上方，鼠标移开即让位给热力图。
+- **保留的能力**：先测量后显示（`ResizeObserver`）、视口夹取与上下翻转、350 ms 离开宽限、
+  `fly` 入场动画、provider logo。
+- **穿透**：浮层 `pointer-events: none`，避免遮挡下方热力图的 hover 交互。
+- **定位方式**：通过 `git log -S` 回溯历史形态，确认真正的"最初模式"对应提交 `dc5992e`
+  （详情停靠底部覆盖热力图），而非 `44a6ba3`（贴附在卡片内）。
+- 迭代过程：`4fc5e70` 曾误实现为"贴附卡片、卡片增高"，经用户两次澄清后由 `730b953` 纠正。
 
 ---
 
@@ -105,13 +117,53 @@
 
 ---
 
-## 5. 新增工具适配器：DeepSeek harness / Trae CN — 状态：待办（数据源待确认）
+## 5. 新增工具适配器：DeepSeek harness / Trae CN — 状态：🟡 DeepSeek Harness 已实施（走本地日志型）／ Trae CN 挂起（本地无数据）
 
 **想法原文**：「工具支持添加：DeepSeek harness支持 / Trae CN 支持」
 
 **现状定位**：`src-tauri/src/providers/mod.rs` Provider trait（L506-522）、PRESETS（L171-288）、PROVIDER_REGISTRY（L591-616，12 个 kind）、L643-693 注册表自检单测。既有 7 步新增适配器清单：新建模块 → mod 声明 → PRESETS → PROVIDER_REGISTRY → 前端 `src/lib/types.ts` L340-356 SHORT_KIND_NAMES → `src/lib/brand-glyphs.ts` L13-36 BRAND_GLYPHS/EXPERIMENTAL_KINDS → 单测。
 
-**待决问题**：两者的用量数据源（API 端点 / 本地日志格式）需先确认，才能定走 API 型（Provider trait）还是本地日志型（local/ 模块）。
+**数据源调研结论**：
+
+- **DeepSeek Harness** → 有数据，走**本地日志型**（`local/` 模块），非 Provider trait。
+  会话日志位于 `~/.dsh/sessions/<项目>/<会话>/session.v{3,4}.jsonl.zstd`（**zstd 压缩的 JSONL**）。
+  实测本机 2 个 Windows 项目 + 1 个 WSL 项目、11 个会话目录、14 个会话文件（7 个 v3 + 7 个 v4）。
+- **Trae CN** → **本地拿不到 token 用量**，无法实现。目录 `AppData\Roaming\TRAE SOLO CN` 是 VS Code fork，
+  核心数据在 `state.vscdb` / `workspaceStorage` / `IndexedDB`；扫描 897 个文件后
+  `totalTokens` / `inputTokens` / `outputTokens` / `promptTokens` / `cachedTokens` **命中全为 0**。
+  大量 `usage` 命中实为 `"saas_usage": {"max": null, "default": null}` 配额配置，不是消耗记录。
+  → **继续挂起**，除非官方后续提供本地用量落盘。
+
+**✅ DeepSeek Harness 实施结果（用户选定「只做 DeepSeek harness」）**：
+
+- **新增 `local/dsh.rs`**，扫描器 id `deepseek-harness`，显示名「DeepSeek Harness」，接入 `TOOL_IDS`（6 个）、`scan_all` 并行扫描、`scan_tool` 分派、`cache.rs` 的 `tool_installed` / `tool_recently_active` / `tool_fingerprint`（新增 zstd 遍历）。
+- **数据格式要点**：用量**嵌套在流式 chunk 里**而非行根——
+  `{"type":"assistant/attempt","time":<epoch ms>,"data":{"stream":[{"chunk":{"type":"usage","usage":{...}}}]}}`；
+  字段为 `inputTokens` / `outputTokens` / `totalTokens`，时间戳是 epoch 毫秒。
+- **三个关键取舍**：
+  1. **重试取最后一个 usage chunk**：同一次 attempt 会流式推送多次 usage，取末位才是结算值，取首位会少算。
+  2. **自行计算 input+output，不信 `totalTokens`**：失败请求也会写 totalTokens，照抄会混入不该计费的部分。
+  3. **全零 usage 直接跳过**：本机 API key 已失效（`The API key format is incorrect`），
+     真实日志里 usage 全为 0——跳过而非计成 0 行，避免用假数据掩盖真实故障。
+- **v3/v4 去重（真机实证）**：dsh 升级时会把 v3 与 v4 并列写进同一会话目录。
+  实测 11 个会话目录中有 3 个同时含 v3+v4。**逐事件比对确认 v4 是 v3 的严格超集**（`only-in-v3 = 0`，
+  v4 事件数 ≥ v3），因此只读最高版本既不丢数据，又避免 token 与会话数翻倍。
+  真机扫描 `session_count=13`、`project_count=3` 与磁盘结构精确吻合（Windows 11 + WSL 2）。
+- **安全：解压上限约束的是"解压后输出"**（初版误套在压缩输入上，形同虚设）。
+  限流器置于 decoder 之外，多读 1 字节以判超限；超限整份丢弃而非返回截断内容——
+  否则会把残缺会话当完整数据解析，悄悄少算。
+- **未标记模型**：`data.model` 在实测版本中不存在，token 落入 `UNCLASSIFIED_MODEL`（"未标记模型"）桶，
+  保证按模型视图与按日总量能对账，不臆测模型名。
+- **验证（2026-09-28）**：`cargo test` **157 passed / 0 failed**（新增 15 个 dsh 测试）；
+  `cargo clippy` 对 dsh.rs 零告警；`dsh.rs` rustfmt 干净；`npx svelte-check` 0 错误；`npx vite build` 成功。
+- **zstd 炸弹实测**：构造 16 KB → 512 MB（压缩比 32000:1）的恶意文件，
+  在 8 MB / 64 MB / 256 MB 三档上限下耗时 31 ms / 198 ms / 1.01 s **严格线性增长**，
+  证明内存被上限钳住、且限流确实作用在解压输出端（而非碰巧因文件损坏而失败）。
+- **前端零改动**：`ToolPanel` / `ToolWindow` / `ModelPanel` 的工具名与 id **全部由后端 `get_local_tools` 驱动**，
+  组件内无任何工具 id 硬编码，新增工具不需要前端映射。品牌色沿用 `local` 的灰色。
+- **已知限制**：模型归属依赖 `data.model`，实测版本缺失，故暂无按模型拆分；
+  真实用量需先修复 dsh 的 API key 才能看到数字；WSL 侧仅经 `existing_dotdirs` 通用路径扫描，
+  未针对 dsh 单独验证读取性能。
 
 ---
 

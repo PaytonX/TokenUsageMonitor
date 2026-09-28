@@ -28,6 +28,10 @@ pub fn src_fingerprint() -> String {
     for root in super::wsl::existing_dotdirs(".codex/sessions") {
         hash_jsonl_tree(&root, &mut hasher);
     }
+    // 2b) DeepSeek Harness sessions (zstd-compressed JSONL).
+    for root in super::wsl::existing_dotdirs(".dsh/sessions") {
+        hash_session_tree_with_zstd(&root, &mut hasher);
+    }
     // 3) Hermes SQLite (+ its WAL/shm side files).
     for hermes in super::wsl::existing_dotdirs(".hermes") {
         for name in ["state.db", "state.db-wal", "state.db-shm"] {
@@ -58,6 +62,27 @@ fn hash_jsonl_tree(dir: &Path, hasher: &mut DefaultHasher) {
     }
 }
 
+/// Same as [`hash_jsonl_tree`] but also matches dsh's `*.jsonl.zstd` session
+/// files. Kept separate rather than widening the former, which is shared with
+/// Claude Code / Codex and must keep hashing plain JSONL only.
+fn hash_session_tree_with_zstd(dir: &Path, hasher: &mut DefaultHasher) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            hash_session_tree_with_zstd(&path, hasher);
+        } else if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".jsonl") || n.ends_with(".jsonl.zstd"))
+        {
+            hash_file(&path, hasher);
+        }
+    }
+}
+
 /// 计算单个工具的源指纹（metadata 级），用于 watch 判定"该工具日志是否变化"。
 /// 未变 → 工具也不重扫；变了 → 仅重扫该工具（增量）。
 pub fn tool_fingerprint(tool_id: &str) -> String {
@@ -71,6 +96,11 @@ pub fn tool_fingerprint(tool_id: &str) -> String {
         "codex" => {
             for root in super::wsl::existing_dotdirs(".codex/sessions") {
                 hash_jsonl_tree(&root, &mut hasher);
+            }
+        }
+        "deepseek-harness" => {
+            for root in super::wsl::existing_dotdirs(".dsh/sessions") {
+                hash_session_tree_with_zstd(&root, &mut hasher);
             }
         }
         "hermes" => {
@@ -102,6 +132,7 @@ pub fn tool_installed(tool_id: &str) -> bool {
         "claude-code" => !super::wsl::existing_dotdirs(".claude/projects").is_empty(),
         "codex" => !super::wsl::existing_dotdirs(".codex/sessions").is_empty(),
         "hermes" => !super::wsl::existing_dotdirs(".hermes").is_empty(),
+        "deepseek-harness" => !super::wsl::existing_dotdirs(".dsh/sessions").is_empty(),
         "cherry-studio" => cherry_db().is_some(),
         "minimax-code" => !minimax_dbs().is_empty(),
         _ => false,
@@ -143,6 +174,7 @@ pub fn tool_last_active_at(tool_id: &str) -> Option<i64> {
         "claude-code" => newest_of_dirs(&super::wsl::existing_dotdirs(".claude/projects")),
         "codex" => newest_of_dirs(&super::wsl::existing_dotdirs(".codex/sessions")),
         "hermes" => newest_of_dirs(&super::wsl::existing_dotdirs(".hermes")),
+        "deepseek-harness" => newest_of_dirs(&super::wsl::existing_dotdirs(".dsh/sessions")),
         "cherry-studio" => cherry_db().and_then(|db| newest_of_files(&[db])),
         "minimax-code" => newest_of_files(&minimax_dbs()),
         _ => None,
