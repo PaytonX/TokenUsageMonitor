@@ -341,6 +341,16 @@ pub async fn poll_one(
     let mut guard = state.state.write().await;
     match result {
         Ok(snapshot) => {
+            // A successful poll re-arms error reporting: if this provider later
+            // breaks the same way, that is new information rather than a repeat
+            // of a failure the user has already seen and that we have since
+            // recovered from.
+            state
+                .error_deduper
+                .lock()
+                .await
+                .clear(&id);
+
             // Burn + active share one baseline with manual refresh.
             let (burn, active) = {
                 let mut tracker = state.burn.lock().await;
@@ -382,10 +392,19 @@ pub async fn poll_one(
             );
         }
         Err(err) => {
-            let _ = app.emit(
-                "provider-error",
-                &serde_json::json!({ "id": id, "error": &err }),
-            );
+            // Only the first failure inside the cool down reaches the frontend.
+            // Without this a provider that stays offline emits one event per
+            // poll forever, and the frontend re-renders an identical error card
+            // on every tick. The provider state below is still updated every
+            // time: this only gates the event, not the recorded last_error.
+            let message = err.to_string();
+            let should_emit = state.error_deduper.lock().await.should_emit(&id, &message);
+            if should_emit {
+                let _ = app.emit(
+                    "provider-error",
+                    &serde_json::json!({ "id": id, "error": &message }),
+                );
+            }
             // Keep the last good snapshot: stale data + error badge beats an
             // empty card during a transient API outage.
             let entry = guard.entry(id.clone()).or_default();

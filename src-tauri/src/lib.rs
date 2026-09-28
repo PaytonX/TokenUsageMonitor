@@ -26,7 +26,7 @@ pub mod storage;
 use providers::{
     AccountMeta, Credentials, ProviderRegistry, SharedProviderState,
 };
-use notify::SharedNotifyState;
+use notify::{SharedErrorDeduper, SharedNotifyState};
 use reqwest::Client;
 use scheduler::SharedBurnTracker;
 use std::collections::HashMap;
@@ -57,6 +57,9 @@ pub struct AppState {
     pub burn: SharedBurnTracker,
     /// Threshold notification dedupe state (one warn + one crit per window).
     pub notify: SharedNotifyState,
+    /// Error-event dedupe state. Keeps a persistently failing provider from
+    /// re-emitting `provider-error` on every single poll.
+    pub error_deduper: SharedErrorDeduper,
     /// Pause flag broadcast. `toggle_polling` flips it; polling tasks
     /// subscribe and skip ticks while the latest value is true.
     pub pause_tx: Arc<watch::Sender<bool>>,
@@ -334,6 +337,8 @@ pub fn run() {
                 Arc::new(tokio::sync::Mutex::new(Default::default()));
             let notify_state: SharedNotifyState =
                 Arc::new(tokio::sync::Mutex::new(Default::default()));
+            let error_deduper: SharedErrorDeduper =
+                Arc::new(tokio::sync::Mutex::new(Default::default()));
             // Local-tool usage cache (Claude Code logs).
             let local: local::SharedLocalCache =
                 Arc::new(local::LocalCache::new());
@@ -598,6 +603,7 @@ pub fn run() {
                 settings: Arc::new(settings_store),
                 burn,
                 notify: notify_state,
+                error_deduper,
                 pause_tx,
                 settings_wake,
                 http,
