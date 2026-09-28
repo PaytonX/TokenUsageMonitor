@@ -272,6 +272,10 @@ export interface Settings {
   report_on: boolean;
   /** Shared secret the hub requires (Bearer). Empty = no auth. */
   hub_token: string;
+  /** Whether the user has ever explicitly set `hub_token` (even to "").
+   *  Absent in older configs, which means "never set" → the backend mints a
+   *  secret on first hub start. Saved as `true` on every settings write. */
+  hub_token_configured?: boolean;
   /** 用户手动覆盖的汇率（币种代码 → 每 1 USD 兑该币种数值）。非法值后端忽略。 */
   rate_overrides: Record<string, number>;
   /** Optional outbound proxy (http/https/socks5). Null/empty/blank = direct.

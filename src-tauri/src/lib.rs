@@ -202,6 +202,23 @@ async fn cached_tool_count(local: &local::SharedLocalCache) -> u64 {
     }
 }
 
+/// 组装本机的 hub 上报快照。hub 与 agent 两种角色共用，保证两边上报的
+/// 数据口径完全一致——否则同一台设备在两种角色下会在汇总端呈现出
+/// 不同的 provider / tool 数量。
+async fn build_self_device(
+    local: &local::SharedLocalCache,
+    account_count: u64,
+) -> hub::HubDevice {
+    let tool_tokens = cached_tool_tokens(local).await;
+    let tool_count = cached_tool_count(local).await;
+    let daily = hub::tool_daily_from_cache(local).await;
+    let (id, host, os, arch, ver) = hub::machine_info();
+    hub::build_device_usage(
+        &id, &host, &os, &arch, &ver,
+        tool_tokens, account_count, tool_count, daily,
+    )
+}
+
 /// 从托盘恢复主面板：显示 + 聚焦；若此前处于 compact 胶囊态，把贴边把手
 /// 一并拉起并对齐（close-to-tray 会把把手一起隐藏，否则胶囊无法被唤醒）。
 fn show_dashboard(app: &AppHandle) {
@@ -349,10 +366,68 @@ pub fn run() {
 
             // 多端同步 hub（B8）：hub 模式在本机端口提供 ingest/devices 服务；
             // agent 模式定期把本机用量上报到远端 hub。
+            //
+            // hub 节点同样会把自己的用量写入本地 hub_devices 表：汇总端
+            // 读取的正是这张表，若 hub 自身不入表，设备页就看不到这台机器
+            // ——汇总者反而把自己漏掉了。这里不走上报循环，只在启动时写一
+            // 次（每设备一行 upsert），让 hub 与 agent 的数据口径一致。
             {
                 let start = settings_store.read_blocking();
                 if start.hub_mode == "hub" {
-                    hub::spawn_hub_server(store.clone(), start.hub_port, start.hub_token.clone());
+                    // 鉴权默认安全：启用 hub 时若尚未配置共享密钥，自动生成一个
+                    // 并立刻落盘。过去留空即放行，局域网内等同无鉴权。
+                    //
+                    // 只在"从未配置过"时生成：用户若在设置页显式清空该字段
+                    // （有意关闭鉴权），说明这是主动选择，不应被覆盖。因此
+                    // 用一个独立的 `hub_token_set` 标记区分"未设置"与"清空"，
+                    // 避免每次启动都把用户清空的值又填回去。
+                    let hub_start = if start.hub_token.trim().is_empty()
+                        && !start.hub_token_configured
+                    {
+                        let mut s = start.clone();
+                        s.hub_token = settings::generate_hub_token();
+                        s.hub_token_configured = true;
+                        // `setup` runs synchronously on the main thread before
+                        // the event loop starts, so there is no concurrent
+                        // writer; blocking here cannot deadlock on the RwLock.
+                        if let Err(e) =
+                            tauri::async_runtime::block_on(settings_store.save(s.clone()))
+                        {
+                            eprintln!("[hub] failed to persist generated token: {e}");
+                        }
+                        s
+                    } else {
+                        start.clone()
+                    };
+                    let bound = hub::spawn_hub_server(
+                        store.clone(),
+                        hub_start.hub_port,
+                        hub_start.hub_token.clone(),
+                    );
+                    if bound {
+                        let store_self = store.clone();
+                        let local_self = local.clone();
+                        let settings_self = settings_store.clone();
+                        tauri::async_runtime::spawn(async move {
+                            // 周期刷新本机记录（与 agent 上报同为 30s），而不是
+                            // 启动时写一次：本地工具扫描需要预热，只写一次会永远
+                            // 留下一份 token 合计为 0 的空快照，且当天的用量增长也
+                            // 不会反映到设备页。upsert 按 device_id 覆盖同一行。
+                            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                            loop {
+                                let s = settings_self.read_blocking();
+                                if s.hub_mode == "hub" {
+                                    let device =
+                                        build_self_device(&local_self, s.accounts.len() as u64)
+                                            .await;
+                                    if let Err(e) = store_self.upsert_hub_device(&device) {
+                                        eprintln!("[hub] self ingest failed: {e}");
+                                    }
+                                }
+                                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                            }
+                        });
+                    }
                 }
                 if start.hub_mode == "agent" && start.report_on {
                     let store_reporter = store.clone();
@@ -366,15 +441,9 @@ pub fn run() {
                             if s.report_on && s.hub_mode == "agent" && !s.hub_base.is_empty() {
                                 let base = s.hub_base.clone();
                                 let token = s.hub_token.clone();
-                                let tool_tokens = cached_tool_tokens(&local_reporter).await;
-                                let tool_count = cached_tool_count(&local_reporter).await;
-                                let daily = hub::tool_daily_from_cache(&local_reporter).await;
-                                let provider_count = s.accounts.len() as u64;
-                                let (id, host, os, arch, ver) = hub::machine_info();
-                                let device = hub::build_device_usage(
-                                    &id, &host, &os, &arch, &ver,
-                                    tool_tokens, provider_count, tool_count, daily,
-                                );
+                                let device =
+                                    build_self_device(&local_reporter, s.accounts.len() as u64)
+                                        .await;
                                 let client = http_reporter.read().await.clone();
                                 let _ = hub::report_to_hub(
                                     &client,

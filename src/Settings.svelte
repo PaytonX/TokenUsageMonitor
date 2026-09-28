@@ -438,6 +438,11 @@
         hub_base: hubBase,
         report_on: reportOn,
         hub_token: hubToken,
+        // Mark it as "the user has made a choice about the secret" — including
+        // choosing an empty one to run without auth. Without this flag the
+        // backend would mint a secret on every hub start, undoing a
+        // deliberately cleared field.
+        hub_token_configured: true,
         rate_overrides: buildRateOverrides(),
         proxy_url: proxyEnabled && proxyUrl.trim() ? proxyUrl.trim() : null,
       };

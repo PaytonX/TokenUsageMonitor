@@ -4456,6 +4456,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dirs 5.0.1",
+ "getrandom 0.3.4",
  "hex",
  "hmac",
  "keyring",
