@@ -137,9 +137,10 @@
 **✅ DeepSeek Harness 实施结果（用户选定「只做 DeepSeek harness」）**：
 
 - **新增 `local/dsh.rs`**，扫描器 id `deepseek-harness`，显示名「DeepSeek Harness」，接入 `TOOL_IDS`（6 个）、`scan_all` 并行扫描、`scan_tool` 分派、`cache.rs` 的 `tool_installed` / `tool_recently_active` / `tool_fingerprint`（新增 zstd 遍历）。
-- **数据格式要点**：用量**嵌套在流式 chunk 里**而非行根——
-  `{"type":"assistant/attempt","time":<epoch ms>,"data":{"stream":[{"chunk":{"type":"usage","usage":{...}}}]}}`；
-  字段为 `inputTokens` / `outputTokens` / `totalTokens`，时间戳是 epoch 毫秒。
+- **数据格式要点（⚠ 经真机修正，见下）**：dsh 存在**两种 usage 载体**——
+  旧版 `assistant/attempt` 的 `data.stream[].chunk.type == "usage"`，
+  以及现行 `assistant/message` 的 `data.usage` 直挂。
+  字段为 `inputTokens` / `outputTokens` / `cacheReadTokens` / `totalTokens`，时间戳是 epoch 毫秒。
 - **三个关键取舍**：
   1. **重试取最后一个 usage chunk**：同一次 attempt 会流式推送多次 usage，取末位才是结算值，取首位会少算。
   2. **自行计算 input+output，不信 `totalTokens`**：失败请求也会写 totalTokens，照抄会混入不该计费的部分。
@@ -150,12 +151,26 @@
   实测 11 个会话目录中有 3 个同时含 v3+v4。**逐事件比对确认 v4 是 v3 的严格超集**（`only-in-v3 = 0`，
   v4 事件数 ≥ v3），因此只读最高版本既不丢数据，又避免 token 与会话数翻倍。
   真机扫描 `session_count=13`、`project_count=3` 与磁盘结构精确吻合（Windows 11 + WSL 2）。
+- **⚠ 格式修正（2026-09-28，真机实测发现严重漏读）**：
+  初版只解析 `assistant/attempt`。在**正在使用的** dsh v4 会话里该事件数为 **0**，
+  真实用量挂在 `assistant/message` 的 `data.usage` 上——实测两载体数量为 **921 : 24**，
+  即初版漏读约 **97%** 的数据，且因历史数据恰好多为零，**表面看不出任何异常**。
+  这是本次实施中最危险的缺陷：静默少算比报错更难发现。
+  - **两载体时间戳无交集**（attempt 描述一次请求的结算，message 描述每步回复的用量），
+    因此**只能取其一、不能相加**，否则同时含两种布局的会话会被重复计数。
+  - 实现改为**优先 `assistant/message`、`assistant/attempt` 仅作旧版回退**，每行至多产出一次。
+  - **`cacheReadTokens` 单列**：`totalTokens ≠ input + output`，差额正是缓存读取部分
+    （实测如 `in=403 cache=12800 out=266 total=13469`）。若把 total 当作 input+output
+    就会把缓存量并入输入，缓存与普通输入费率不同，成本会虚高。
+    现与 `claude.rs` 一致地记为 `(input, cache_read, output)` 三元组。
+  - **修复效果（同一份真实数据）**：`total_tokens` 由 **0 → 87,945,563**，
+    覆盖 5 个自然日；按日合计与总数**对账一致**；`daily with >0 = 5`（不再全空）。
 - **安全：解压上限约束的是"解压后输出"**（初版误套在压缩输入上，形同虚设）。
   限流器置于 decoder 之外，多读 1 字节以判超限；超限整份丢弃而非返回截断内容——
   否则会把残缺会话当完整数据解析，悄悄少算。
 - **未标记模型**：`data.model` 在实测版本中不存在，token 落入 `UNCLASSIFIED_MODEL`（"未标记模型"）桶，
   保证按模型视图与按日总量能对账，不臆测模型名。
-- **验证（2026-09-28）**：`cargo test` **157 passed / 0 failed**（新增 15 个 dsh 测试）；
+- **验证（2026-09-28）**：`cargo test` **161 passed / 0 failed**（dsh 测试 19 个）；
   `cargo clippy` 对 dsh.rs 零告警；`dsh.rs` rustfmt 干净；`npx svelte-check` 0 错误；`npx vite build` 成功。
 - **zstd 炸弹实测**：构造 16 KB → 512 MB（压缩比 32000:1）的恶意文件，
   在 8 MB / 64 MB / 256 MB 三档上限下耗时 31 ms / 198 ms / 1.01 s **严格线性增长**，
@@ -178,7 +193,12 @@
   该更正**不影响代码**——三类成因都产生零值，`全零即跳过` 的处理完全一致；
   但影响排查方向：换 API key 未必能恢复数字，需先确认配额与服务端状态。
   另注：WSL 侧日志中出现的 `API key` 字样均为插件文档正文的自然语言，非报错，勿混淆。
-- **已知限制**：模型归属依赖 `data.model`，实测版本缺失，故暂无按模型拆分；
+- **真实用量已可统计**：修复格式后工具页可显示实际数字（实测总计 87,945,563 tokens / 5 天）。
+- **部署形态**：DeepSeek Harness 是 **Windows 桌面应用**
+  （`AppData\Local\Programs\DeepSeek Harness`，非 CLI，故无 `dsh` 命令），
+  会话日志仅落在 Windows 侧；WSL 侧 `.dsh/sessions` 存在但无用量记录。
+- **已知限制**：模型归属依赖 `data.model`，实测版本缺失，故暂无按模型拆分
+  （`request/header` 里虽有 `model: deepseek-v4-flash`，但与 usage 行不在同一事件上，暂不跨事件关联）；
   真实用量需先修复 dsh 的 API key 才能看到数字；WSL 侧仅经 `existing_dotdirs` 通用路径扫描，
   未针对 dsh 单独验证读取性能。
 

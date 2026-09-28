@@ -2,35 +2,45 @@
 //!
 //! dsh stores one zstd-compressed JSONL per session under
 //! `~/.dsh/sessions/<project-slug>/<session-dir>/session.v{3,4}.jsonl.zstd`.
+//! We read only usage numbers and the line's `time` (epoch millis); conversation
+//! text is never touched.
 //!
-//! Unlike Claude Code / Codex, the usage record is **nested inside a stream
-//! chunk** rather than sitting on the line root:
+//! ## Two usage carriers, and why `assistant/message` is the primary one
+//!
+//! dsh has written usage in two places, and they are **not** interchangeable:
 //!
 //! ```text
+//! // legacy layout — usage is a stream chunk on an attempt record
 //! {"type":"assistant/attempt","time":1790522454929,
-//!  "data":{"stream":[
-//!    {"type":"chunk","chunk":{"type":"usage",
-//!                             "usage":{"inputTokens":N,"outputTokens":M,"totalTokens":N+M}}},
-//!    {"type":"chunk","chunk":{"type":"finish","reason":{...}}}]}}
+//!  "data":{"stream":[{"type":"chunk",
+//!                     "chunk":{"type":"usage",
+//!                              "usage":{"inputTokens":N,"outputTokens":M}}}]}}
+//!
+//! // current layout — usage sits directly on each assistant message
+//! {"type":"assistant/message","time":1790577965809,
+//!  "data":{"turn":1,"step":1,
+//!          "usage":{"inputTokens":18172,"outputTokens":2001,
+//!                   "cacheReadTokens":0,"totalTokens":20173},
+//!          "message":{...}}}
 //! ```
 //!
-//! We read only that `usage` object plus the line's `time` (epoch millis).
-//! Conversation text is never touched.
+//! Measured on a real machine, the active v4 sessions carry **921** usage
+//! records on `assistant/message` and only **24** on `assistant/attempt`. Their
+//! timestamps do not overlap: the attempt stream describes a request's
+//! settlement, while each `assistant/message` reports the per-step usage of the
+//! reply it produced. So we prefer `assistant/message` and only fall back to the
+//! attempt stream for sessions that predate it — we must **not** sum both, or
+//! sessions carrying both layouts would be counted twice.
 //!
-//! ## Why a tolerant walk instead of a fixed path
+//! ## Cache reads are tracked separately
 //!
-//! A single attempt may contain several stream chunks and the position of the
-//! `usage` chunk varies between versions (v3 vs v4 layouts differ). We scan the
-//! whole `data.stream` array for any chunk whose `type` is `usage` and take the
-//! **last** one — a retried attempt streams incremental updates, so the final
-//! chunk carries the attempt's settled totals rather than a mid-flight partial.
-//!
-//! ## A note on `totalTokens`
-//!
-//! We deliberately ignore `totalTokens` and sum `inputTokens + outputTokens`
-//! ourselves: dsh writes `totalTokens` even for failed attempts, and trusting
-//! it would mix billing-relevant and non-billing tokens if the semantics ever
-//! diverge. Zero-valued usage (e.g. a request that failed auth) is skipped so a
+//! `totalTokens` is **not** `inputTokens + outputTokens`: the difference is
+//! `cacheReadTokens`. Treating the total as input/output would silently inflate
+//! input by the cached portion, and cached tokens are billed at a different
+//! rate. We therefore read the three fields separately and keep the cache
+//! portion in its own bucket (matching how the Claude Code scanner does it).
+//! We also never trust `totalTokens` itself, since dsh writes it even for failed
+//! attempts. Zero-valued usage (auth failures, quota errors) is skipped so a
 //! broken key doesn't fabricate rows.
 
 use super::{finalize_days, finalize_models, LocalToolReport};
@@ -50,30 +60,40 @@ const KEEP_DAYS: usize = 90;
 const MAX_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Parse one decompressed JSONL line into
-/// `(input, output, local_day, model)` when it carries a dsh `usage` chunk.
-pub(crate) fn parse_line(line: &str) -> Option<(f64, f64, String, String)> {
+/// `(input, cache_read, output, local_day, model)` when it carries dsh usage.
+///
+/// Handles both carriers described in the module docs. Only one is ever
+/// returned per line, so a line can never contribute twice.
+pub(crate) fn parse_line(line: &str) -> Option<(f64, f64, f64, String, String)> {
     if !line.contains("usage") {
         return None;
     }
     let v: Value = serde_json::from_str(line).ok()?;
-    if v.get("type").and_then(|t| t.as_str()) != Some("assistant/attempt") {
-        return None;
-    }
-    let stream = v.pointer("/data/stream")?.as_array()?;
+    let kind = v.get("type").and_then(|t| t.as_str())?;
 
-    // Take the last usage chunk: retried attempts stream incremental updates,
-    // so the final one holds the settled totals for this attempt.
-    let usage = stream.iter().rev().find_map(|c| {
-        let chunk = c.get("chunk")?;
-        (chunk.get("type")?.as_str()? == "usage").then(|| chunk.get("usage"))?
-    })?;
+    let usage = match kind {
+        // Current layout: usage sits next to the message it bills.
+        "assistant/message" => v.pointer("/data/usage")?,
+        // Legacy layout: usage is the last matching chunk of the attempt stream.
+        // Retried attempts stream incremental updates, so the final chunk holds
+        // the settled totals rather than a mid-flight partial.
+        "assistant/attempt" => {
+            let stream = v.pointer("/data/stream")?.as_array()?;
+            stream.iter().rev().find_map(|c| {
+                let chunk = c.get("chunk")?;
+                (chunk.get("type")?.as_str()? == "usage").then(|| chunk.get("usage"))?
+            })?
+        }
+        _ => return None,
+    };
 
     let num = |name: &str| -> f64 { usage.get(name).and_then(|n| n.as_f64()).unwrap_or(0.0) };
     let input = num("inputTokens");
+    let cache_read = num("cacheReadTokens");
     let output = num("outputTokens");
-    // Failed attempts log a zero usage chunk; counting it would add empty rows
-    // and mask the real problem (e.g. an invalid API key).
-    if input <= 0.0 && output <= 0.0 {
+    // Failed attempts log a zero usage record; counting it would add empty rows
+    // and mask the real problem (e.g. an invalid API key or a quota error).
+    if input <= 0.0 && cache_read <= 0.0 && output <= 0.0 {
         return None;
     }
 
@@ -83,8 +103,8 @@ pub(crate) fn parse_line(line: &str) -> Option<(f64, f64, String, String)> {
         .and_then(day_of_epoch_millis)
         .unwrap_or_default();
 
-    // dsh does not stamp the model on the attempt line. `data.model` exists in
-    // some builds; otherwise the row falls into the unclassified bucket so the
+    // The model is not stamped on the usage line itself; older builds put it on
+    // `data.model`. Otherwise the row falls into the unclassified bucket so the
     // per-model view still reconciles with the per-day total.
     let model = v
         .pointer("/data/model")
@@ -92,7 +112,7 @@ pub(crate) fn parse_line(line: &str) -> Option<(f64, f64, String, String)> {
         .unwrap_or_default()
         .to_string();
 
-    Some((input, output, date, model))
+    Some((input, cache_read, output, date, model))
 }
 
 fn day_of_epoch_millis(ms: u64) -> Option<String> {
@@ -227,12 +247,13 @@ fn aggregate_lines(
     by_model: &mut BTreeMap<String, BTreeMap<String, (f64, f64, f64)>>,
 ) {
     for line in text.lines() {
-        if let Some((input, output, date, model)) = parse_line(line) {
+        if let Some((input, cache_read, output, date, model)) = parse_line(line) {
             if date.is_empty() {
                 continue;
             }
             let e = by_day.entry(date.clone()).or_insert((0.0, 0.0, 0.0));
             e.0 += input;
+            e.1 += cache_read;
             e.2 += output;
             let model = if model.is_empty() {
                 crate::local::UNCLASSIFIED_MODEL.to_string()
@@ -242,6 +263,7 @@ fn aggregate_lines(
             let m = by_model.entry(model).or_default();
             let me = m.entry(date).or_insert((0.0, 0.0, 0.0));
             me.0 += input;
+            me.1 += cache_read;
             me.2 += output;
         }
     }
@@ -301,8 +323,7 @@ fn decompress_capped(path: &Path, limit: u64) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A realistic `assistant/attempt` line, shaped after an observed dsh v4
-    /// session: usage lives in a stream chunk, not at the line root.
+    /// Legacy layout: usage is a chunk inside an attempt's stream.
     fn line_with(chunks: &str) -> String {
         format!(
             r#"{{"type":"assistant/attempt","seq":1,"time":1790522454929,"data":{{"turn":1,"step":1,"stream":[{chunks}]}}}}"#
@@ -316,10 +337,18 @@ mod tests {
         )
     }
 
+    /// Current layout, shaped after an observed dsh v4 session: usage sits
+    /// directly on `data.usage` beside the assistant message it bills.
+    fn message_line(input: u32, cache_read: u32, output: u32, total: u32) -> String {
+        format!(
+            r#"{{"type":"assistant/message","seq":7,"time":1790577965809,"data":{{"turn":1,"step":1,"usage":{{"inputTokens":{input},"cacheReadTokens":{cache_read},"outputTokens":{output},"totalTokens":{total}}},"message":{{"role":"assistant","content":[]}}}}}}"#
+        )
+    }
+
     #[test]
     fn parses_usage_from_nested_stream_chunk() {
         let line = line_with(&usage_chunk(1200, 340));
-        let (input, output, date, model) = parse_line(&line).expect("should parse");
+        let (input, cache_read, output, date, model) = parse_line(&line).expect("should parse");
         assert_eq!(input, 1200.0);
         assert_eq!(output, 340.0);
         // 1790522454929 ms → local day; only assert non-empty and well-formed
@@ -334,7 +363,7 @@ mod tests {
     #[test]
     fn ignores_total_tokens_field() {
         let line = r#"{"type":"assistant/attempt","time":1790522454929,"data":{"stream":[{"type":"chunk","chunk":{"type":"usage","usage":{"inputTokens":10,"outputTokens":5,"totalTokens":999999}}}]}}"#;
-        let (input, output, _, _) = parse_line(line).expect("should parse");
+        let (input, _cache, output, _, _) = parse_line(line).expect("should parse");
         assert_eq!(input, 10.0);
         assert_eq!(output, 5.0);
     }
@@ -344,7 +373,7 @@ mod tests {
     #[test]
     fn takes_last_usage_chunk_on_retry() {
         let line = line_with(&format!("{},{}", usage_chunk(10, 1), usage_chunk(10, 1)));
-        let (input, output, _, _) = parse_line(&line).expect("should parse");
+        let (input, _cache, output, _, _) = parse_line(&line).expect("should parse");
         assert_eq!(input, 10.0, "must not sum chunks");
         assert_eq!(output, 1.0, "must not sum chunks");
     }
@@ -355,6 +384,54 @@ mod tests {
     fn skips_zero_usage_from_failed_attempts() {
         let line = line_with(&usage_chunk(0, 0));
         assert!(parse_line(&line).is_none(), "zero usage must be skipped");
+    }
+
+    /// The layout that actually dominates real sessions (921 records vs 24 on
+    /// a live machine). If this regresses, the tool silently reports near-zero
+    /// usage while the user is actively chatting — the worst failure mode.
+    #[test]
+    fn parses_usage_from_current_message_layout() {
+        let line = message_line(18172, 0, 2001, 20173);
+        let (input, cache_read, output, date, model) = parse_line(&line).expect("should parse");
+        assert_eq!(input, 18172.0);
+        assert_eq!(cache_read, 0.0);
+        assert_eq!(output, 2001.0);
+        assert_eq!(date.len(), 10, "expected YYYY-MM-DD, got {date}");
+        assert!(model.is_empty(), "no model stamped on this build");
+    }
+
+    /// `totalTokens` is input+output+cacheRead, NOT input+output. Folding the
+    /// cache portion into input would inflate the input rate, since cached
+    /// tokens are billed differently. This is the exact shape seen on disk.
+    #[test]
+    fn separates_cache_read_from_input() {
+        let line = message_line(403, 12800, 266, 13469);
+        let (input, cache_read, output, _, _) = parse_line(&line).expect("should parse");
+        assert_eq!(input, 403.0);
+        assert_eq!(cache_read, 12800.0);
+        assert_eq!(output, 266.0);
+        // Guard the invariant the pricing layer relies on.
+        assert_ne!(
+            input + output,
+            13469.0,
+            "totalTokens includes cacheRead, so it must not be treated as input+output"
+        );
+    }
+
+    /// A message whose usage is all zeros (auth failure / quota error) is noise.
+    #[test]
+    fn skips_zero_usage_from_failed_messages() {
+        assert!(parse_line(&message_line(0, 0, 0, 0)).is_none());
+    }
+
+    /// A cache-only message still carries billable usage and must not be dropped.
+    #[test]
+    fn keeps_cache_only_message() {
+        let line = message_line(0, 9472, 0, 9472);
+        let (input, cache_read, output, _, _) = parse_line(&line).expect("should parse");
+        assert_eq!(input, 0.0);
+        assert_eq!(cache_read, 9472.0);
+        assert_eq!(output, 0.0);
     }
 
     #[test]
@@ -427,7 +504,8 @@ mod tests {
         std::fs::write(&path, &buf).unwrap();
 
         let text = decompress_to_string(&path).expect("should decompress");
-        let (input, output, _, _) = parse_line(text.lines().next().unwrap()).expect("should parse");
+        let (input, _cache, output, _, _) =
+            parse_line(text.lines().next().unwrap()).expect("should parse");
         assert_eq!(input, 4242.0);
         assert_eq!(output, 24.0);
         std::fs::remove_dir_all(&dir).ok();
