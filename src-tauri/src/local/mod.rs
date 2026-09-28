@@ -51,9 +51,10 @@ pub fn scan_all(storage: &crate::storage::Storage) -> Vec<LocalToolReport> {
         tools.push(codex.join().unwrap_or_default());
         tools.push(hermes.join().unwrap_or_default());
     });
-    // 保留有近 90 天数据的工具；无数据的则仅当"已安装"（存在日志源）时保留，
-    // 让未装工具消失、已装但近期未用量的工具（如 Codex）仍出现在面板。
-    tools.retain(|t| !t.daily.is_empty() || cache::tool_installed(&t.id));
+    // 保留规则：有近 90 天数据的工具一律保留（它确实在用）；无数据的才要求
+    // "已安装且近期仍活跃"——只看目录存在会把早已弃用的工具（如 Codex，其
+    // .codex/sessions 永久留着历史会话）长期挂在面板上，毫无意义。
+    tools.retain(|t| !t.daily.is_empty() || cache::tool_recently_active(&t.id));
     tools
 }
 
@@ -70,8 +71,12 @@ pub fn scan_tool(tool_id: &str, storage: &crate::storage::Storage) -> Option<Loc
         "hermes" => hermes::scan(storage),
         _ => return None,
     };
-    // 与 scan_all 同口径：无数据时仅当"已安装"才保留（否则从缓存移除该工具）。
-    if report.daily.is_empty() && report.total_tokens <= 0.0 && !cache::tool_installed(tool_id) {
+    // 与 scan_all 同口径：有数据即保留；无数据则要求"已安装且近期仍活跃"，
+    // 否则从缓存移除该工具（watch 增量路径据此把弃用工具清出面板）。
+    if report.daily.is_empty()
+        && report.total_tokens <= 0.0
+        && !cache::tool_recently_active(tool_id)
+    {
         return None;
     }
     Some(report)
