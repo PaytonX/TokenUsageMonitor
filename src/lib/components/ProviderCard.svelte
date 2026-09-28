@@ -14,6 +14,7 @@
   import PulseDot from "./PulseDot.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
   import { brandColorFor, EXPERIMENTAL_KINDS } from "../brand-glyphs";
+  import { freshnessLabel, freshnessTone } from "../freshness";
 
   interface Props {
     snapshot: UsageSnapshot;
@@ -21,6 +22,13 @@
     burn?: BurnInfo | null;
     active?: boolean;
     lastRefreshAt?: number;
+    /** Wall-clock ms, owned by App (it already runs one 1s tick for the
+     *  countdown header). Passed in rather than re-ticked per card, so N cards
+     *  still mean one timer. */
+    now?: number;
+    /** Poll period in seconds. Freshness buckets are multiples of this, so the
+     *  badge adapts instead of hard-coding "5 minutes is stale". */
+    pollIntervalSec?: number;
     /** Provider whose card is currently focused in the header ring. */
     focused?: boolean;
     /** Per-account accent (#RRGGBB). Injected as `--acct-accent*` CSS vars on
@@ -42,6 +50,8 @@
     burn = null,
     active = false,
     lastRefreshAt = Date.now(),
+    now = Date.now(),
+    pollIntervalSec = 300,
     focused = false,
     accent,
     countdown = true,
@@ -123,6 +133,13 @@
   });
 
   let expanded = $state(false);
+
+  // 数据新鲜度：卡片画的是上次轮询的结果，屏幕上的数字在到达时就已经定格。
+  // 错误角标要等下一次轮询失败才亮，这中间的空窗里用户无从判断数字有多旧。
+  // 仅在离开 fresh 档时渲染——平时不占视觉预算，数字开始变旧才提示。
+  let freshAgeMs = $derived(Math.max(0, now - lastRefreshAt));
+  let freshTone = $derived(freshnessTone(freshAgeMs, pollIntervalSec));
+  let freshLabel = $derived(freshnessLabel(freshAgeMs));
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events:
@@ -170,6 +187,11 @@
       <span class="card__tier">{snapshot.plan_tier}</span>
     {/if}
     <div class="card__head-right">
+      {#if freshTone !== "fresh"}
+        <span class="card__fresh" data-tone={freshTone} title={`用量数据更新于 ${freshLabel}`}
+          >{freshLabel}</span
+        >
+      {/if}
       {#if balanceLabel && !isPayAsYouGo(snapshot)}
         <span class="card__balance" title="账户余额">{balanceLabel}</span>
       {/if}
@@ -397,6 +419,28 @@
     color: var(--tum-text-primary);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.3px;
+  }
+
+  /* 数据新鲜度角标：只在离开 fresh 档时出现，是提示而非装饰，因此压低
+     对比度，色阶只用来区分“有点旧”到“可能已失效”。 */
+  .card__fresh {
+    font-size: var(--tum-font-size-xs);
+    color: var(--tum-text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .card__fresh[data-tone="recent"] {
+    color: var(--tum-text-secondary);
+  }
+
+  .card__fresh[data-tone="stale"] {
+    color: var(--tum-text-muted);
+  }
+
+  .card__fresh[data-tone="expired"] {
+    color: var(--tum-text-muted);
+    opacity: 0.75;
   }
 
   .card__error {
