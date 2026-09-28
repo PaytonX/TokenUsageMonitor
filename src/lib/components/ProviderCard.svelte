@@ -30,10 +30,10 @@
     countdown?: boolean;
     /** Called when the user clicks this card; App links it to focus + heatmap. */
     onSelect?: () => void;
-    /** Reported as the pointer enters/leaves the card; drives the floating
-     *  detail overlay in App (small cards no longer clip the detail). The
-     *  rect is the card's viewport box at enter time (overlay anchoring). */
-    onHover?: (id: string, hovering: boolean, rect?: DOMRect) => void;
+    /** Reported as the pointer enters/leaves the card; drives the bottom-docked
+     *  detail overlay in App, which covers the calendar-heatmap area. No rect
+     *  is needed: the overlay is docked to the window, not anchored to the card. */
+    onHover?: (id: string, hovering: boolean) => void;
   }
 
   let {
@@ -135,12 +135,7 @@
   class:card--focused={focused}
   style={accentStyle}
   data-tauri-drag-region={false}
-  onpointerenter={(e) =>
-    onHover?.(
-      snapshot.provider_id,
-      true,
-      (e.currentTarget as HTMLElement).getBoundingClientRect(),
-    )}
+  onpointerenter={() => onHover?.(snapshot.provider_id, true)}
   onpointerleave={() => onHover?.(snapshot.provider_id, false)}
   onclick={(e) => {
     // Title button already toggles expansion (and selects); a click

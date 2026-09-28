@@ -138,31 +138,29 @@
   // header ring, the chips row and the heatmap panel.
   let focus = $state(localStorage.getItem(FOCUS_KEY) ?? "all");
   // Provider whose card the pointer is currently over; drives the floating
-  // detail overlay. `anchorRect` is the trigger card's viewport box so the
-  // overlay can park right beside it instead of docking at window bottom.
+  // detail overlay, which is docked along the window bottom so it covers the
+  // calendar-heatmap area rather than the cards themselves.
   let hoveredId = $state<string | null>(null);
-  let anchorRect = $state<DOMRect | null>(null);
-  // Overlay box is measured before reveal so placement uses real dimensions
-  // (content height varies per provider). Stays hidden until first measure.
+  // Overlay box is measured before reveal so the docked position uses the real
+  // content height (it varies per provider). Stays hidden until first measure.
   let overlayEl = $state<HTMLElement | null>(null);
-  let measuredW = $state(0);
   let measuredH = $state(0);
-  let overlayX = $state(0);
   let overlayY = $state(0);
   let overlayReady = $state(false);
-  const OVERLAY_GAP = 8;
+  // Height reserved at the bottom for the status footer, so the docked overlay
+  // sits directly above it instead of overlapping the clock/refresh line.
+  const FOOTER_CLEARANCE = 48;
   const VIEWPORT_MARGIN = 8;
 
   // Hiding the detail overlay is deferred by a grace window so the pointer
-  // can travel from the card into the overlay (or back) without it vanishing
-  // mid-move. Entering the overlay cancels the pending hide (pinning it);
-  // leaving it re-arms a hide so it closes when you go elsewhere.
+  // can travel between cards (or off them) without it vanishing mid-move.
+  // The overlay is pointer-transparent, so it is never entered directly; the
+  // grace window only smooths a fast sweep across the card row.
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
   function scheduleOverlayHide() {
     if (hideTimer) clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
       hoveredId = null;
-      anchorRect = null;
       hideTimer = null;
     }, 350);
   }
@@ -172,40 +170,30 @@
       hideTimer = null;
     }
   }
-  function onCardHover(id: string, hovering: boolean, rect?: DOMRect) {
+  function onCardHover(id: string, hovering: boolean) {
     if (hovering) {
       cancelOverlayHide();
       hoveredId = id;
-      anchorRect = rect ?? null;
-      // Hide until the ResizeObserver re-measures at the new anchor — avoids
-      // a one-frame ghost at the previous card's coordinates.
+      // Hide until the ResizeObserver re-measures the new content — avoids a
+      // one-frame ghost showing the previous card's detail at the wrong height.
       overlayReady = false;
     } else if (hoveredId === id) {
       scheduleOverlayHide();
     }
   }
 
-  // Compute fixed coordinates for the overlay from the trigger rect and the
-  // measured content box: clamp horizontally; prefer below, flip above when
-  // the bottom edge would overflow; clamp to viewport as the last resort.
+  // Dock the overlay along the bottom of the window, just above the footer, so
+  // hovering a card swaps the calendar-heatmap area for the account's detail
+  // without ever covering the cards being scanned. The width is full-bleed via
+  // CSS (left/right), so only the vertical position is computed here: sit on the
+  // footer line, and if the content is taller than the space above the footer,
+  // pin it to the top edge so the top of the detail stays readable and the
+  // panel scrolls internally.
   function placeOverlay() {
-    const rect = anchorRect;
-    if (!rect) return;
-    const w = measuredW || 320;
     const h = measuredH;
-    const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const maxX = Math.max(VIEWPORT_MARGIN, vw - w - VIEWPORT_MARGIN);
-    overlayX = Math.min(Math.max(rect.left, VIEWPORT_MARGIN), maxX);
-    const below = rect.bottom + OVERLAY_GAP;
-    const above = rect.top - OVERLAY_GAP - h;
-    if (h <= 0 || below + h <= vh - VIEWPORT_MARGIN) {
-      overlayY = below;
-    } else if (above >= VIEWPORT_MARGIN) {
-      overlayY = above;
-    } else {
-      overlayY = Math.max(VIEWPORT_MARGIN, vh - h - VIEWPORT_MARGIN);
-    }
+    const bottomDocked = vh - FOOTER_CLEARANCE - h;
+    overlayY = Math.max(VIEWPORT_MARGIN, Math.min(bottomDocked, vh - FOOTER_CLEARANCE - h));
   }
 
   // Measure the overlay content box whenever it mounts or its size changes.
@@ -223,7 +211,6 @@
     const apply = () => {
       const box = el.getBoundingClientRect();
       if (box.width > 0 && box.height > 0) {
-        measuredW = box.width;
         measuredH = box.height;
         overlayReady = true;
       }
@@ -234,10 +221,9 @@
     return () => ro.disconnect();
   });
 
-  // Reposition whenever the anchor moves or the content box changes size.
+  // Re-dock whenever the content height changes (each provider's detail is a
+  // different height, and the window can be resized).
   $effect(() => {
-    void anchorRect;
-    void measuredW;
     void measuredH;
     placeOverlay();
   });
@@ -1181,9 +1167,7 @@
         class="detail-overlay"
         role="group"
         data-tauri-drag-region={false}
-        style={`left:${overlayX}px;top:${overlayY}px;visibility:${overlayReady ? "visible" : "hidden"};`}
-        onpointerenter={cancelOverlayHide}
-        onpointerleave={scheduleOverlayHide}
+        style={`top:${overlayY}px;visibility:${overlayReady ? "visible" : "hidden"};`}
         transition:fly={{ y: 6, duration: 120 }}
         bind:this={overlayEl}
       >
@@ -1699,20 +1683,34 @@
     outline-offset: -2px;
   }
 
-  /* Floating detail overlay anchored beside the hovered card: rendered at
-     window level so the full detail (rows + chart) is never clipped by a
-     small card. Position + width are set inline after measuring the content
-     box; it flips above the card when the viewport bottom is tight. Parking
-     the pointer on it keeps it pinned so the actions inside are reachable. */
+  /* Floating detail overlay: rendered at window level so the full detail
+     (rows + chart) is never clipped by a small card. It is docked along the
+     bottom (above the footer) so it covers the calendar-heatmap area — hovering
+     a card swaps that area for the account's detail — and, crucially, does NOT
+     cover the provider cards being scanned. Hit-testing passes through to what
+     is underneath, so the overlay can never cause hover flicker.
+     Height is still measured before reveal (overlayReady) so there is no
+     one-frame flash; the width is full-bleed so the detail reads as a panel
+     rather than a floating chip. */
   .detail-overlay {
     position: fixed;
+    left: 14px;
+    right: 14px;
     z-index: 60;
-    width: 320px;
-    max-width: calc(100vw - 16px);
-    pointer-events: auto;
+    max-height: calc(100vh - 96px);
+    pointer-events: none;
   }
 
   .detail-overlay :global(.detail) {
     padding: 10px 12px;
+    max-height: calc(100vh - 96px);
+    overflow-y: auto;
+  }
+
+  /* The overlay itself is pointer-transparent so hovering it passes through to
+     the cards below and can never cause flicker. The action row opts back in so
+     "refresh this account" stays clickable. */
+  .detail-overlay :global(.detail__actions) {
+    pointer-events: auto;
   }
 </style>
