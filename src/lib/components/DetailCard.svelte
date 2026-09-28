@@ -1,6 +1,10 @@
 <script lang="ts">
   import { getHeatmap, forceRefresh } from "../api";
-  import { estimateCostUsd, formatCost } from "../currency";
+  import {
+    displayCurrency,
+    estimateCostUsd,
+    formatCost,
+  } from "../currency";
   import {
     formatUsage,
     hexToRgb,
@@ -165,13 +169,15 @@
 
   // Estimated cost: base it on the most critical window's token split, else the
   // monthly window (covers pay-as-you-go providers like volcano API). Renders
-  // only when the window reports tokens for a known model; never guesses.
+  // only when estimation is enabled and the window reports tokens for a known
+  // model; never guesses. Currency follows the user's display setting rather
+  // than being hardcoded to CNY.
   let costLabel = $derived.by(() => {
     const src = (critical?.window ?? snapshot.windows.monthly) as
       | WindowUsage
       | undefined;
     const usd = src?.tokens ? estimateCostUsd(src.tokens) : null;
-    return usd === null ? null : formatCost(usd, "CNY", true);
+    return usd === null ? null : formatCost(usd, displayCurrency(), true);
   });
 </script>
 

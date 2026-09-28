@@ -387,6 +387,9 @@ mod tests {
         let (input, cache_read, output, date, model) = parse_line(&line).expect("should parse");
         assert_eq!(input, 1200.0);
         assert_eq!(output, 340.0);
+        // The legacy attempt layout has no cache field, so cache must read as 0
+        // rather than inherit a stale value from another line.
+        assert_eq!(cache_read, 0.0);
         // 1790522454929 ms → local day; only assert non-empty and well-formed
         // so the test does not depend on the runner's timezone.
         assert_eq!(date.len(), 10, "expected YYYY-MM-DD, got {date}");
@@ -491,16 +494,20 @@ mod tests {
             model, "MiniMax-M3",
             "must not pick the -ga- versioned alias"
         );
-        assert!(
-            crate::pricing::compute_cost(&crate::providers::TokenBreakdown {
-                input: 1_000_000.0,
-                cache_read: 0.0,
-                output: 1_000_000.0,
-                model_id: Some(model.clone()),
-            })
-            .is_some(),
-            "the extracted model must resolve to a price tier"
-        );
+        // Whether the id resolves to a price depends on the estimation switch;
+        // the model-extraction guarantee above holds either way.
+        if crate::pricing::COST_ESTIMATION_ENABLED {
+            assert!(
+                crate::pricing::compute_cost(&crate::providers::TokenBreakdown {
+                    input: 1_000_000.0,
+                    cache_read: 0.0,
+                    output: 1_000_000.0,
+                    model_id: Some(model.clone()),
+                })
+                .is_some(),
+                "the extracted model must resolve to a price tier"
+            );
+        }
     }
 
     /// Both observed models must be priceable, otherwise splitting them buys
@@ -510,17 +517,19 @@ mod tests {
         for m in ["deepseek-v4-flash", "MiniMax-M3"] {
             let line = message_line_with_model(10, 5, m);
             let (_, _, _, _, model) = parse_line(&line).expect("should parse");
-            assert_eq!(model, m);
-            assert!(
-                crate::pricing::compute_cost(&crate::providers::TokenBreakdown {
-                    input: 1_000.0,
-                    cache_read: 0.0,
-                    output: 1_000.0,
-                    model_id: Some(model),
-                })
-                .is_some(),
-                "{m} should resolve to a price tier"
-            );
+            assert_eq!(model, m, "model must survive extraction verbatim");
+            if crate::pricing::COST_ESTIMATION_ENABLED {
+                assert!(
+                    crate::pricing::compute_cost(&crate::providers::TokenBreakdown {
+                        input: 1_000.0,
+                        cache_read: 0.0,
+                        output: 1_000.0,
+                        model_id: Some(model),
+                    })
+                    .is_some(),
+                    "{m} should resolve to a price tier"
+                );
+            }
         }
     }
 
@@ -772,7 +781,12 @@ mod tests {
     /// The default cap must stay well below the memory a hostile file could ask
     /// for, while leaving orders of magnitude of headroom for real sessions.
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn default_cap_is_bounded_and_generous() {
+        // These look like tautologies to the linter, and that is the point: the
+        // cap is a security boundary, so any future edit that widens or guts it
+        // must fail here rather than quietly change how much memory a hostile
+        // log can force us to allocate.
         assert!(MAX_DECOMPRESSED_BYTES <= 512 * 1024 * 1024);
         assert!(MAX_DECOMPRESSED_BYTES >= 64 * 1024 * 1024);
     }
