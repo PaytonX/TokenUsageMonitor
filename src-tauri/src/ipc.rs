@@ -1271,6 +1271,119 @@ pub async fn test_proxy(url: String) -> Result<ProxyTestResult, String> {
     Ok(proxy_probe_verdict(attempts))
 }
 
+
+/// What `export_data` wrote. `rows` counts records, not file lines: the CSV
+/// header is not a row, and for JSON it is the number of entities included.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSummary {
+    pub rows: usize,
+    pub bytes: usize,
+    pub path: String,
+}
+
+/// Write the current data out to a file the user owns.
+///
+/// `scope` picks the dataset (`tools` / `providers` / `all`), `format` the
+/// shape (`json` / `csv`). Read-only with respect to app state: this never
+/// mutates the cache or triggers a rescan beyond the one a fresh panel would
+/// do anyway.
+#[tauri::command]
+pub async fn export_data(
+    state: State<'_, AppState>,
+    format: String,
+    scope: String,
+    dest: String,
+) -> Result<ExportSummary, String> {
+    let dest = dest.trim().to_string();
+    if dest.is_empty() {
+        return Err("请选择导出路径".to_string());
+    }
+    if !matches!(format.as_str(), "json" | "csv") {
+        return Err(format!("不支持的导出格式：{format}"));
+    }
+    if !matches!(scope.as_str(), "tools" | "providers" | "all") {
+        return Err(format!("不支持的导出范围：{scope}"));
+    }
+    if format == "csv" && scope == "all" {
+        return Err(
+            "CSV 放不下用量窗口和本地工具这两套互不相干的列，请分开导出或改用 JSON".to_string(),
+        );
+    }
+
+    let want_providers = scope == "providers" || scope == "all";
+    let want_tools = scope == "tools" || scope == "all";
+
+    let providers: Vec<UsageSnapshot> = if want_providers {
+        let guard = state.state.read().await;
+        guard
+            .values()
+            .filter_map(|ps: &ProviderState| ps.snapshot.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Prefer the warm cache: an export triggered from the tools panel should
+    // not re-parse every session log just because the short-lived cache
+    // expired. Fall back to the same scan the panel itself would do.
+    let tools: LocalToolsPayload = if want_tools {
+        match state.local.cached().await {
+            Some(p) => p,
+            None => {
+                let scanned = crate::local::scan_all(&state.storage);
+                let sessions_parsed: u64 = scanned.iter().map(|t| t.session_count).sum();
+                LocalToolsPayload { tools: scanned, sessions_parsed }
+            }
+        }
+    } else {
+        LocalToolsPayload::default()
+    };
+
+    let (body, rows) = match (format.as_str(), scope.as_str()) {
+        ("csv", "providers") => (
+            crate::export::render_providers_csv(&providers),
+            crate::export::provider_row_count(&providers),
+        ),
+        ("csv", "tools") => (
+            crate::export::render_tools_csv(&tools),
+            crate::export::tool_row_count(&tools),
+        ),
+        ("json", "providers") => (
+            serde_json::to_string_pretty(&providers)
+                .map_err(|e| format!("序列化失败：{e}"))?,
+            providers.len(),
+        ),
+        ("json", "tools") => (
+            serde_json::to_string_pretty(&tools).map_err(|e| format!("序列化失败：{e}"))?,
+            tools.tools.len(),
+        ),
+        ("json", "all") => {
+            let doc = crate::export::ExportAllJson {
+                providers: &providers,
+                tools: &tools,
+            };
+            (
+                serde_json::to_string_pretty(&doc).map_err(|e| format!("序列化失败：{e}"))?,
+                providers.len() + tools.tools.len(),
+            )
+        }
+        _ => return Err("导出参数组合不受支持".to_string()),
+    };
+
+    // tokio::fs::write yields (), not a byte count, so report the length we
+    // handed it rather than trusting a second stat of the file.
+    let bytes = body.as_bytes().len();
+    tokio::fs::write(&dest, body.as_bytes())
+        .await
+        .map_err(|e| format!("写入 {dest} 失败：{e}"))?;
+
+    Ok(ExportSummary {
+        rows,
+        bytes,
+        path: dest,
+    })
+}
 /// Read the local Codex CLI credentials (`~/.codex/auth.json`) so the
 /// Settings form can pre-fill them. `None` when the file is absent or the
 /// token is blank.

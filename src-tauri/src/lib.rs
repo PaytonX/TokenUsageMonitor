@@ -10,6 +10,7 @@
 //! - Periodic scheduler that emits `usage-updated` events
 
 pub mod exchange;
+pub mod export;
 pub mod ipc;
 pub mod hub;
 pub mod local;
@@ -773,6 +774,7 @@ pub fn run() {
             ipc::test_proxy,
             ipc::detect_codex_token,
             ipc::get_local_tools,
+            ipc::export_data,
             ipc::get_device_report,
             ipc::get_hub_devices,
             ipc::get_exchange_rates,
