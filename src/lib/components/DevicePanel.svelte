@@ -93,6 +93,85 @@
     if (n > 20) return 3;
     return 1;
   }
+
+  // —— 全端汇总（按设备去重聚合）——
+  //
+  // 去重口径（两层）：
+  // 1. 设备维度：同一 device_id 只计一次。get_hub_devices 虽已按 device_id
+  //    去重（本机 → 远端 hub → 本地存储三路合并会撞 id），这里再防御一次；
+  //    每台机器只上报自己的本地扫描数据，因此设备之间天然不重叠。
+  // 2. 日期维度：单设备序列内同一日期出现多条时取末条（上游是 Map 构建，
+  //    正常不会重复，防上游口径变化）。
+  // 跨设备同日用量是不同机器的真实消耗，按加法合并——不是重复。
+  // 注意：date 是各上报方的本地日期，跨时区组网时同一天可能有 ±1 偏差。
+  const DEV_COLORS = ["#4cc2ff", "#f2b35b", "#5fd4a2", "#f27b9b", "#b58cf5", "#6fd1d1"];
+  function colorForDevice(id: string): string {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+    return DEV_COLORS[Math.abs(h) % DEV_COLORS.length];
+  }
+
+  interface AggDay {
+    date: string;
+    label: string;
+    parts: { id: string; value: number }[];
+    total: number;
+  }
+
+  let aggDays = $derived.by(() => {
+    const perDate = new Map<string, number>();
+    const partsByDate = new Map<string, { id: string; value: number }[]>();
+    const seenDevices = new Set<string>();
+    for (const d of devices) {
+      if (seenDevices.has(d.device_id)) continue;
+      seenDevices.add(d.device_id);
+      const days = new Map<string, number>();
+      for (const day of d.daily) days.set(day.date, day.total);
+      for (const [date, total] of days) {
+        if (total <= 0) continue;
+        perDate.set(date, (perDate.get(date) ?? 0) + total);
+        const parts = partsByDate.get(date) ?? [];
+        parts.push({ id: d.device_id, value: total });
+        partsByDate.set(date, parts);
+      }
+    }
+    return [...perDate.keys()].sort().map<AggDay>((date) => {
+      const [, m, dd] = date.split("-");
+      const parts = partsByDate.get(date) ?? [];
+      return {
+        date,
+        label: `${m}/${dd}`,
+        parts,
+        total: parts.reduce((s, p) => s + p.value, 0),
+      };
+    });
+  });
+  let aggTotal = $derived(aggDays.reduce((s, d) => s + d.total, 0));
+  let aggMax = $derived(Math.max(1, ...aggDays.map((d) => d.total)));
+  // 今日全端用量（本地时区的今天；各端序列里没有则为 0）。
+  let aggToday = $derived.by(() => {
+    const t = new Date();
+    const key = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+    return aggDays.find((d) => d.date === key)?.total ?? 0;
+  });
+  // 图例：每台设备近 90 天合计（降序），配色与堆叠图一致。
+  let aggLegend = $derived.by(() => {
+    const seen = new Set<string>();
+    const out: { id: string; name: string; total: number; color: string }[] = [];
+    for (const d of devices) {
+      if (seen.has(d.device_id)) continue;
+      seen.add(d.device_id);
+      const days = new Map<string, number>();
+      for (const day of d.daily) days.set(day.date, day.total);
+      out.push({
+        id: d.device_id,
+        name: d.hostname,
+        total: [...days.values()].reduce((s, v) => s + v, 0),
+        color: colorForDevice(d.device_id),
+      });
+    }
+    return out.sort((a, b) => b.total - a.total);
+  });
 </script>
 
 <div class="dev" data-tauri-drag-region={false}>
@@ -112,6 +191,39 @@
   {#if devices.length === 0}
     <div class="dev__empty">暂无设备</div>
   {:else}
+    <div class="dev__agg">
+      <div class="dev__agg-head">
+        <span class="dev__agg-title">全端汇总</span>
+        <span class="dev__agg-sub">{devices.length} 台设备 · 近 90 天 · 按设备去重</span>
+      </div>
+      <div class="dev__stats dev__agg-stats">
+        <span class="dev__stat"><b>{fmtTokens(aggTotal)}</b><span>全端合计</span></span>
+        <span class="dev__stat"><b>{fmtTokens(aggToday)}</b><span>今日全端</span></span>
+        <span class="dev__stat"><b>{devices.length}</b><span>设备</span></span>
+      </div>
+      {#if aggDays.length > 0}
+        <div class="dev__chart dev__agg-chart">
+          <TrendLineChart
+            days={aggDays}
+            colors={Object.fromEntries(aggLegend.map((l) => [l.id, l.color]))}
+            maxY={aggMax}
+            tickEvery={deviceTick(aggDays.length)}
+            {accent}
+            stacked={true}
+          />
+        </div>
+        <div class="dev__agg-legend">
+          {#each aggLegend as l (l.id)}
+            <span class="dev__agg-item" title="{l.name} · {fmtTokens(l.total)} tokens">
+              <span class="dev__agg-dot" style="background: {l.color};"></span>
+              <span class="dev__agg-name">{l.name}</span>
+              <span class="dev__agg-total tum-numeric">{fmtTokens(l.total)}</span>
+            </span>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
     <div class="dev__list">
       {#each devices as d, i (d.device_id)}
         <div class="dev__card" style="--dev-accent: {accent}">
@@ -188,6 +300,67 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+
+  /* —— 全端汇总 —— */
+  .dev__agg {
+    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .dev__agg-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .dev__agg-title {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+  }
+  .dev__agg-sub {
+    font-size: 10px;
+    font-family: var(--tum-font-mono);
+    color: rgba(232, 234, 240, 0.55);
+  }
+  .dev__agg-stats {
+    margin-top: 10px;
+  }
+  .dev__agg-chart {
+    height: 110px;
+  }
+  .dev__agg-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-top: 8px;
+  }
+  .dev__agg-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: rgba(232, 234, 240, 0.75);
+  }
+  .dev__agg-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .dev__agg-name {
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dev__agg-total {
+    font-family: var(--tum-font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--tum-text-primary, #e6e8ea);
   }
   .dev__card {
     border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
