@@ -74,6 +74,22 @@ export function visibleTabKeys(): PageTab[] {
   return TAB_KEYS.filter(pageTabEnabled);
 }
 
+// --- 全端汇总模式（趋势/工具/模型页签显示全部设备合并用量）---
+// 纯前端展示偏好，存 localStorage（`tum.agg`）；写侧由设置页负责广播
+// tabs-changed，面板监听后重读本开关并换数据源。
+
+const AGG_KEY = "tum.agg";
+
+/** 全端汇总模式是否开启。 */
+export function readAggMode(): boolean {
+  return readLocal(AGG_KEY) === "1";
+}
+
+/** 写全端汇总开关（不广播；调用方负责 emitTabsChanged 通知面板）。 */
+export function writeAggMode(on: boolean) {
+  writeLocal(AGG_KEY, on ? "1" : "0");
+}
+
 // --- 总量页卡片顺序（拖拽排序，存 provider_id 数组于 `tum.cardOrder`）---
 
 const CARD_ORDER_KEY = "tum.cardOrder";

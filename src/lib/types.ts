@@ -70,6 +70,27 @@ export interface HubDay {
   total: number;
 }
 
+/** Mirrors Rust `hub::HubDayIo`: one day with input/cache/output split. */
+export interface HubDayIo {
+  date: string; // YYYY-MM-DD
+  input: number;
+  cache_read: number;
+  output: number;
+  total: number;
+}
+
+/** Mirrors Rust `hub::HubToolSeries`: per-tool daily series of one device. */
+export interface HubToolSeries {
+  name: string;
+  sessions: number;
+  daily: HubDayIo[];
+}
+
+/** Mirrors Rust `hub::HubModelSeries`: per-model daily totals of one device. */
+export interface HubModelSeries {
+  daily: HubDay[];
+}
+
 /** Mirrors Rust `hub::HubDevice`: one device's report to the hub. */
 export interface HubDevice {
   device_id: string;
@@ -82,6 +103,9 @@ export interface HubDevice {
   provider_count: number;
   tool_count: number;
   daily: HubDay[];
+  /** 旧版本对端的报告没有这两个字段（undefined）——全端汇总对该设备降级。 */
+  tools?: Record<string, HubToolSeries>;
+  models?: Record<string, HubModelSeries>;
 }
 
 /** Mirrors Rust `ipc::HubDevicesResult`: device list + optional refresh warning. */
