@@ -173,9 +173,10 @@
       }}
     >
       <span class="card__status">
-        <PulseDot {active} {tone} size={8} />
-        <span class="card__logo-badge">
-          <ProviderLogo {kind} size={9} accent={accent ?? null} />
+        <span class="card__halo" class:card__halo--on={active} aria-hidden="true"></span>
+        <span class="card__logo"><ProviderLogo {kind} size={32} accent={accent ?? null} /></span>
+        <span class="card__status-dot" title={active ? "正在请求" : undefined}>
+          <PulseDot {active} {tone} size={8} />
         </span>
       </span>
       <span class="card__name">{snapshot.provider_display_name}</span>
@@ -307,22 +308,61 @@
     align-items: center;
     justify-content: center;
     flex: none;
-    margin-right: 3px;
+    width: 36px;
+    height: 36px;
   }
 
-  .card__logo-badge {
-    position: absolute;
-    right: -6px;
-    bottom: -6px;
-    width: 12px;
-    height: 12px;
+  .card__logo {
+    position: relative;
+    z-index: 1;
     display: inline-flex;
-    align-items: center;
-    justify-content: center;
+  }
+
+  /* 活跃辉光：仅在 active（本轮轮询检测到用量增长）时点亮，主题色 =
+     账户强调色（走 --acct-accent-glow，未设则回退全局 accent）。动效与
+     ProgressRing 的 ring-breathe 同一套语言：2600ms 呼吸。闲置时完全
+     隐藏，不占视觉预算；prefers-reduced-motion 由 tokens.css 全局降级。 */
+  .card__halo {
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    background: radial-gradient(
+      circle,
+      var(--acct-accent-glow, var(--tum-accent-glow)) 0%,
+      transparent 70%
+    );
+    opacity: 0;
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  .card__halo--on {
+    animation: logo-breathe 2600ms ease-in-out infinite;
+  }
+
+  @keyframes logo-breathe {
+    0%,
+    100% {
+      opacity: 0.3;
+      transform: scale(0.9);
+    }
+    50% {
+      opacity: 0.95;
+      transform: scale(1.08);
+    }
+  }
+
+  /* 状态角标：大 Logo 接管左侧主视觉后，ok/warn/crit 信号缩为右上角小点；
+     1px 同色底衬保证在 tile/剪影两种 logo 形态上都可读。 */
+  .card__status-dot {
+    position: absolute;
+    right: -3px;
+    top: -3px;
+    z-index: 2;
+    display: inline-flex;
     border-radius: 50%;
     background: var(--tum-bg-solid);
-    border: 1px solid var(--tum-border-strong);
-    overflow: hidden;
+    padding: 1px;
   }
 
   .card__exp {
