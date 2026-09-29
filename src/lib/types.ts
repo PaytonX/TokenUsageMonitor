@@ -346,6 +346,7 @@ const SHORT_KIND_NAMES: Record<string, string> = {
   volcengine: "Volcano",
   volcengine_api: "Volcano API",
   openai: "OpenAI",
+  opencode: "OpenCode",
   gemini: "Gemini",
   anthropic: "Anthropic",
   qwen: "Qwen",

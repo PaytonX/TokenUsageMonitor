@@ -13,6 +13,7 @@ pub mod minimax;
 pub mod minimax_api;
 pub mod mock;
 pub mod openai;
+pub mod opencode;
 pub mod volcengine;
 pub mod volcengine_api;
 pub mod xai;
@@ -276,6 +277,15 @@ pub const PRESETS: &[Preset] = &[
             },
         ]),
         experimental: false,
+    },
+    Preset {
+        kind: "opencode",
+        display_name: "OpenCode Go",
+        auth_kind: AuthKind::BearerKey,
+        default_accent: "#8b5cf6",
+        sub_modes: None,
+        // 端点未公开文档（源自社区逆向），且仅覆盖 Go 订阅，标记为实验。
+        experimental: true,
     },
     Preset {
         kind: "codex",
@@ -602,6 +612,10 @@ pub static PROVIDER_REGISTRY: &[(&'static str, ProviderBuilder)] = &[
     ("volcengine", |h, s, i, l| Arc::new(volcengine::VolcengineProvider::new(h, s, i, l))),
     ("volcengine_api", |h, s, i, l| Arc::new(volcengine_api::VolcengineApiProvider::new(h, s, i, l))),
     ("openai", |h, s, i, l| Arc::new(openai::OpenAIProvider::new(h, s, i, l))),
+    (
+        "opencode",
+        |h, s, i, l| Arc::new(opencode::OpenCodeProvider::new(h, s, i, l)),
+    ),
     ("xiaomi_plan", |h, s, i, l| Arc::new(xiaomi::XiaoMiPlanProvider::new(h, s, i, l))),
     ("xiaomi_api", |h, s, i, l| Arc::new(xiaomi::XiaoMiApiProvider::new(h, s, i, l))),
     ("xai", |h, s, i, l| Arc::new(xai::XaiProvider::new(h, s, i, l))),
