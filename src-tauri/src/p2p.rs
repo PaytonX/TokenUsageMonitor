@@ -27,8 +27,11 @@ use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
-/// mDNS 服务类型。`_tokenusage._tcp.local` 是本应用的自定义服务类型。
-const SERVICE_TYPE: &str = "_tokenusage._tcp.local";
+/// mDNS 服务类型。**末尾的点不可省略**：mdns-sd 要求服务类型以
+/// `._tcp.local.` / `._udp.local.` 结尾（含尾部点），缺了会被直接拒绝
+/// （browse 失败 → 静默禁用发现，历史上正是这个 bug 让 lan 模式的
+/// 自动发现从未生效过）。改动此值会让新旧版本互相发现不到。
+const SERVICE_TYPE: &str = "_tokenusage._tcp.local.";
 
 /// TXT 属性键：广播方携带自己的稳定设备 ID，供对端识别。
 const PROP_DEVICE_ID: &str = "device_id";
@@ -91,10 +94,19 @@ impl Discovery {
             return d;
         };
         let props = [(PROP_DEVICE_ID, self_id.as_str())];
+        // host 也必须以 `.local.` 结尾（与 SERVICE_TYPE 同一种校验）；
+        // 用 self_id（即小写主机名）保证多设备间主机记录不冲突。
+        let host = format!(
+            "{}.local.",
+            self_id
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect::<String>()
+        );
         match ServiceInfo::new(
             SERVICE_TYPE,
             "TokenUsageMonitor",
-            "local",
+            &host,
             ip.to_string(),
             port,
             &props[..],
@@ -244,9 +256,12 @@ mod tests {
     }
 
     /// 服务类型是对外协议的一部分：改动会让新旧版本互相发现不到。
+    /// 同时锁住尾部点：mdns-sd 要求以 `._tcp.local.` 结尾，缺了会被
+    /// browse 直接拒绝（曾经的静默禁用 bug）。
     #[test]
     fn service_type_constant_is_stable() {
-        assert_eq!(SERVICE_TYPE, "_tokenusage._tcp.local");
+        assert_eq!(SERVICE_TYPE, "_tokenusage._tcp.local.");
+        assert!(SERVICE_TYPE.ends_with("._tcp.local."), "mdns-sd requires a trailing dot");
     }
 
     /// 对端去重的键必须是 device_id 而不是地址——同一设备换 IP（DHCP 续租）
