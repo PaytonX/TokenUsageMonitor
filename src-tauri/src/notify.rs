@@ -361,14 +361,20 @@ mod error_deduper_tests {
 
     #[test]
     fn prune_drops_entries_older_than_twice_the_cooldown() {
-        let mut d = deduper(300);
-        let stale = Instant::now() - Duration::from_secs(3600);
+        // 用毫秒级冷却 + 真实 sleep 驱动淘汰，而不是把 Instant 回拨一小时：
+        // Windows 的 Instant 底层是进程启动以来的 QPC 计数，测试进程刚启动
+        // 就回拨 1 小时会下溢 panic（overflow when subtracting duration）。
+        let mut d = ErrorDeduper {
+            last_emitted: HashMap::new(),
+            cooldown: Duration::from_millis(1),
+        };
         for i in 0..40 {
             d.last_emitted
-                .insert((format!("p{i}"), "boom".to_string()), stale);
+                .insert((format!("p{i}"), "boom".to_string()), Instant::now());
         }
+        std::thread::sleep(Duration::from_millis(5));
         assert!(d.should_emit("fresh", "boom"));
-        // 40 back-dated entries are evicted; only the new one survives.
+        // 40 条已越过 2× 冷却窗口的记录被淘汰，只剩刚写入的一条。
         assert_eq!(d.last_emitted.len(), 1);
         assert!(d
             .last_emitted
