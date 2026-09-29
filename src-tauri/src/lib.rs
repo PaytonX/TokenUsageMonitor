@@ -297,16 +297,19 @@ pub fn run() {
             let settings_store = settings::SettingsStore::new(data_dir)
                 .expect("loading settings store");
 
-            // 启动自愈：自启开启时注册表项可能被用户或安全软件清除，启动时
-            // 按设置对账一次；失败不阻断启动。
+            // 启动自愈：自启开启时按设置对账一次注册表项，失败不阻断启动。
+            //
+            // 这里必须无条件 enable()，不能只在 is_enabled() 为假时补写：
+            // auto-launch 的 is_enabled() 仅判断注册表键是否存在，从不校验它
+            // 指向的路径是否还有效。exe 搬家、CARGO_TARGET_DIR 变更或旧目录被
+            // 清理后，键会"存在"却指向一个不存在的文件，开机静默失败，而这种
+            // 状态自愈恰好查不出来。enable() 是幂等覆盖写，会用当前 exe 路径
+            // 把注册表项重新校准，因此每次启动都调一次。
             {
                 use tauri_plugin_autostart::ManagerExt;
                 let s = settings_store.read_blocking();
                 if s.autostart {
-                    let autolaunch = app.autolaunch();
-                    if !autolaunch.is_enabled().unwrap_or(false) {
-                        let _ = autolaunch.enable();
-                    }
+                    let _ = app.autolaunch().enable();
                 }
             }
 
