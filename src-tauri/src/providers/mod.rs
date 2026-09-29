@@ -282,7 +282,7 @@ pub const PRESETS: &[Preset] = &[
         kind: "opencode",
         display_name: "OpenCode Go",
         auth_kind: AuthKind::BearerKey,
-        default_accent: "#8b5cf6",
+        default_accent: "#e8eaed",
         sub_modes: None,
         // 端点未公开文档（源自社区逆向），且仅覆盖 Go 订阅，标记为实验。
         experimental: true,

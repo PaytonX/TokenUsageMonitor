@@ -20,7 +20,6 @@
     deepseek: "D",
     volcengine: "V",
     openai: "O",
-    opencode: "OC",
     gemini: "G",
     anthropic: "A",
     qwen: "Q",

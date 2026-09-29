@@ -144,7 +144,7 @@ const PROVIDER_FALLBACK_COLORS: Record<string, string> = {
   volcengine: "#1664ff",
   volcengine_api: "#1664ff",
   openai: "#10a37f",
-  opencode: "#8b5cf6",
+  opencode: "#e8eaed",
   gemini: "#4285f4",
   anthropic: "#d97757",
   qwen: "#8b5cf6",
