@@ -21,6 +21,7 @@ pub mod hermes;
 pub mod minimax;
 pub mod watch;
 pub mod wsl;
+pub mod zcode;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -39,7 +40,7 @@ pub const UNCLASSIFIED_MODEL: &str = "未标记模型";
 /// then drop tools with no usage. Used by `get_local_tools` and the startup
 /// pre-warm so the first open of the tools view is instant.
 pub fn scan_all(storage: &crate::storage::Storage) -> Vec<LocalToolReport> {
-    let mut tools: Vec<LocalToolReport> = Vec::with_capacity(6);
+    let mut tools: Vec<LocalToolReport> = Vec::with_capacity(7);
     std::thread::scope(|s| {
         let claude = s.spawn(claude::scan);
         let cherry = s.spawn(cherry::scan);
@@ -47,12 +48,14 @@ pub fn scan_all(storage: &crate::storage::Storage) -> Vec<LocalToolReport> {
         let codex = s.spawn(codex::scan);
         let dsh = s.spawn(dsh::scan);
         let hermes = s.spawn(move || hermes::scan(storage));
+        let zcode = s.spawn(zcode::scan);
         tools.push(claude.join().unwrap_or_default());
         tools.push(cherry.join().unwrap_or_default());
         tools.push(minimax.join().unwrap_or_default());
         tools.push(codex.join().unwrap_or_default());
         tools.push(dsh.join().unwrap_or_default());
         tools.push(hermes.join().unwrap_or_default());
+        tools.push(zcode.join().unwrap_or_default());
     });
     // 保留规则：有近 90 天数据的工具一律保留（它确实在用）；无数据的才要求
     // "已安装且近期仍活跃"——只看目录存在会把早已弃用的工具（如 Codex，其
@@ -62,13 +65,14 @@ pub fn scan_all(storage: &crate::storage::Storage) -> Vec<LocalToolReport> {
 }
 
 /// 受支持工具 id 列表（供 watch 增量扫描与前端工具胶囊使用）。
-pub const TOOL_IDS: [&str; 6] = [
+pub const TOOL_IDS: [&str; 7] = [
     "claude-code",
     "cherry-studio",
     "minimax-code",
     "codex",
     "hermes",
     "deepseek-harness",
+    "zcode",
 ];
 
 /// 单个工具的一次扫描（watch 用到：只重扫变化的那一个）。
@@ -80,6 +84,7 @@ pub fn scan_tool(tool_id: &str, storage: &crate::storage::Storage) -> Option<Loc
         "codex" => codex::scan(),
         "hermes" => hermes::scan(storage),
         "deepseek-harness" => dsh::scan(),
+        "zcode" => zcode::scan(),
         _ => return None,
     };
     // 与 scan_all 同口径：有数据即保留；无数据则要求"已安装且近期仍活跃"，

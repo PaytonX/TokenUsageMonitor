@@ -113,8 +113,9 @@
   let active = $derived(modelList.find((m) => m.id === activeId) ?? null);
 
   // —— 模型占比圆环（替代原 PillsOrSelect 选择行）：手写 SVG 环图。
-  // ≤6 个模型全量直显；否则保留 Top5 且占比 ≥2% 的切片，其余归并为灰色
-  // 「其他」（不可选，悬停提示成员明细）。
+  // 占比 <2% 的模型一律归入灰色「其他」（用户规则：用量过少即归并，与模型
+  // 数量无关），其余按最多 5 个切片直显。「其他」不可选，悬停提示成员明细。
+  // 防御：若模型极多导致所有切片都 <2%，退回展示前 3 名，环不留空。
   const RING_MAX_SLICES = 5;
   const RING_MIN_SHARE = 0.02;
   const RING_COLORS = ["#5fd4a2", "#f2b35b", "#f27b9b", "#7b93f2", "#4cc2ff"];
@@ -140,44 +141,33 @@
     const grand = modelList.reduce((sum, m) => sum + m.total, 0);
     if (grand <= 0) return [] as RingSlice[];
     const shareOf = (m: { total: number }) => m.total / grand;
-    let picked: RingSlice[];
-    if (modelList.length <= 6) {
-      picked = modelList.map((m, i) => ({
-        id: m.id,
-        name: m.name,
-        total: m.total,
-        share: shareOf(m),
-        color: RING_COLORS[i % RING_COLORS.length],
-        isOther: false,
-        members: [],
-      }));
-    } else {
-      const head = modelList.filter(
-        (m, i) => i < RING_MAX_SLICES && shareOf(m) >= RING_MIN_SHARE,
-      );
-      picked = head.map((m, i) => ({
-        id: m.id,
-        name: m.name,
-        total: m.total,
-        share: shareOf(m),
-        color: RING_COLORS[i % RING_COLORS.length],
-        isOther: false,
-        members: [],
-      }));
-      const restTotal = grand - head.reduce((sum, m) => sum + m.total, 0);
-      if (restTotal / grand >= RING_MIN_SHARE) {
-        picked.push({
-          id: "__other__",
-          name: "其他",
-          total: restTotal,
-          share: restTotal / grand,
-          color: RING_OTHER_COLOR,
-          isOther: true,
-          members: modelList
-            .filter((m) => !head.includes(m))
-            .map((m) => `${m.name} · ${fmtTokens(m.total)}`),
-        });
-      }
+    const head = modelList.filter(
+      (m, i) => i < RING_MAX_SLICES && shareOf(m) >= RING_MIN_SHARE,
+    );
+    // 极端情况：模型多到全部 <2% → 展示前 3 名，保证环与图例不为空。
+    const effective = head.length > 0 ? head : modelList.slice(0, 3);
+    const picked: RingSlice[] = effective.map((m, i) => ({
+      id: m.id,
+      name: m.name,
+      total: m.total,
+      share: shareOf(m),
+      color: RING_COLORS[i % RING_COLORS.length],
+      isOther: false,
+      members: [],
+    }));
+    const restTotal = grand - effective.reduce((sum, m) => sum + m.total, 0);
+    if (restTotal > 0) {
+      picked.push({
+        id: "__other__",
+        name: "其他",
+        total: restTotal,
+        share: restTotal / grand,
+        color: RING_OTHER_COLOR,
+        isOther: true,
+        members: modelList
+          .filter((m) => !effective.includes(m))
+          .map((m) => `${m.name} · ${fmtTokens(m.total)}`),
+      });
     }
     return picked;
   });

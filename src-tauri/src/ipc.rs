@@ -322,7 +322,7 @@ pub async fn force_refresh(
         // Per-provider failures are already surfaced via the provider-error
         // event inside poll_one; keep refreshing the remaining targets.
         if let Err(e) = crate::scheduler::poll_one(&app, &provider).await {
-            tracing::warn!(provider = %provider.id(), error = %e,
+            tracing::warn!(target: "tum.poll", provider = %provider.id(), error = %e,
                 "manual refresh failed");
         }
     }
@@ -601,7 +601,7 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
                 let _ = peek.destroy();
             }
             if let Err(e) = dash.set_ignore_cursor_events(false) {
-                tracing::warn!("dashboard set_ignore_cursor_events failed: {e}");
+                tracing::warn!(target: "tum.window", "dashboard set_ignore_cursor_events failed: {e}");
             }
         }
         "revealed" | "docked" => {
@@ -653,12 +653,12 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
             // 把胶囊唤出来（peek-reveal），宁可少一层交互也不能让应用不可达。
             let docked = state == "docked";
             if let Err(e) = peek.set_ignore_cursor_events(!docked) {
-                tracing::warn!("peek set_ignore_cursor_events failed: {e}");
+                tracing::warn!(target: "tum.window", "peek set_ignore_cursor_events failed: {e}");
                 if docked {
                     let _ = dash.emit("peek-reveal", ());
                 }
             } else if let Err(e) = dash.set_ignore_cursor_events(docked) {
-                tracing::warn!("dashboard set_ignore_cursor_events failed: {e}");
+                tracing::warn!(target: "tum.window", "dashboard set_ignore_cursor_events failed: {e}");
             }
         }
         other => return Err(format!("unknown peek state: {other}")),
@@ -869,6 +869,10 @@ pub async fn save_settings(
     let old_settings = state.settings.get().await;
     let old_proxy_url = old_settings.proxy_url.clone();
     let old_autostart = old_settings.autostart;
+    // Classify the edit while the "before" image is still in hand - save()
+    // overwrites the cache, so the diff has to happen here. Poll loops use this
+    // to skip a fetch when nothing they depend on moved.
+    let delta = crate::settings_delta::SettingsDelta::compute(&old_settings, &new_settings);
 
     state
         .settings
@@ -974,8 +978,10 @@ pub async fn save_settings(
     // immediately instead of waiting for a poll that no longer happens.
     let _ = app.emit("settings-changed", &new_settings);
     // Wake polling loops immediately so interval/enable edits apply now
-    // instead of after the current period.
-    let _ = state.settings_wake.send(());
+    // instead of after the current period. The delta tells each loop whether
+    // a fetch is warranted; a display-only save still wakes them so they can
+    // re-read enabled state, but costs no request.
+    let _ = state.settings_wake.send(delta);
     Ok(())
 }
 
@@ -1023,6 +1029,7 @@ pub async fn upsert_account(
     }
 
     let mut settings = state.settings.get().await;
+    let old_settings = settings.clone();
     if let Some(existing) = settings
         .accounts
         .iter_mut()
@@ -1033,6 +1040,10 @@ pub async fn upsert_account(
     } else {
         settings.accounts.push(account.clone());
     }
+    // A brand-new account has no snapshot, so this is poll-relevant; editing
+    // only the label or colour of an existing one is not. Computed before
+    // save() because that call consumes the "after" image.
+    let delta = crate::settings_delta::SettingsDelta::compute(&old_settings, &settings);
     state
         .settings
         .save(settings)
@@ -1050,7 +1061,7 @@ pub async fn upsert_account(
         }
     }
     drop(registry);
-    let _ = state.settings_wake.send(());
+    let _ = state.settings_wake.send(delta);
     Ok(instance_id)
 }
 
@@ -1061,7 +1072,11 @@ pub async fn remove_account(
     instance_id: String,
 ) -> Result<(), String> {
     let mut settings = state.settings.get().await;
+    let old_settings = settings.clone();
     settings.accounts.retain(|a| a.instance_id != instance_id);
+    // A removal is a membership change: the loop for this id retires at its
+    // next still_registered check, and the other accounts must not refetch.
+    let delta = crate::settings_delta::SettingsDelta::compute(&old_settings, &settings);
     state
         .settings
         .save(settings)
@@ -1073,7 +1088,7 @@ pub async fn remove_account(
     state.credentials.write().await.remove(&instance_id);
     state.registry.write().await.remove(&instance_id);
     state.state.write().await.remove(&instance_id);
-    let _ = state.settings_wake.send(());
+    let _ = state.settings_wake.send(delta);
     Ok(())
 }
 
@@ -1186,8 +1201,47 @@ fn proxy_probe_outcome(probe: Result<u16, String>) -> ProxyTestResult {
     }
 }
 
-/// Build a temporary client through the supplied proxy and probe a lightweight
-/// 204 endpoint. Nothing is persisted; the saved client is untouched.
+/// Connectivity probes tried in order until one answers.
+///
+/// The first entry is the historical `google.com/generate_204`, kept for
+/// users behind a filtered route where it is the cheapest signal. It is *not*
+/// the only entry: on a mainland-China network google.com is unreachable with
+/// or without a working proxy, so a single hard-coded probe reports "proxy
+/// broken" for a perfectly good proxy. The rest are hosts reachable from most
+/// networks, tried in order of how cheap the response is.
+const PROXY_PROBES: &[&str] = &[
+    "http://www.msftconnecttest.com/connecttest.txt",
+    "http://captive.apple.com/hotspot-detect.html",
+    "http://www.gstatic.com/generate_204",
+    "https://www.google.com/generate_204",
+];
+
+/// Fold the ordered per-probe results into one verdict.
+///
+/// Split out from the network loop so the decision is testable without a live
+/// proxy. Rules:
+/// - the first 2xx wins and stops the sequence;
+/// - the first *response* of any status also stops it, because receiving an
+///   HTTP status at all proves the proxy completed the request - a captive
+///   portal 403 is a different diagnosis than "no route", and is far more
+///   actionable than "everything failed";
+/// - if every probe failed at the transport layer, the last error is reported.
+fn proxy_probe_verdict(attempts: Vec<Result<u16, String>>) -> ProxyTestResult {
+    let mut last_err: Option<String> = None;
+    for attempt in attempts {
+        match attempt {
+            Ok(status) => return proxy_probe_outcome(Ok(status)),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    proxy_probe_outcome(Err(last_err.unwrap_or_else(|| {
+        "代理连接失败：所有探测地址均无响应".to_string()
+    })))
+}
+
+/// Build a temporary client through the supplied proxy and probe each
+/// endpoint in [`PROXY_PROBES`] until one answers. Nothing is persisted; the
+/// saved client is untouched.
 #[tauri::command]
 pub async fn test_proxy(url: String) -> Result<ProxyTestResult, String> {
     let url = url.trim().to_string();
@@ -1199,18 +1253,137 @@ pub async fn test_proxy(url: String) -> Result<ProxyTestResult, String> {
         });
     }
     let client = crate::build_http_client(Some(&url))?;
-    let probe = async {
-        let resp = client
-            .get("https://www.google.com/generate_204")
+
+    let mut attempts = Vec::with_capacity(PROXY_PROBES.len());
+    for probe in PROXY_PROBES {
+        let status = client
+            .get(*probe)
             .send()
             .await
-            .map_err(|e| format!("代理连接失败：{e}"))?;
-        Ok::<u16, String>(resp.status().as_u16())
+            .map(|r| r.status().as_u16())
+            .map_err(|e| format!("代理连接失败：{e}"));
+        let answered = status.is_ok();
+        attempts.push(status);
+        if answered {
+            break;
+        }
     }
-    .await;
-    Ok(proxy_probe_outcome(probe))
+    Ok(proxy_probe_verdict(attempts))
 }
 
+
+/// What `export_data` wrote. `rows` counts records, not file lines: the CSV
+/// header is not a row, and for JSON it is the number of entities included.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSummary {
+    pub rows: usize,
+    pub bytes: usize,
+    pub path: String,
+}
+
+/// Write the current data out to a file the user owns.
+///
+/// `scope` picks the dataset (`tools` / `providers` / `all`), `format` the
+/// shape (`json` / `csv`). Read-only with respect to app state: this never
+/// mutates the cache or triggers a rescan beyond the one a fresh panel would
+/// do anyway.
+#[tauri::command]
+pub async fn export_data(
+    state: State<'_, AppState>,
+    format: String,
+    scope: String,
+    dest: String,
+) -> Result<ExportSummary, String> {
+    let dest = dest.trim().to_string();
+    if dest.is_empty() {
+        return Err("请选择导出路径".to_string());
+    }
+    if !matches!(format.as_str(), "json" | "csv") {
+        return Err(format!("不支持的导出格式：{format}"));
+    }
+    if !matches!(scope.as_str(), "tools" | "providers" | "all") {
+        return Err(format!("不支持的导出范围：{scope}"));
+    }
+    if format == "csv" && scope == "all" {
+        return Err(
+            "CSV 放不下用量窗口和本地工具这两套互不相干的列，请分开导出或改用 JSON".to_string(),
+        );
+    }
+
+    let want_providers = scope == "providers" || scope == "all";
+    let want_tools = scope == "tools" || scope == "all";
+
+    let providers: Vec<UsageSnapshot> = if want_providers {
+        let guard = state.state.read().await;
+        guard
+            .values()
+            .filter_map(|ps: &ProviderState| ps.snapshot.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Prefer the warm cache: an export triggered from the tools panel should
+    // not re-parse every session log just because the short-lived cache
+    // expired. Fall back to the same scan the panel itself would do.
+    let tools: LocalToolsPayload = if want_tools {
+        match state.local.cached().await {
+            Some(p) => p,
+            None => {
+                let scanned = crate::local::scan_all(&state.storage);
+                let sessions_parsed: u64 = scanned.iter().map(|t| t.session_count).sum();
+                LocalToolsPayload { tools: scanned, sessions_parsed }
+            }
+        }
+    } else {
+        LocalToolsPayload::default()
+    };
+
+    let (body, rows) = match (format.as_str(), scope.as_str()) {
+        ("csv", "providers") => (
+            crate::export::render_providers_csv(&providers),
+            crate::export::provider_row_count(&providers),
+        ),
+        ("csv", "tools") => (
+            crate::export::render_tools_csv(&tools),
+            crate::export::tool_row_count(&tools),
+        ),
+        ("json", "providers") => (
+            serde_json::to_string_pretty(&providers)
+                .map_err(|e| format!("序列化失败：{e}"))?,
+            providers.len(),
+        ),
+        ("json", "tools") => (
+            serde_json::to_string_pretty(&tools).map_err(|e| format!("序列化失败：{e}"))?,
+            tools.tools.len(),
+        ),
+        ("json", "all") => {
+            let doc = crate::export::ExportAllJson {
+                providers: &providers,
+                tools: &tools,
+            };
+            (
+                serde_json::to_string_pretty(&doc).map_err(|e| format!("序列化失败：{e}"))?,
+                providers.len() + tools.tools.len(),
+            )
+        }
+        _ => return Err("导出参数组合不受支持".to_string()),
+    };
+
+    // tokio::fs::write yields (), not a byte count, so report the length we
+    // handed it rather than trusting a second stat of the file.
+    let bytes = body.as_bytes().len();
+    tokio::fs::write(&dest, body.as_bytes())
+        .await
+        .map_err(|e| format!("写入 {dest} 失败：{e}"))?;
+
+    Ok(ExportSummary {
+        rows,
+        bytes,
+        path: dest,
+    })
+}
 /// Read the local Codex CLI credentials (`~/.codex/auth.json`) so the
 /// Settings form can pre-fill them. `None` when the file is absent or the
 /// token is blank.
@@ -1225,7 +1398,7 @@ pub async fn detect_codex_token() -> Result<Option<DetectedCodexToken>, String> 
 
 #[cfg(test)]
 mod proxy_tests {
-    use super::{proxy_changed, proxy_probe_outcome};
+    use super::{proxy_changed, proxy_probe_outcome, proxy_probe_verdict, PROXY_PROBES};
 
     #[test]
     fn detects_real_change() {
@@ -1272,6 +1445,61 @@ mod proxy_tests {
         assert!(!r.ok);
         assert!(r.status.is_none());
         assert_eq!(r.error.as_deref(), Some("connection refused"));
+    }
+
+    #[test]
+    fn verdict_stops_at_the_first_success() {
+        // Later probes are never reached: a 204 already proves the proxy works.
+        let r = proxy_probe_verdict(vec![
+            Err("first unreachable".to_string()),
+            Ok(204u16),
+            Err("never tried".to_string()),
+        ]);
+        assert!(r.ok);
+        assert_eq!(r.status, Some(204));
+    }
+
+    #[test]
+    fn verdict_stops_at_the_first_http_response_even_when_not_2xx() {
+        // An HTTP status at all means the proxy completed the request. A
+        // captive-portal 403 is a better diagnosis than "everything failed",
+        // so the sequence must not keep probing past it.
+        let r = proxy_probe_verdict(vec![Err("blocked".to_string()), Ok(403u16)]);
+        assert!(!r.ok);
+        assert_eq!(r.status, Some(403));
+        assert!(r.error.as_deref().unwrap().contains("403"));
+    }
+
+    #[test]
+    fn verdict_reports_the_last_error_when_all_probes_fail() {
+        let r = proxy_probe_verdict(vec![
+            Err("first".to_string()),
+            Err("second".to_string()),
+            Err("last".to_string()),
+        ]);
+        assert!(!r.ok);
+        assert!(r.status.is_none());
+        assert_eq!(r.error.as_deref(), Some("last"));
+    }
+
+    #[test]
+    fn verdict_on_an_empty_probe_list_is_a_failure_not_a_success() {
+        let r = proxy_probe_verdict(vec![]);
+        assert!(!r.ok);
+        assert!(r.error.is_some());
+    }
+
+    #[test]
+    fn probe_list_leads_with_endpoints_reachable_without_google() {
+        // Regression guard for the original bug: a single google.com probe
+        // reports a broken proxy on a mainland-China network. google must not
+        // be the only, nor the first, entry.
+        assert!(PROXY_PROBES.len() >= 2);
+        assert!(!PROXY_PROBES[0].contains("google.com"));
+        assert!(PROXY_PROBES.iter().any(|p| p.contains("google.com")));
+        for p in PROXY_PROBES {
+            assert!(p.starts_with("http://") || p.starts_with("https://"));
+        }
     }
 }
 

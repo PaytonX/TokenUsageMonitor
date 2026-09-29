@@ -10,6 +10,7 @@
 //! - Periodic scheduler that emits `usage-updated` events
 
 pub mod exchange;
+pub mod export;
 pub mod ipc;
 pub mod hub;
 pub mod local;
@@ -19,13 +20,14 @@ pub mod pricing;
 pub mod providers;
 pub mod scheduler;
 pub mod settings;
+pub mod settings_delta;
 pub mod signing;
 pub mod storage;
 
 use providers::{
     AccountMeta, Credentials, ProviderRegistry, SharedProviderState,
 };
-use notify::SharedNotifyState;
+use notify::{SharedErrorDeduper, SharedNotifyState};
 use reqwest::Client;
 use scheduler::SharedBurnTracker;
 use std::collections::HashMap;
@@ -56,12 +58,18 @@ pub struct AppState {
     pub burn: SharedBurnTracker,
     /// Threshold notification dedupe state (one warn + one crit per window).
     pub notify: SharedNotifyState,
+    /// Error-event dedupe state. Keeps a persistently failing provider from
+    /// re-emitting `provider-error` on every single poll.
+    pub error_deduper: SharedErrorDeduper,
     /// Pause flag broadcast. `toggle_polling` flips it; polling tasks
     /// subscribe and skip ticks while the latest value is true.
     pub pause_tx: Arc<watch::Sender<bool>>,
     /// A ping on this channel wakes every polling task so interval edits and
     /// enable/disable changes apply immediately instead of after one period.
-    pub settings_wake: Arc<watch::Sender<()>>,
+    /// The payload says which fields actually changed, so a display-only edit
+    /// (currency, ring window, edge snap) does not cost one request per
+    /// provider. See [`settings_delta::SettingsDelta`].
+    pub settings_wake: Arc<watch::Sender<settings_delta::SettingsDelta>>,
     /// Swappable shared HTTP client. A proxy change replaces the client under
     /// the write lock and rebuilds the whole registry; access sites take a
     /// read lock and clone the cheap inner Arc.
@@ -289,16 +297,19 @@ pub fn run() {
             let settings_store = settings::SettingsStore::new(data_dir)
                 .expect("loading settings store");
 
-            // 启动自愈：自启开启时注册表项可能被用户或安全软件清除，启动时
-            // 按设置对账一次；失败不阻断启动。
+            // 启动自愈：自启开启时按设置对账一次注册表项，失败不阻断启动。
+            //
+            // 这里必须无条件 enable()，不能只在 is_enabled() 为假时补写：
+            // auto-launch 的 is_enabled() 仅判断注册表键是否存在，从不校验它
+            // 指向的路径是否还有效。exe 搬家、CARGO_TARGET_DIR 变更或旧目录被
+            // 清理后，键会"存在"却指向一个不存在的文件，开机静默失败，而这种
+            // 状态自愈恰好查不出来。enable() 是幂等覆盖写，会用当前 exe 路径
+            // 把注册表项重新校准，因此每次启动都调一次。
             {
                 use tauri_plugin_autostart::ManagerExt;
                 let s = settings_store.read_blocking();
                 if s.autostart {
-                    let autolaunch = app.autolaunch();
-                    if !autolaunch.is_enabled().unwrap_or(false) {
-                        let _ = autolaunch.enable();
-                    }
+                    let _ = app.autolaunch().enable();
                 }
             }
 
@@ -329,6 +340,8 @@ pub fn run() {
             let burn: SharedBurnTracker =
                 Arc::new(tokio::sync::Mutex::new(Default::default()));
             let notify_state: SharedNotifyState =
+                Arc::new(tokio::sync::Mutex::new(Default::default()));
+            let error_deduper: SharedErrorDeduper =
                 Arc::new(tokio::sync::Mutex::new(Default::default()));
             // Local-tool usage cache (Claude Code logs).
             let local: local::SharedLocalCache =
@@ -532,7 +545,7 @@ pub fn run() {
                             None => {
                                 let _ = app_fx.emit("rates-updated", &snap);
                             }
-                            Some(w) => tracing::warn!("exchange rate refresh: {w}"),
+                            Some(w) => tracing::warn!(target: "tum.exchange", "exchange rate refresh: {w}"),
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
                     }
@@ -545,8 +558,11 @@ pub fn run() {
             let (pause_tx, _pause_rx) = watch::channel(false);
             let pause_tx = Arc::new(pause_tx);
 
-            // Settings-change wake ping, same pattern.
-            let (settings_wake, _wake_rx) = watch::channel(());
+            // Settings-change wake ping, same pattern. The initial value is an
+            // empty delta: a subscriber that has not seen a send yet must not
+            // treat the seeded value as a change.
+            let (settings_wake, _wake_rx) =
+                watch::channel(settings_delta::SettingsDelta::default());
             let settings_wake = Arc::new(settings_wake);
 
             // Mirror close-to-tray / edge-snap into atomics so the synchronous
@@ -591,6 +607,7 @@ pub fn run() {
                 settings: Arc::new(settings_store),
                 burn,
                 notify: notify_state,
+                error_deduper,
                 pause_tx,
                 settings_wake,
                 http,
@@ -760,6 +777,7 @@ pub fn run() {
             ipc::test_proxy,
             ipc::detect_codex_token,
             ipc::get_local_tools,
+            ipc::export_data,
             ipc::get_device_report,
             ipc::get_hub_devices,
             ipc::get_exchange_rates,

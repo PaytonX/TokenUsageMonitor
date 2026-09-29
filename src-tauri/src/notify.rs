@@ -6,6 +6,88 @@
 
 use crate::providers::{BurnInfo, UsageSnapshot};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+/// Rate-limits repeated `provider-error` events for the same failing pair.
+///
+/// Threshold notifications already dedupe per window ([`NotifyState`]), but the
+/// error path did not: a provider that stays rate-limited or offline re-emitted
+/// on every single poll, and with a 300s period that is one frontend event per
+/// five minutes per account, forever, even when the message is identical.
+///
+/// The frontend only needs to know that the card is broken and why. Repeating
+/// the same reason adds no information, so we suppress repeats inside a cool
+/// down window and let a *changed* message through immediately - a genuine
+/// state change (auth error -> rate limit) should never be delayed.
+#[derive(Debug)]
+pub struct ErrorDeduper {
+    /// (provider_id, error text) -> when we last emitted this exact pair.
+    last_emitted: HashMap<(String, String), Instant>,
+    /// Re-emit the same message at most once per this duration.
+    pub cooldown: Duration,
+}
+
+/// Five minutes: long enough to swallow a poll storm, short enough that a user
+/// watching the card still sees the error keep "breathing" without a restart.
+pub const ERROR_COOLDOWN: Duration = Duration::from_secs(300);
+
+impl Default for ErrorDeduper {
+    fn default() -> Self {
+        Self {
+            last_emitted: HashMap::new(),
+            cooldown: ERROR_COOLDOWN,
+        }
+    }
+}
+
+impl ErrorDeduper {
+    /// Record a failure and report whether it should reach the frontend.
+    /// First sighting always fires; an identical repeat inside the cool down
+    /// is suppressed; a different message for the same provider fires at once.
+    pub fn should_emit(&mut self, provider_id: &str, error: &str) -> bool {
+        let key = (provider_id.to_string(), error.to_string());
+        let now = Instant::now();
+        match self.last_emitted.get(&key) {
+            Some(&last) if now.duration_since(last) < self.cooldown => {
+                tracing::trace!(
+                    target: "tum.notify",
+                    provider = provider_id,
+                    error,
+                    "suppressed duplicate provider-error"
+                );
+                false
+            }
+            _ => {
+                self.last_emitted.insert(key, now);
+                self.prune(now);
+                true
+            }
+        }
+    }
+
+    /// Drop bookkeeping for a provider that is polling again, so a later
+    /// regression of the same error is reported as new rather than as a
+    /// continuation of a failure from before the recovery.
+    pub fn clear(&mut self, provider_id: &str) {
+        self.last_emitted.retain(|(id, _), _| id != provider_id);
+    }
+
+    /// Forget entries that have aged past the cool down. Without this the map
+    /// would retain one dead string per (provider, message) pair for the whole
+    /// app lifetime. Only called on the emitting path, and only once the map
+    /// is larger than a handful of entries, so it stays O(n) with a tiny n.
+    fn prune(&mut self, now: Instant) {
+        if self.last_emitted.len() <= 32 {
+            return;
+        }
+        // Keep the entries that are still within twice the cool down; drop the
+        // rest. A just-emitted entry always survives, because its age is 0.
+        let horizon = self.cooldown * 2;
+        self.last_emitted
+            .retain(|_, seen| now.duration_since(*seen) < horizon);
+    }
+}
+
+pub type SharedErrorDeduper = std::sync::Arc<tokio::sync::Mutex<ErrorDeduper>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
@@ -122,7 +204,7 @@ impl NotifyState {
 pub fn deliver(app: &tauri::AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
-        tracing::warn!(error = %e, "failed to show notification");
+        tracing::warn!(target: "tum.notify", error = %e, "failed to show notification");
     }
 }
 
@@ -200,5 +282,117 @@ mod notify_state_tests {
             NotifyAction::Fire { body, .. } => assert!(!body.contains("耗尽")),
             other => panic!("expected fire, got other variant: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod error_deduper_tests {
+    use super::*;
+
+    fn deduper(cooldown_secs: u64) -> ErrorDeduper {
+        ErrorDeduper {
+            last_emitted: HashMap::new(),
+            cooldown: Duration::from_secs(cooldown_secs),
+        }
+    }
+
+    #[test]
+    fn first_failure_of_a_provider_always_emits() {
+        let mut d = deduper(300);
+        assert!(d.should_emit("minimax-main", "network timeout"));
+    }
+
+    #[test]
+    fn identical_repeat_inside_the_cooldown_is_suppressed() {
+        let mut d = deduper(300);
+        assert!(d.should_emit("minimax-main", "network timeout"));
+        assert!(!d.should_emit("minimax-main", "network timeout"));
+        assert!(!d.should_emit("minimax-main", "network timeout"));
+    }
+
+    #[test]
+    fn a_changed_message_for_the_same_provider_emits_immediately() {
+        let mut d = deduper(300);
+        assert!(d.should_emit("minimax-main", "network timeout"));
+        // Auth failure replacing a timeout is a new fact, not a repeat.
+        assert!(d.should_emit("minimax-main", "401 unauthorized"));
+        // ...and the original message stays suppressed, so alternating
+        // between two errors cannot be used to bypass the cool down.
+        assert!(!d.should_emit("minimax-main", "network timeout"));
+    }
+
+    #[test]
+    fn one_failing_provider_does_not_silence_another() {
+        let mut d = deduper(300);
+        assert!(d.should_emit("minimax-main", "network timeout"));
+        assert!(d.should_emit("deepseek-main", "network timeout"));
+        assert!(!d.should_emit("deepseek-main", "network timeout"));
+    }
+
+    #[test]
+    fn clear_rearms_the_error_after_a_successful_poll() {
+        let mut d = deduper(300);
+        assert!(d.should_emit("minimax-main", "network timeout"));
+        assert!(!d.should_emit("minimax-main", "network timeout"));
+        d.clear("minimax-main");
+        // Recovery happened, so a later regression is news again.
+        assert!(d.should_emit("minimax-main", "network timeout"));
+    }
+
+    #[test]
+    fn clear_only_touches_the_named_provider() {
+        let mut d = deduper(300);
+        assert!(d.should_emit("a", "boom"));
+        assert!(d.should_emit("b", "boom"));
+        d.clear("a");
+        assert!(d.should_emit("a", "boom"));
+        assert!(!d.should_emit("b", "boom"));
+    }
+
+    #[test]
+    fn a_zero_cooldown_lets_every_repeat_through() {
+        // Guards the arithmetic in should_emit: with no cool down the elapsed
+        // check must never be true, or the dedupe would silently die.
+        let mut d = deduper(0);
+        assert!(d.should_emit("p", "boom"));
+        assert!(d.should_emit("p", "boom"));
+        assert!(d.should_emit("p", "boom"));
+    }
+
+    #[test]
+    fn prune_drops_entries_older_than_twice_the_cooldown() {
+        // 用毫秒级冷却 + 真实 sleep 驱动淘汰，而不是把 Instant 回拨一小时：
+        // Windows 的 Instant 底层是进程启动以来的 QPC 计数，测试进程刚启动
+        // 就回拨 1 小时会下溢 panic（overflow when subtracting duration）。
+        let mut d = ErrorDeduper {
+            last_emitted: HashMap::new(),
+            cooldown: Duration::from_millis(1),
+        };
+        for i in 0..40 {
+            d.last_emitted
+                .insert((format!("p{i}"), "boom".to_string()), Instant::now());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(d.should_emit("fresh", "boom"));
+        // 40 条已越过 2× 冷却窗口的记录被淘汰，只剩刚写入的一条。
+        assert_eq!(d.last_emitted.len(), 1);
+        assert!(d
+            .last_emitted
+            .contains_key(&("fresh".to_string(), "boom".to_string())));
+    }
+
+    #[test]
+    fn prune_is_skipped_while_the_map_is_small() {
+        let mut d = deduper(300);
+        // 31 entries, so the one inserted by should_emit brings the map to 32 -
+        // exactly the floor, and prune bails out before scanning.
+        for i in 0..31 {
+            d.last_emitted
+                .insert((format!("p{i}"), "boom".to_string()), Instant::now());
+        }
+        assert!(d.should_emit("fresh", "boom"));
+        // Below the size floor nothing is evicted, so a normal-size map never
+        // pays for a full scan on the hot path.
+        assert_eq!(d.last_emitted.len(), 32);
     }
 }

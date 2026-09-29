@@ -1,4 +1,4 @@
-﻿//! User settings: provider enable list, polling intervals, dashboard position.
+//! User settings: provider enable list, polling intervals, dashboard position.
 //! Non-sensitive data lives in `config.toml` under the OS app data dir.
 //! Sensitive credentials (API keys, secret keys) are stored in the OS
 //! credential manager via the `keyring` crate (Windows DPAPI).
@@ -261,6 +261,25 @@ impl SettingsStore {
 
     pub async fn get(&self) -> Settings {
         self.cache.read().await.clone()
+    }
+
+    /// Read exactly what a poll loop needs - "is this account enabled" and
+    /// "what is the global interval" - under a single read lock.
+    ///
+    /// `get()` clones the whole `Settings`: the accounts vector, the
+    /// rate-override map and every `String` field. The scheduler called it on
+    /// both of its wake-up paths purely to read two `Copy` values, so every
+    /// wake-up allocated a full settings copy for nothing. This keeps the
+    /// accounts list as the single source of truth (no mirrored set to keep in
+    /// sync at four write sites) while making the per-wake read allocation
+    /// free.
+    pub async fn poll_view(&self, instance_id: &str) -> (bool, u32) {
+        let s = self.cache.read().await;
+        let enabled = s
+            .accounts
+            .iter()
+            .any(|a| a.instance_id == instance_id && a.enabled);
+        (enabled, s.poll_interval_seconds)
     }
 
     /// Synchronous read of the cached settings. Safe for one-shot startup use

@@ -46,6 +46,12 @@ pub fn src_fingerprint() -> String {
     if let Some(db) = cherry_db() {
         hash_file(&db, &mut hasher);
     }
+    // 6) ZCode SQLite (+ WAL/shm side files).
+    for dir in zcode_db_dirs() {
+        for name in ["db.sqlite", "db.sqlite-wal", "db.sqlite-shm"] {
+            hash_file(&dir.join(name), &mut hasher);
+        }
+    }
 
     format!("{:016x}", hasher.finish())
 }
@@ -120,6 +126,13 @@ pub fn tool_fingerprint(tool_id: &str) -> String {
                 hash_file(&db, &mut hasher);
             }
         }
+        "zcode" => {
+            for dir in zcode_db_dirs() {
+                for name in ["db.sqlite", "db.sqlite-wal", "db.sqlite-shm"] {
+                    hash_file(&dir.join(name), &mut hasher);
+                }
+            }
+        }
         _ => return "".to_string(),
     }
     format!("{:016x}", hasher.finish())
@@ -135,6 +148,7 @@ pub fn tool_installed(tool_id: &str) -> bool {
         "deepseek-harness" => !super::wsl::existing_dotdirs(".dsh/sessions").is_empty(),
         "cherry-studio" => cherry_db().is_some(),
         "minimax-code" => !minimax_dbs().is_empty(),
+        "zcode" => !zcode_db_dirs().is_empty(),
         _ => false,
     }
 }
@@ -177,6 +191,12 @@ pub fn tool_last_active_at(tool_id: &str) -> Option<i64> {
         "deepseek-harness" => newest_of_dirs(&super::wsl::existing_dotdirs(".dsh/sessions")),
         "cherry-studio" => cherry_db().and_then(|db| newest_of_files(&[db])),
         "minimax-code" => newest_of_files(&minimax_dbs()),
+        "zcode" => newest_of_files(
+            &zcode_db_dirs()
+                .into_iter()
+                .map(|d| d.join("db.sqlite"))
+                .collect::<Vec<_>>(),
+        ),
         _ => None,
     }
 }
@@ -228,6 +248,14 @@ fn minimax_dbs() -> Vec<std::path::PathBuf> {
         out.push(home.join(".minimax").join("sqlite.db"));
     }
     out
+}
+
+/// ZCode 的消息库目录（Windows + 每个 WSL home 的 `.zcode/cli/db`）。
+fn zcode_db_dirs() -> Vec<std::path::PathBuf> {
+    super::wsl::existing_dotdirs(".zcode/cli/db")
+        .into_iter()
+        .filter(|d| d.join("db.sqlite").exists())
+        .collect()
 }
 
 fn cherry_db() -> Option<std::path::PathBuf> {

@@ -40,13 +40,6 @@ pub fn default_interval_for(provider_id: &str) -> u64 {
     }
 }
 
-/// Whether an account instance is currently enabled in `Settings::accounts`.
-fn account_enabled(s: &crate::settings::Settings, instance_id: &str) -> bool {
-    s.accounts
-        .iter()
-        .any(|a| a.instance_id == instance_id && a.enabled)
-}
-
 /// Effective polling period: a positive global override in Settings wins;
 /// 0 means "use the per-provider default".
 fn effective_interval(provider_id: &str, global_seconds: u32) -> Duration {
@@ -262,15 +255,16 @@ async fn poll_loop(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
                 if !still_registered(&app, &provider, &id).await {
                     break;
                 }
-                let enabled = account_enabled(
-                    &app.state::<AppState>().settings.get().await,
-                    &id,
-                );
+                let (enabled, _) = app
+                    .state::<AppState>()
+                    .settings
+                    .poll_view(&id)
+                    .await;
                 if !enabled {
                     continue;
                 }
                 if let Err(e) = poll_one(&app, &provider).await {
-                    tracing::warn!(provider = %id, error = %e, "poll failed");
+                    tracing::warn!(target: "tum.poll", provider = %id, error = %e, "poll failed");
                 }
             }
             changed = settings_rx.changed() => {
@@ -282,23 +276,34 @@ async fn poll_loop(app: AppHandle, provider: Arc<dyn Provider>, id: String) {
                 if !still_registered(&app, &provider, &id).await {
                     break;
                 }
-                let (enabled, new_period) = {
-                    let s = app.state::<AppState>().settings.get().await;
-                    (
-                        account_enabled(&s, &id),
-                        effective_interval(provider.kind(), s.poll_interval_seconds),
-                    )
-                };
+                // The payload says whether this save can change when or whether
+                // we poll. A display-only edit (currency, ring window, edge
+                // snap) still re-reads enabled state and the interval below,
+                // but must not cost a request.
+                let poll_relevant = settings_rx.borrow_and_update().poll_relevant;
+                let (enabled, global_seconds) = app
+                    .state::<AppState>()
+                    .settings
+                    .poll_view(&id)
+                    .await;
+                let new_period = effective_interval(provider.kind(), global_seconds);
                 if new_period != period {
                     period = new_period;
                     let mut rebuilt = interval_at(Instant::now() + period, period);
                     rebuilt.set_missed_tick_behavior(MissedTickBehavior::Delay);
                     tick = rebuilt;
                 }
+                // A watch channel keeps only the newest value, so a
+                // poll-relevant save followed within one select iteration by a
+                // display-only one coalesces into "nothing changed". The only
+                // case where that loses data is an account that has no
+                // snapshot at all, so probe for it before skipping the fetch.
+                let needs_first_fetch = !poll_relevant
+                    && !app.state::<AppState>().state.read().await.contains_key(&id);
                 // Enable/disable or interval edits refresh immediately.
-                if enabled && !*pause_rx.borrow() {
+                if (poll_relevant || needs_first_fetch) && enabled && !*pause_rx.borrow() {
                     if let Err(e) = poll_one(&app, &provider).await {
-                        tracing::warn!(provider = %id, error = %e,
+                        tracing::warn!(target: "tum.poll", provider = %id, error = %e,
                             "poll after settings change failed");
                     }
                 }
@@ -336,6 +341,16 @@ pub async fn poll_one(
     let mut guard = state.state.write().await;
     match result {
         Ok(snapshot) => {
+            // A successful poll re-arms error reporting: if this provider later
+            // breaks the same way, that is new information rather than a repeat
+            // of a failure the user has already seen and that we have since
+            // recovered from.
+            state
+                .error_deduper
+                .lock()
+                .await
+                .clear(&id);
+
             // Burn + active share one baseline with manual refresh.
             let (burn, active) = {
                 let mut tracker = state.burn.lock().await;
@@ -377,10 +392,19 @@ pub async fn poll_one(
             );
         }
         Err(err) => {
-            let _ = app.emit(
-                "provider-error",
-                &serde_json::json!({ "id": id, "error": &err }),
-            );
+            // Only the first failure inside the cool down reaches the frontend.
+            // Without this a provider that stays offline emits one event per
+            // poll forever, and the frontend re-renders an identical error card
+            // on every tick. The provider state below is still updated every
+            // time: this only gates the event, not the recorded last_error.
+            let message = err.to_string();
+            let should_emit = state.error_deduper.lock().await.should_emit(&id, &message);
+            if should_emit {
+                let _ = app.emit(
+                    "provider-error",
+                    &serde_json::json!({ "id": id, "error": &message }),
+                );
+            }
             // Keep the last good snapshot: stale data + error badge beats an
             // empty card during a transient API outage.
             let entry = guard.entry(id.clone()).or_default();

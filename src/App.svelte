@@ -1075,6 +1075,8 @@
               burn={burns[snap.provider_id] ?? null}
               active={actives[snap.provider_id] ?? false}
               {lastRefreshAt}
+              now={now.getTime()}
+              {pollIntervalSec}
               focused={focus === snap.provider_id}
               accent={accentById[snap.provider_id]}
               countdown={displayRemaining}

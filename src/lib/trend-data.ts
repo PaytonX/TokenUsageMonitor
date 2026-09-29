@@ -138,9 +138,13 @@ const PROVIDER_FALLBACK_COLORS: Record<string, string> = {
   minimax: "#ff5c5c",
   minimax_api: "#ff5c5c",
   deepseek: "#4d6bfe",
-  volcengine: "#12b76a",
-  volcengine_api: "#12b76a",
+  // 与 brand-glyphs.ts 登记的 volcengine 品牌色保持一致（tile 底色为 #006aff，
+  // 折线取其略亮一档的同色系，在深色图表底上对比更足）。此处只是"账户未设
+  // 强调色"时的回退色——账户自定义强调色优先级更高。
+  volcengine: "#1664ff",
+  volcengine_api: "#1664ff",
   openai: "#10a37f",
+  opencode: "#e8eaed",
   gemini: "#4285f4",
   anthropic: "#d97757",
   qwen: "#8b5cf6",
