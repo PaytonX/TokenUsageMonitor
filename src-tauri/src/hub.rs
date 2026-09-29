@@ -9,6 +9,7 @@
 
 use crate::storage::Storage;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -18,6 +19,31 @@ use std::sync::Arc;
 pub struct HubDay {
     pub date: String,
     pub total: f64,
+}
+
+/// 单日带输入/缓存/输出拆分的用量（分工具序列用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubDayIo {
+    pub date: String,
+    pub input: f64,
+    pub cache_read: f64,
+    pub output: f64,
+    pub total: f64,
+}
+
+/// 单工具的分日序列，供全端汇总在工具页复现跨设备的分工具视图。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubToolSeries {
+    pub name: String,
+    pub sessions: u64,
+    pub daily: Vec<HubDayIo>,
+}
+
+/// 单模型的分日序列（仅总量）。成本不跨设备同步：各端价格表与币种口径
+/// 不同，聚合成本必然失真，模型页在汇总态隐藏成本。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubModelSeries {
+    pub daily: Vec<HubDay>,
 }
 
 /// 单台设备上报的用量摘要。
@@ -37,6 +63,13 @@ pub struct HubDevice {
     /// 近 90 天逐日 token 序列（升序，缺量日补 0）。旧报告无此字段时回退为空。
     #[serde(default)]
     pub daily: Vec<HubDay>,
+    /// 近 90 天分工具序列。旧版本报告无此字段 → 空 Map：前端汇总对该设备
+    /// 相应降级（只有日总量，无分工具/分模型视图），并提示版本差异。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tools: HashMap<String, HubToolSeries>,
+    /// 近 90 天分模型序列（跨工具按模型名归并后）。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub models: HashMap<String, HubModelSeries>,
 }
 
 /// 启动一个阻塞式的 hub HTTP 服务线程。`storage` 用 clone 传入；服务会在独立线程
@@ -227,7 +260,7 @@ pub fn build_device_usage(
     tool_tokens: f64,
     provider_count: u64,
     tool_count: u64,
-    daily: Vec<HubDay>,
+    usage: ToolUsage,
 ) -> HubDevice {
     HubDevice {
         device_id: device_id.to_string(),
@@ -239,7 +272,9 @@ pub fn build_device_usage(
         tool_tokens,
         provider_count,
         tool_count,
-        daily,
+        daily: usage.daily,
+        tools: usage.tools,
+        models: usage.models,
     }
 }
 
@@ -258,31 +293,75 @@ pub fn machine_info() -> (String, String, String, String, String) {
     )
 }
 
-/// 从本地工具扫描缓存聚合近 90 天逐日 token 序列（跨工具按日求和，升序）。
-/// 缓存未就绪时返回空序列。
-pub async fn tool_daily_from_cache(
-    local: &crate::local::SharedLocalCache,
-) -> Vec<HubDay> {
+/// 从本地工具扫描缓存聚合的近 90 天用量（总日序列 + 分工具 + 分模型）。
+#[derive(Debug, Clone, Default)]
+pub struct ToolUsage {
+    pub daily: Vec<HubDay>,
+    pub tools: HashMap<String, HubToolSeries>,
+    pub models: HashMap<String, HubModelSeries>,
+}
+
+/// 从本地工具扫描缓存聚合近 90 天用量：跨工具按日求和的总序列，外加
+/// 分工具（含输入/缓存/输出拆分与会话数）与分模型（仅总量）序列，供
+/// 全端汇总在趋势/工具/模型三个页签复现跨设备视图。缓存未就绪返回空。
+pub async fn tool_usage_from_cache(local: &crate::local::SharedLocalCache) -> ToolUsage {
     let Some(payload) = local.cached().await else {
-        return Vec::new();
+        return ToolUsage::default();
     };
+    let mut out = ToolUsage::default();
     let mut by = std::collections::BTreeMap::<String, f64>::new();
+    let mut models_by = std::collections::BTreeMap::<String, std::collections::BTreeMap<String, f64>>::new();
     for tool in &payload.tools {
+        let mut io_days = Vec::with_capacity(tool.daily.len());
         for day in &tool.daily {
             *by.entry(day.date.clone()).or_default() += day.total;
+            io_days.push(HubDayIo {
+                date: day.date.clone(),
+                input: day.input,
+                cache_read: day.cache_read,
+                output: day.output,
+                total: day.total,
+            });
         }
+        out.tools.insert(
+            tool.id.clone(),
+            HubToolSeries {
+                name: tool.name.clone(),
+                sessions: tool.session_count,
+                daily: io_days,
+            },
+        );
+        for model in &tool.models {
+            let per_date = models_by.entry(model.model.clone()).or_default();
+            for day in &model.daily {
+                *per_date.entry(day.date.clone()).or_default() += day.total;
+            }
+        }
+    }
+    for (model, per_date) in models_by {
+        out.models.insert(
+            model,
+            HubModelSeries {
+                daily: per_date
+                    .into_iter()
+                    .map(|(date, total)| HubDay { date, total })
+                    .collect(),
+            },
+        );
     }
     let mut keys: Vec<String> = by.keys().cloned().collect();
     keys.sort();
     if keys.len() > 90 {
         keys = keys[keys.len() - 90..].to_vec();
     }
-    keys.into_iter()
+    out.daily = keys
+        .into_iter()
         .map(|date| {
             let total = by[&date];
             HubDay { date, total }
         })
-        .collect()
+        .collect();
+    out
 }
 
 #[cfg(test)]
@@ -315,8 +394,8 @@ mod tests {
         let storage = crate::storage::Storage::open(&path).unwrap();
         let s = Arc::new(storage);
 
-        let d1 = build_device_usage("alpha", "PC-A", "windows", "x86_64", "0.1.0", 123.0, 2, 3, Vec::new());
-        let d2 = build_device_usage("beta", "PC-B", "windows", "arm64", "0.1.0", 456.0, 1, 2, Vec::new());
+        let d1 = build_device_usage("alpha", "PC-A", "windows", "x86_64", "0.1.0", 123.0, 2, 3, ToolUsage::default());
+        let d2 = build_device_usage("beta", "PC-B", "windows", "arm64", "0.1.0", 456.0, 1, 2, ToolUsage::default());
         s.upsert_hub_device(&d1).unwrap();
         s.upsert_hub_device(&d2).unwrap();
 
@@ -326,7 +405,7 @@ mod tests {
         assert_eq!(ids, vec!["alpha", "beta"]);
 
         // 再次上报 alpha 覆盖而非重复。
-        let d1b = build_device_usage("alpha", "PC-A", "windows", "x86_64", "0.1.1", 999.0, 2, 3, Vec::new());
+        let d1b = build_device_usage("alpha", "PC-A", "windows", "x86_64", "0.1.1", 999.0, 2, 3, ToolUsage::default());
         s.upsert_hub_device(&d1b).unwrap();
         let devices = s.list_hub_devices().unwrap();
         assert_eq!(devices.len(), 2);

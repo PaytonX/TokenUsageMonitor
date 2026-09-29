@@ -217,9 +217,9 @@ pub async fn get_hub_devices(
         tool_count = payload.tools.len() as u64;
     }
     let provider_count = state.settings.get().await.accounts.len() as u64;
-    let daily = crate::hub::tool_daily_from_cache(&state.local).await;
+    let usage = crate::hub::tool_usage_from_cache(&state.local).await;
     let self_device = crate::hub::build_device_usage(
-        &id, &host, &os, &arch, &ver, tool_tokens, provider_count, tool_count, daily,
+        &id, &host, &os, &arch, &ver, tool_tokens, provider_count, tool_count, usage,
     );
 
     // 候选设备：agent 模式下优先拉远端 hub 列表，其次本地存储。

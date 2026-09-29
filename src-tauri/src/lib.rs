@@ -220,11 +220,11 @@ async fn build_self_device(
 ) -> hub::HubDevice {
     let tool_tokens = cached_tool_tokens(local).await;
     let tool_count = cached_tool_count(local).await;
-    let daily = hub::tool_daily_from_cache(local).await;
+    let usage = hub::tool_usage_from_cache(local).await;
     let (id, host, os, arch, ver) = hub::machine_info();
     hub::build_device_usage(
         &id, &host, &os, &arch, &ver,
-        tool_tokens, account_count, tool_count, daily,
+        tool_tokens, account_count, tool_count, usage,
     )
 }
 
