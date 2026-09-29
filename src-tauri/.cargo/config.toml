@@ -21,3 +21,9 @@
 [target.x86_64-pc-windows-gnu]
 linker = "rust-lld"
 rustflags = ["-L", "self-contained"]
+
+# 构建产物放在项目内 src-tauri/target/，不再依赖用户级 CARGO_TARGET_DIR
+# 指向 D 盘根目录的共享缓存（后者已从 Windows 用户环境变量中移除）。
+# 相对路径相对于包含 .cargo 目录的 src-tauri/ 解析。
+[build]
+target-dir = "target"
