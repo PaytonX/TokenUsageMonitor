@@ -2,8 +2,9 @@
   // 本机工具用量面板（C8 / B7）：读取本地 AI 工具会话日志聚合的逐日 token 用量。
   // 首版支持 Claude Code（后端 local::claude 扫描 ~/.claude/projects）。展示
   // 累计/会话/项目统计 + 跨日期的 input/cache/output 堆叠柱状。
-  import { getLocalTools, onToolsUpdated, openToolWindow } from "../api";
-  import { readPref, writePref } from "../prefs";
+  import { getHubDevices, getLocalTools, onTabsChanged, onToolsUpdated, openToolWindow } from "../api";
+  import { readAggMode, readPref, writePref } from "../prefs";
+  import { buildAggregateToolsPayload, staleDetailDevices } from "../device-agg";
   import type { LocalDay, LocalToolsPayload } from "../types";
   import PillsOrSelect from "./PillsOrSelect.svelte";
   import TrendLineChart from "./TrendLineChart.svelte";
@@ -32,12 +33,22 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let activeId: string | null = $state(readPref("tum.tool.tab", "") || null);
+  // 全端汇总模式：数据源从本机扫描切到多端合并（设置页开关，tabs-changed 广播）。
+  let aggMode = $state(readAggMode());
+  let staleDevs = $state<string[]>([]);
 
   async function load(force = false) {
     loading = true;
     error = null;
     try {
-      payload = await getLocalTools(force);
+      if (aggMode) {
+        const r = await getHubDevices();
+        payload = buildAggregateToolsPayload(r.devices);
+        staleDevs = staleDetailDevices(r.devices);
+      } else {
+        staleDevs = [];
+        payload = await getLocalTools(force);
+      }
       if (activeId === null || !payload.tools.some((t) => t.id === activeId)) {
         activeId = payload.tools[0]?.id ?? null;
       }
@@ -52,16 +63,27 @@
   $effect(() => {
     void load();
     let disposed = false;
-    let unlisten: (() => void) | null = null;
+    const unlistens: (() => void)[] = [];
     void onToolsUpdated(() => {
       if (!disposed) void load();
     }).then((fn) => {
       if (disposed) fn();
-      else unlisten = fn;
+      else unlistens.push(fn);
+    });
+    void onTabsChanged(() => {
+      if (disposed) return;
+      const next = readAggMode();
+      if (next !== aggMode) {
+        aggMode = next;
+        void load();
+      }
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlistens.push(fn);
     });
     return () => {
       disposed = true;
-      unlisten?.();
+      for (const fn of unlistens) fn();
     };
   });
 
@@ -121,7 +143,7 @@
 
 <div class="tool" data-tauri-drag-region={false}>
   <div class="tool__head">
-    <span class="tool__title">本机工具</span>
+    <span class="tool__title">{aggMode ? "全端工具" : "本机工具"}</span>
     <div class="tool__head-right" role="group" aria-label="时间区间">
       {#each RANGES as r (r.key)}
         <button
@@ -137,17 +159,25 @@
       <button
         type="button"
         class="tool__refresh"
-        title="重新扫描本地日志"
+        title={aggMode ? "刷新多端数据" : "重新扫描本地日志"}
         onclick={() => void load(true)}
       >↻</button>
-      <button
-        type="button"
-        class="tool__zoom"
-        title="放大为独立窗口"
-        onclick={() => void openToolWindow()}
-      >⤢</button>
+      {#if !aggMode}
+        <button
+          type="button"
+          class="tool__zoom"
+          title="放大为独立窗口"
+          onclick={() => void openToolWindow()}
+        >⤢</button>
+      {/if}
     </div>
   </div>
+
+  {#if aggMode && staleDevs.length > 0 && (payload?.tools.length ?? 0) === 0}
+    <div class="tool__empty tool__empty--err">
+      参与设备中 {staleDevs.join("、")} 未上报分工具明细（版本过旧），无法合成全端视图
+    </div>
+  {/if}
 
   {#if loading && !payload}
     <div class="tool__empty">正在扫描本地工具日志…</div>

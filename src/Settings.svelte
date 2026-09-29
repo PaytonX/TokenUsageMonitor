@@ -28,6 +28,8 @@
     type RatesSnapshot,
     emitTabsChanged,
     readHiddenTabs,
+    readAggMode,
+    writeAggMode,
     setTabEnabled,
     type PageTab,
   } from "./lib";
@@ -90,6 +92,13 @@
   function toggleTab(t: PageTab, enabled: boolean) {
     setTabEnabled(t, enabled);
     hiddenTabs = readHiddenTabs();
+    void emitTabsChanged();
+  }
+  // 全端汇总模式：纯前端展示偏好（localStorage），写后广播让面板即时换源。
+  let aggMode = $state(readAggMode());
+  function toggleAggMode(on: boolean) {
+    writeAggMode(on);
+    aggMode = readAggMode();
     void emitTabsChanged();
   }
   let hubMode = $state("off");
@@ -706,6 +715,22 @@ async function handleMinimize() {
           <div class="section">
             <h3 class="section__title">页签显示</h3>
             <p class="hint">「总量」页签始终显示；其余页签可在此关闭，关闭后该页签不显示、相关功能不启用。</p>
+            <div class="behavior-row">
+              <div class="behavior-info">
+                <span class="behavior-label">全端汇总模式</span>
+                <span class="behavior-hint">
+                  趋势 / 工具 / 模型页签改为显示全部设备的合并用量（按设备去重，成本不参与聚合）。需多端同步在线。
+                </span>
+              </div>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  checked={aggMode}
+                  onchange={(e) => toggleAggMode((e.target as HTMLInputElement).checked)}
+                />
+                <span class="toggle__track"><span class="toggle__thumb"></span></span>
+              </label>
+            </div>
             {#each [
               { key: "trend", label: "趋势", hint: "跨 Provider 逐日用量看板" },
               { key: "tools", label: "工具", hint: "本机 AI 工具（Claude Code / MiniMax Code / Hermes…）用量" },

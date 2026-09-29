@@ -2,8 +2,9 @@
   // 趋势看板（C7 / B5）——嵌入面板：跨 provider 聚合逐日用量，以 SVG 折线展示
   // 长区间趋势（30/90 天也不截断、刻度不重叠）。点击图表或 ⤢ 打开独立可缩放的
   // 趋势窗口（TrendWindow，堆叠柱 + 滚动），获得可放大的明细视图。
-  import { openTrendWindow } from "../api";
-  import { readPref, writePref } from "../prefs";
+  import { getHubDevices, onTabsChanged, openTrendWindow } from "../api";
+  import { readAggMode, readPref, writePref } from "../prefs";
+  import { buildDeviceSeries, deviceColor } from "../device-agg";
   import {
     buildTrendDays,
     fetchProviderSeries,
@@ -32,29 +33,69 @@
   );
   let rangeDef = $derived(RANGES.find((r) => r.key === range)!);
 
+  // 全端汇总模式：序列来自各设备上报（按设备堆叠），否则为本机 provider。
+  let aggMode = $state(readAggMode());
+  let deviceIds = $state<string[]>([]);
+  let deviceSeries = $state<Record<string, Record<string, number>>>({});
+  let deviceNames = $state<Record<string, string>>({});
+
   let seriesByProvider: Record<string, Record<string, number>> = $state({});
   let seq = 0;
-  // 周期刷新"当天"用量（只在拉取过系列后生效），刷新后重建顶层对象触发重渲染。
   let refreshTick = $state(0);
+
+  // 拉取：aggMode → 设备序列；本机 → provider 系列。依赖 aggMode / range /
+  // refreshTick / providerIds，变化即重拉；aggMode 分支只写 device* 状态，
+  // 不读它们，避免 effect 自依赖循环。
+  $effect(() => {
+    void rangeDef.days;
+    void refreshTick;
+    const ids = providerIds;
+    const mySeq = ++seq;
+    if (aggMode) {
+      void getHubDevices().then((r) => {
+        if (mySeq !== seq) return;
+        const built = buildDeviceSeries(r.devices);
+        deviceIds = built.ids;
+        deviceSeries = built.series;
+        deviceNames = built.names;
+      });
+    } else {
+      void fetchProviderSeries(ids, rangeDef.days).then((result) => {
+        if (mySeq === seq) seriesByProvider = result;
+      });
+    }
+  });
+
+  // 周期刷新"当天"用量（只在拉取过系列后生效）。
   $effect(() => {
     const id = setInterval(() => {
-      void refreshProviderSeries(providerIds, 2).then(() => refreshTick++);
+      if (aggMode) {
+        refreshTick++;
+      } else {
+        void refreshProviderSeries(providerIds, 2).then(() => refreshTick++);
+      }
     }, 60_000);
     return () => clearInterval(id);
   });
 
   $effect(() => {
-    void refreshTick; // 依赖刷新 tick：周期刷新后重新切片重绘
-    const ids = providerIds;
-    const mySeq = ++seq;
-    void fetchProviderSeries(ids, rangeDef.days).then((result) => {
-      if (mySeq === seq) seriesByProvider = result;
+    void onTabsChanged(() => {
+      const next = readAggMode();
+      if (next !== aggMode) {
+        aggMode = next;
+        refreshTick++;
+      }
     });
   });
 
-  let days = $derived(
-    buildTrendDays(seriesByProvider, providerIds, rangeDef.days),
-  );
+  let activeIds = $derived(aggMode ? deviceIds : providerIds);
+  let activeSeries = $derived(aggMode ? deviceSeries : seriesByProvider);
+  let activeColors = $derived.by(() => {
+    if (aggMode) return Object.fromEntries(deviceIds.map((id) => [id, deviceColor(id)]));
+    return colors;
+  });
+
+  let days = $derived(buildTrendDays(activeSeries, activeIds, rangeDef.days));
   let maxTotal = $derived(
     Math.max(1, ...days.map((d) => d.total)),
   );
@@ -68,6 +109,10 @@
     return num;
   });
   let tickEvery = $derived(tickEveryFor(rangeDef.days));
+  // 图例文案：聚合态显示主机名，本机态显示 provider id。
+  function labelOf(id: string): string {
+    return deviceNames[id] ?? id;
+  }
 </script>
 
 <div
@@ -85,7 +130,7 @@
     }}
   >
   <div class="trend__head">
-    <span class="trend__title">趋势看板</span>
+    <span class="trend__title">{aggMode ? "全端趋势看板" : "趋势看板"}</span>
     <div class="trend__head-right" role="group" aria-label="时间区间">
       {#each RANGES as r (r.key)}
         <button
@@ -99,32 +144,34 @@
           }}
         >{r.label}</button>
       {/each}
-      <button
-        type="button"
-        class="trend__zoom"
-        title="放大为独立窗口"
-        onclick={(e) => {
-          e.stopPropagation();
-          void openTrendWindow();
-        }}
-      >⤢</button>
+      {#if !aggMode}
+        <button
+          type="button"
+          class="trend__zoom"
+          title="放大为独立窗口"
+          onclick={(e) => {
+            e.stopPropagation();
+            void openTrendWindow();
+          }}
+        >⤢</button>
+      {/if}
     </div>
   </div>
 
   <div class="trend__stats">
-    <span class="trend__stat"><b>{formatCompact(rangeTotal)}</b><span>本区间累计</span></span>
+    <span class="trend__stat"><b>{formatCompact(rangeTotal)}</b><span>{aggMode ? "全端累计" : "本区间累计"}</span></span>
     <span class="trend__stat"><b>{streak} 天</b><span>连续活跃</span></span>
   </div>
 
   <div class="trend__chart">
-    <TrendLineChart {days} {colors} maxY={maxTotal} {tickEvery} {accent} />
+    <TrendLineChart {days} colors={activeColors} maxY={maxTotal} {tickEvery} {accent} />
   </div>
 
   <div class="trend__legend">
-    {#each providerIds as id (id)}
+    {#each activeIds as id (id)}
       <span class="trend__key">
-        <i class="trend__swatch" style={`background:${colors[id] ?? "#8a8f98"}`}></i>
-        <span>{id}</span>
+        <i class="trend__swatch" style={`background:${activeColors[id] ?? "#8a8f98"}`}></i>
+        <span>{labelOf(id)}</span>
       </span>
     {/each}
   </div>

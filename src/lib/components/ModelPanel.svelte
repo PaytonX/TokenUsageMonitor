@@ -2,8 +2,9 @@
   // 模型用量面板（B5 模型视图 / 本地工具按模型聚合）：跨工具把相同模型归并，
   // 展示各模型的 token 总量与成本；点选模型查看其逐日走势（线图）。
   // 数据复用 get_local_tools 的 models 字段（claude/cherry/minimax 已按模型聚合）。
-  import { getLocalTools, onToolsUpdated } from "../api";
-  import { readPref, writePref } from "../prefs";
+  import { getHubDevices, getLocalTools, onTabsChanged, onToolsUpdated } from "../api";
+  import { readAggMode, readPref, writePref } from "../prefs";
+  import { buildAggregateModels, staleDetailDevices } from "../device-agg";
   import type { LocalModelUsage, LocalToolsPayload } from "../types";
   import { displayCurrency, formatCost, normalizeCurrency, toUsd } from "../currency";
   import type { Currency } from "../currency";
@@ -32,12 +33,45 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let activeId: string | null = $state(readPref("tum.model.tab", "") || null);
+  // 全端汇总模式：合并各设备上报的分模型序列（成本不同步，汇总态隐藏成本）。
+  let aggMode = $state(readAggMode());
+  let staleDevs = $state<string[]>([]);
 
   async function load(force = false) {
     loading = true;
     error = null;
     try {
-      payload = await getLocalTools(force);
+      if (aggMode) {
+        const r = await getHubDevices();
+        const models = buildAggregateModels(r.devices);
+        staleDevs = staleDetailDevices(r.devices);
+        // 合成单一"全端"工具承载合并模型列表，复用既有渲染路径。
+        const dayMap = new Map<string, { date: string; input: number; cache_read: number; output: number; total: number }>();
+        for (const m of models) {
+          for (const d of m.daily) {
+            const cur = dayMap.get(d.date) ?? { date: d.date, input: 0, cache_read: 0, output: 0, total: 0 };
+            cur.total += d.total;
+            dayMap.set(d.date, cur);
+          }
+        }
+        const daily = [...dayMap.values()].sort((a, b) => a.date.localeCompare(b.date));
+        payload = {
+          tools: [{
+            id: "__aggregate__",
+            name: "全端",
+            daily,
+            total_tokens: models.reduce((s, m) => s + m.total_tokens, 0),
+            session_count: 0,
+            project_count: 0,
+            scanned_at: new Date().toISOString(),
+            models,
+          }],
+          sessions_parsed: 0,
+        };
+      } else {
+        staleDevs = [];
+        payload = await getLocalTools(force);
+      }
       if (activeId === null || !modelList.some((m) => m.id === activeId)) {
         activeId = modelList[0]?.id ?? null;
       }
@@ -51,16 +85,27 @@
   $effect(() => {
     void load();
     let disposed = false;
-    let unlisten: (() => void) | null = null;
+    const unlistens: (() => void)[] = [];
     void onToolsUpdated(() => {
       if (!disposed) void load();
     }).then((fn) => {
       if (disposed) fn();
-      else unlisten = fn;
+      else unlistens.push(fn);
+    });
+    void onTabsChanged(() => {
+      if (disposed) return;
+      const next = readAggMode();
+      if (next !== aggMode) {
+        aggMode = next;
+        void load();
+      }
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlistens.push(fn);
     });
     return () => {
       disposed = true;
-      unlisten?.();
+      for (const fn of unlistens) fn();
     };
   });
 
@@ -234,14 +279,20 @@
 
 <div class="mp">
   <div class="mp__head">
-    <span class="mp__title">模型用量</span>
+    <span class="mp__title">{aggMode ? "全端模型用量" : "模型用量"}</span>
     <div class="mp__head-right" role="group" aria-label="时间区间">
       {#each RANGES as r (r.key)}
         <button type="button" class="mp__range" class:is-active={range === r.key} onclick={() => { range = r.key; writePref("tum.model.range", r.key); }}>{r.label}</button>
       {/each}
-      <button type="button" class="mp__refresh" title="重新扫描本地日志" onclick={() => void load(true)}>↻</button>
+      <button type="button" class="mp__refresh" title={aggMode ? "刷新多端数据" : "重新扫描本地日志"} onclick={() => void load(true)}>↻</button>
     </div>
   </div>
+
+  {#if aggMode && staleDevs.length > 0 && (modelList.length === 0)}
+    <div class="mp__empty mp__empty--err">
+      参与设备中 {staleDevs.join("、")} 未上报分模型明细（版本过旧），无法合成全端视图
+    </div>
+  {/if}
 
   {#if loading && !payload}
     <div class="mp__empty">正在扫描本地工具日志…</div>
