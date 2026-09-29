@@ -272,6 +272,28 @@
 </div>
 
 <style>
+  /* 面板根容器可滚动：多台设备的卡片 + 汇总区会超出 680px 视口，
+     此前 overflow 默认被 .shell 裁掉且无滚动条，用户看不到视口外的设备。
+     min-height:0 让 flex 子项允许收缩出滚动区。 */
+  .dev {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--tum-border) transparent;
+    padding-right: 2px;
+  }
+  .dev::-webkit-scrollbar {
+    width: 4px;
+  }
+  .dev::-webkit-scrollbar-thumb {
+    background: var(--tum-border-strong, rgba(255, 255, 255, 0.12));
+    border-radius: 2px;
+  }
+
   .dev__head {
     display: flex;
     align-items: center;
