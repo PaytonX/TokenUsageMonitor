@@ -63,6 +63,15 @@
   let forms = $state<AccountForm[]>([]);
   /** Current preset whose choice menu is expanded (null = none). */
   let presetMenuFor = $state<Preset | null>(null);
+  // 账户页（2026-09 重构）：主视图是紧凑账户列表，完整编辑表单只渲染选中的
+  // 那一个账户——此前所有账户的表单全部展开，账户一多页面就无限拉长。
+  let selectedAccountId = $state<string | null>(null);
+  // 「添加账户」预设网格从常驻改为按需弹层：Provider 数量随版本增长，
+  // 常驻网格会把已配置账户列表挤到首屏之外。
+  let pickerOpen = $state(false);
+  let selectedForm = $derived(
+    forms.find((f) => f.meta.instance_id === selectedAccountId) ?? null,
+  );
   let pollInterval = $state<number>(0);
   let ringWindow = $state<string>("auto");
   let edgeSnap = $state(true);
@@ -172,6 +181,10 @@
       proxyEnabled = !!s.proxy_url;
       rateOverrides = { ...(s.rate_overrides ?? {}) };
       forms = buildForms();
+      // 选中项失效（账户被删/首次加载）时回落到第一个账户。
+      if (!selectedAccountId || !forms.some((f) => f.meta.instance_id === selectedAccountId)) {
+        selectedAccountId = forms[0]?.meta.instance_id ?? null;
+      }
       // 生效汇率快照（更新时间 / 告警展示用），并让本窗口立即采用。
       getExchangeRates()
         .then((snap) => {
@@ -227,7 +240,7 @@
     busy = `add-${preset.kind}`;
     genericError = null;
     try {
-      await upsertAccount({
+      const newId = await upsertAccount({
         instance_id: "",
         provider_kind: preset.kind,
         label: preset.display_name,
@@ -235,6 +248,9 @@
         enabled: true,
       });
       await refreshAll();
+      // 新账户直接进入编辑视图，并收起选择弹层。
+      selectedAccountId = newId;
+      pickerOpen = false;
       tab = "accounts";
     } catch (e) {
       genericError = String(e);
@@ -523,6 +539,15 @@ async function handleMinimize() {
   }
 </script>
 
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === "Escape" && (pickerOpen || presetMenuFor)) {
+      pickerOpen = false;
+      presetMenuFor = null;
+    }
+  }}
+/>
+
 <main class="settings" oncontextmenu={(e) => e.preventDefault()}>
   <header class="settings__header">
     <div class="settings__brand">
@@ -709,71 +734,9 @@ async function handleMinimize() {
         <div class="pane">
           <h2 class="pane__title">账户与额度</h2>
           <p class="hint">
-            从内置预设创建账户，可添加多个同一来源的账户。凭证保存在 Windows
-            凭据管理器中（DPAPI 加密），不会写入磁盘明文。每个账户可自定义标签与强调色，并独立启停。
+            每个账户独立轮询、独立启停；凭证保存在 Windows 凭据管理器（DPAPI
+            加密），不写磁盘明文。点击账户行展开编辑，支持添加多个同一来源的账户。
           </p>
-
-          <div class="section">
-            <h3 class="section__title">添加账户</h3>
-            <div class="preset-grid">
-              {#each catalog?.presets ?? [] as preset (preset.kind)}
-                <div class="preset-card-wrap">
-                  <button
-                    class="preset-card"
-                    class:preset-card--menu-open={presetMenuFor?.kind === preset.kind}
-                    style="--preset-accent: {preset.default_accent}"
-                    disabled={busy?.startsWith("add-")}
-                    onclick={() => onPresetClick(preset)}
-                  >
-                    <span class="preset-card__logo">
-                      <ProviderLogo kind={preset.kind} size={22} accent={preset.default_accent} />
-                    </span>
-                    <span class="preset-card__text">
-                      <span class="preset-card__name">
-                        {preset.display_name}
-                        {#if preset.experimental}
-                          <span class="preset-card__exp">实验</span>
-                        {/if}
-                      </span>
-                      <span class="preset-card__auth">
-                        {preset.auth_kind === "access_key_secret"
-                          ? "Access Key + Secret"
-                          : preset.auth_kind === "local_token"
-                            ? "本地登录凭证"
-                            : "Bearer API Key"}
-                      </span>
-                    </span>
-                    <span class="preset-card__add">
-                      {busy === `add-${preset.kind}`
-                        ? "添加中…"
-                        : preset.sub_modes?.length
-                          ? "选择计费方式 ▾"
-                          : "＋ 添加"}
-                    </span>
-                  </button>
-                  {#if presetMenuFor?.kind === preset.kind && preset.sub_modes?.length}
-                    <div class="preset-menu" role="menu" aria-label={`选择 ${preset.display_name} 计费方式`}>
-                      {#each preset.sub_modes as m (m.kind)}
-                        <button
-                          class="preset-menu__item"
-                          class:is-limited={m.limited}
-                          role="menuitem"
-                          title={m.note || m.label}
-                          disabled={m.limited || busy?.startsWith("add-")}
-                          onclick={() => addSubMode(m)}
-                        >
-                          <span class="preset-menu__label">{m.label}</span>
-                          {#if m.limited}
-                            <span class="preset-menu__badge">未实装</span>
-                          {/if}
-                        </button>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          </div>
 
           {#if presetMenuFor}
             <div
@@ -790,53 +753,79 @@ async function handleMinimize() {
             </h3>
 
             {#if forms.length === 0}
-              <div class="empty">还没有账户。请从上方选择一个预设添加。</div>
-            {/if}
-
-            {#each forms as f (f.meta.instance_id)}
-              <article
-                class="account"
-                style="--acct-accent: {f.meta.accent_color}"
-                data-enabled={f.meta.enabled}
-              >
-                <header class="account__header">
-                  <div class="account__identity">
-                    <span
-                      class="account__swatch"
-                      style="background: {f.meta.accent_color}"
-                      aria-hidden="true"
-                    ></span>
-                    <input
-                      class="account__label"
-                      type="text"
-                      placeholder="账户标签"
-                      bind:value={f.meta.label}
-                    />
-                  </div>
-                  <div class="account__badges">
-                    <span class="account__kind">{displayNameFor(f.meta.provider_kind)}</span>
+              <div class="empty">还没有账户。点击下方「添加账户」从预设创建。</div>
+            {:else}
+              <div class="acct-list">
+                {#each forms as f (f.meta.instance_id)}
+                  <div
+                    class="acct-row"
+                    class:acct-row--active={f.meta.instance_id === selectedAccountId}
+                    style="--acct-accent: {f.meta.accent_color}"
+                    role="button"
+                    tabindex="0"
+                    aria-pressed={f.meta.instance_id === selectedAccountId}
+                    data-enabled={f.meta.enabled}
+                    onclick={(e) => {
+                      // 点在启停开关上时不触发选中（开关有自己的语义）。
+                      if ((e.target as HTMLElement).closest(".toggle")) return;
+                      selectedAccountId = f.meta.instance_id;
+                    }}
+                    onkeydown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        selectedAccountId = f.meta.instance_id;
+                      }
+                    }}
+                  >
+                    <span class="acct-row__logo" aria-hidden="true">
+                      <ProviderLogo kind={f.meta.provider_kind} size={18} accent={f.meta.accent_color} />
+                    </span>
+                    <span class="acct-row__label" title={f.meta.note || f.meta.label}>
+                      {f.meta.label || "未命名账户"}
+                    </span>
+                    <span class="acct-row__kind">{displayNameFor(f.meta.provider_kind)}</span>
                     {#if f.hasCredentials}
-                      <span class="account__badge account__badge--ok">凭证已存</span>
+                      <span class="acct-row__dot" title="凭证已存" aria-label="凭证已存"></span>
                     {/if}
                     <span
-                      class="account__badge"
+                      class="account__badge acct-row__live"
                       class:account__badge--live={f.live}
                       class:account__badge--off={!f.live}
                     >
                       {f.live ? "轮询中" : "已停止"}
                     </span>
+                    <label class="toggle" title={f.meta.enabled ? "已启用" : "已停用"}>
+                      <input
+                        type="checkbox"
+                        checked={f.meta.enabled}
+                        onchange={(e) => (f.meta.enabled = (e.target as HTMLInputElement).checked)}
+                      />
+                      <span class="toggle__track"><span class="toggle__thumb"></span></span>
+                    </label>
                   </div>
-                  <label class="toggle">
-                    <input
-                      type="checkbox"
-                      checked={f.meta.enabled}
-                      onchange={(e) => (f.meta.enabled = (e.target as HTMLInputElement).checked)}
-                    />
-                    <span class="toggle__track"><span class="toggle__thumb"></span></span>
-                  </label>
-                </header>
+                {/each}
+              </div>
+            {/if}
 
-                <div class="account__body">
+            <button
+              class="btn btn--ghost acct-add"
+              disabled={busy?.startsWith("add-") ?? false}
+              onclick={() => {
+                presetMenuFor = null;
+                pickerOpen = true;
+              }}
+            >
+              ＋ 添加账户
+            </button>
+          </div>
+
+          {#if selectedForm}
+            <article
+              class="account"
+              style="--acct-accent: {selectedForm.meta.accent_color}"
+              data-enabled={selectedForm.meta.enabled}
+            >
+              <div class="account__body">
                   <div class="account__meta-row">
                     <label class="field field--flex">
                       <span class="field__label">标签</span>
@@ -844,7 +833,7 @@ async function handleMinimize() {
                         class="field__input"
                         type="text"
                         placeholder="显示名称"
-                        bind:value={f.meta.label}
+                        bind:value={selectedForm.meta.label}
                       />
                     </label>
                     <label class="field field--swatch">
@@ -852,10 +841,10 @@ async function handleMinimize() {
                       <span class="colorpicker">
                         <input
                           type="color"
-                          bind:value={f.meta.accent_color}
+                          bind:value={selectedForm.meta.accent_color}
                           aria-label="强调色"
                         />
-                        <span class="colorpicker__hex">{f.meta.accent_color}</span>
+                        <span class="colorpicker__hex">{selectedForm.meta.accent_color}</span>
                       </span>
                     </label>
                   </div>
@@ -866,26 +855,26 @@ async function handleMinimize() {
                       class="field__input"
                       type="text"
                       placeholder="例如：主账号 / 备用额度 …"
-                      bind:value={f.meta.note}
+                      bind:value={selectedForm.meta.note}
                     />
                   </label>
 
-                  {#if f.hasCredentials && !f.credsDirty}
+                  {#if selectedForm.hasCredentials && !selectedForm.credsDirty}
                     <div class="account__stored">
                       <span class="account__badge account__badge--ok">已保存</span>
-                      <button class="btn btn--ghost" onclick={() => (f.credsDirty = true)}>修改</button>
-                      <button class="btn btn--ghost" onclick={() => clearCredentialsFor(f)}>清除</button>
+                      <button class="btn btn--ghost" onclick={() => (selectedForm.credsDirty = true)}>修改</button>
+                      <button class="btn btn--ghost" onclick={() => clearCredentialsFor(selectedForm)}>清除</button>
                     </div>
                   {:else}
-                    {#if isAccessKey(f.meta.provider_kind)}
+                    {#if isAccessKey(selectedForm.meta.provider_kind)}
                       <label class="field">
                         <span class="field__label">Access Key</span>
                         <input
                           class="field__input"
                           type="password"
                           placeholder="AK..."
-                          bind:value={f.accessKey}
-                          oninput={() => (f.credsDirty = true)}
+                          bind:value={selectedForm.accessKey}
+                          oninput={() => (selectedForm.credsDirty = true)}
                         />
                       </label>
                       <label class="field">
@@ -894,23 +883,23 @@ async function handleMinimize() {
                           class="field__input"
                           type="password"
                           placeholder="SK..."
-                          bind:value={f.secretKey}
-                          oninput={() => (f.credsDirty = true)}
+                          bind:value={selectedForm.secretKey}
+                          oninput={() => (selectedForm.credsDirty = true)}
                         />
                       </label>
-                    {:else if isLocalToken(f.meta.provider_kind)}
+                    {:else if isLocalToken(selectedForm.meta.provider_kind)}
                       <label class="field">
                         <span class="field__label">本地登录凭证</span>
                         <input
                           class="field__input"
                           type="password"
                           placeholder="粘贴 Codex 登录令牌，或点击右侧自动检测"
-                          bind:value={f.token}
-                          oninput={() => (f.credsDirty = true)}
+                          bind:value={selectedForm.token}
+                          oninput={() => (selectedForm.credsDirty = true)}
                         />
                       </label>
                       <div class="account__actions">
-                        <button class="btn btn--ghost" onclick={() => detectCodexFor(f)}>
+                        <button class="btn btn--ghost" onclick={() => detectCodexFor(selectedForm)}>
                           自动检测 ~/.codex
                         </button>
                       </div>
@@ -921,8 +910,8 @@ async function handleMinimize() {
                           class="field__input"
                           type="password"
                           placeholder="sk-..."
-                          bind:value={f.apiKey}
-                          oninput={() => (f.credsDirty = true)}
+                          bind:value={selectedForm.apiKey}
+                          oninput={() => (selectedForm.credsDirty = true)}
                         />
                       </label>
                     {/if}
@@ -930,52 +919,133 @@ async function handleMinimize() {
                     <div class="account__actions">
                       <button
                         class="btn btn--ghost"
-                        disabled={f.testing || !hasCredentialInput(f)}
-                        onclick={() => testConnection(f)}
+                        disabled={selectedForm.testing || !hasCredentialInput(selectedForm)}
+                        onclick={() => testConnection(selectedForm)}
                       >
-                        {f.testing ? "测试中…" : "测试连接"}
+                        {selectedForm.testing ? "测试中…" : "测试连接"}
                       </button>
                       <button
                         class="btn btn--primary"
-                        disabled={!hasCredentialInput(f)}
-                        onclick={() => saveCredentialsFor(f)}
+                        disabled={!hasCredentialInput(selectedForm)}
+                        onclick={() => saveCredentialsFor(selectedForm)}
                       >
-                        {f.saved ? "已保存 ✓" : "保存凭证"}
+                        {selectedForm.saved ? "已保存 ✓" : "保存凭证"}
                       </button>
-                      {#if f.hasCredentials}
-                        <button class="btn btn--ghost" onclick={() => clearCredentialsFor(f)}>清除</button>
+                      {#if selectedForm.hasCredentials}
+                        <button class="btn btn--ghost" onclick={() => clearCredentialsFor(selectedForm)}>清除</button>
                       {/if}
                     </div>
                   {/if}
 
-                  {#if f.testResult}
-                    <div class="account__test {testResultClass(f.testResult)}">
-                      {formatTestResult(f.testResult)}
+                  {#if selectedForm.testResult}
+                    <div class="account__test {testResultClass(selectedForm.testResult)}">
+                      {formatTestResult(selectedForm.testResult)}
                     </div>
                   {/if}
-                  {#if f.error}
-                    <div class="account__error">{f.error}</div>
+                  {#if selectedForm.error}
+                    <div class="account__error">{selectedForm.error}</div>
                   {/if}
 
                   <div class="account__danger">
                     <button
                       class="btn btn--danger"
-                      class:btn--confirm={deleteConfirmId === f.meta.instance_id}
-                      disabled={busy === f.meta.instance_id}
-                      onclick={() => deleteAccount(f)}
+                      class:btn--confirm={deleteConfirmId === selectedForm.meta.instance_id}
+                      disabled={busy === selectedForm.meta.instance_id}
+                      onclick={() => deleteAccount(selectedForm)}
                     >
-                      {busy === f.meta.instance_id
+                      {busy === selectedForm.meta.instance_id
                         ? "删除中…"
-                        : deleteLabel(f)}
+                        : deleteLabel(selectedForm)}
                     </button>
-                    {#if deleteConfirmId === f.meta.instance_id}
+                    {#if deleteConfirmId === selectedForm.meta.instance_id}
                       <span class="account__danger-hint">再次点击将删除该账户及凭证</span>
                     {/if}
                   </div>
                 </div>
-              </article>
-            {/each}
-          </div>
+            </article>
+          {/if}
+
+          {#if pickerOpen}
+            <div
+              class="preset-menu-backdrop"
+              onclick={() => {
+                pickerOpen = false;
+                presetMenuFor = null;
+              }}
+              aria-hidden="true"
+            ></div>
+            <div class="preset-picker" role="dialog" aria-modal="true" aria-label="添加账户">
+              <header class="preset-picker__head">
+                <span class="preset-picker__title">选择来源</span>
+                <button
+                  class="preset-picker__close"
+                  onclick={() => {
+                    pickerOpen = false;
+                    presetMenuFor = null;
+                  }}
+                  aria-label="关闭"
+                >×</button>
+              </header>
+              <div class="preset-grid">
+                {#each catalog?.presets ?? [] as preset (preset.kind)}
+                  <div class="preset-card-wrap">
+                    <button
+                      class="preset-card"
+                      class:preset-card--menu-open={presetMenuFor?.kind === preset.kind}
+                      style="--preset-accent: {preset.default_accent}"
+                      disabled={busy?.startsWith("add-")}
+                      onclick={() => onPresetClick(preset)}
+                    >
+                      <span class="preset-card__logo">
+                        <ProviderLogo kind={preset.kind} size={22} accent={preset.default_accent} />
+                      </span>
+                      <span class="preset-card__text">
+                        <span class="preset-card__name">
+                          {preset.display_name}
+                          {#if preset.experimental}
+                            <span class="preset-card__exp">实验</span>
+                          {/if}
+                        </span>
+                        <span class="preset-card__auth">
+                          {preset.auth_kind === "access_key_secret"
+                            ? "Access Key + Secret"
+                            : preset.auth_kind === "local_token"
+                              ? "本地登录凭证"
+                              : "Bearer API Key"}
+                        </span>
+                      </span>
+                      <span class="preset-card__add">
+                        {busy === `add-${preset.kind}`
+                          ? "添加中…"
+                          : preset.sub_modes?.length
+                            ? "选择计费方式 ▾"
+                            : "＋ 添加"}
+                      </span>
+                    </button>
+                    {#if presetMenuFor?.kind === preset.kind && preset.sub_modes?.length}
+                      <div class="preset-menu" role="menu" aria-label={`选择 ${preset.display_name} 计费方式`}>
+                        {#each preset.sub_modes as m (m.kind)}
+                          <button
+                            class="preset-menu__item"
+                            class:is-limited={m.limited}
+                            role="menuitem"
+                            title={m.note || m.label}
+                            disabled={m.limited || busy?.startsWith("add-")}
+                            onclick={() => addSubMode(m)}
+                          >
+                            <span class="preset-menu__label">{m.label}</span>
+                            {#if m.limited}
+                              <span class="preset-menu__badge">未实装</span>
+                            {/if}
+                          </button>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
         </div>
 
       {:else if tab === "interaction"}
@@ -1680,6 +1750,131 @@ async function handleMinimize() {
     z-index: 20;
   }
 
+  /* —— 账户紧凑列表（主视图）—— */
+  .acct-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .acct-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--tum-border);
+    border-radius: var(--tum-radius-sm);
+    background: var(--tum-surface);
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .acct-row:hover {
+    background: var(--tum-surface-hover);
+  }
+  .acct-row:focus-visible {
+    outline: 1px solid var(--tum-accent-stroke);
+    outline-offset: -1px;
+  }
+  .acct-row--active {
+    border-color: var(--tum-accent-stroke);
+    background: var(--tum-accent-fill);
+  }
+  .acct-row__logo {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+  }
+  .acct-row__label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--tum-font-size-sm);
+    color: var(--tum-text-primary);
+  }
+  .acct-row--active .acct-row__label {
+    font-weight: 600;
+  }
+  .acct-row__kind {
+    flex: none;
+    font-size: 10px;
+    font-family: var(--tum-font-mono);
+    color: var(--tum-text-muted);
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* 凭证已存指示点（绿） */
+  .acct-row__dot {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--tum-ok);
+  }
+  .acct-row__live {
+    flex: none;
+  }
+  .acct-add {
+    margin-top: 8px;
+    width: 100%;
+  }
+
+  /* —— 添加账户弹层选择器（预设网格按需弹出）—— */
+  .preset-picker {
+    position: fixed;
+    z-index: 30;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(600px, calc(100vw - 48px));
+    max-height: min(560px, calc(100vh - 96px));
+    display: flex;
+    flex-direction: column;
+    background: var(--tum-bg);
+    border: 1px solid var(--tum-border-strong);
+    border-radius: var(--tum-radius-md);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+  }
+  .preset-picker__head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--tum-border);
+  }
+  .preset-picker__title {
+    font-size: var(--tum-font-size-sm);
+    font-weight: 600;
+    color: var(--tum-text-primary);
+  }
+  .preset-picker__close {
+    width: 22px;
+    height: 22px;
+    border: none;
+    border-radius: var(--tum-radius-xs);
+    background: transparent;
+    color: var(--tum-text-muted);
+    font-size: var(--tum-font-size-base);
+    line-height: 1;
+    cursor: pointer;
+  }
+  .preset-picker__close:hover {
+    color: var(--tum-text-primary);
+    background: var(--tum-surface-hover);
+  }
+  .preset-picker .preset-grid {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    margin: 0;
+    padding: 12px 14px;
+  }
+
   .preset-card__logo {
     width: 26px;
     height: 26px;
@@ -1741,10 +1936,6 @@ async function handleMinimize() {
     background: var(--tum-surface);
     overflow: hidden;
     transition: border-color 0.15s ease;
-  }
-
-  .account + .account {
-    margin-top: var(--tum-space-3);
   }
 
   .account[data-enabled="true"] {
