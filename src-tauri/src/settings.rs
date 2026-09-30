@@ -9,7 +9,7 @@
 use crate::providers::{preset_display_name, AccountMeta, Credentials};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -23,6 +23,16 @@ pub struct Settings {
     /// User-configured accounts (the source of truth since multi-account).
     #[serde(default)]
     pub accounts: Vec<AccountMeta>,
+    /// 额外的本机工具数据根目录。工具默认把点目录（`.claude` / `.zcode` /
+    /// `.minimax` …）写在 `~` 下；用户常整体搬到别处（如 `D:\Lab\.agentdata`）。
+    /// 列一个根目录即可覆盖其下所有点目录，扫描器按目录新鲜度择优。
+    /// 空 = 只用默认位置。
+    #[serde(default)]
+    pub tool_data_roots: Vec<String>,
+    /// 每工具精确目录覆盖（key 为工具标识，如 `.minimax` / `cherry-studio`），
+    /// 作为额外根目录之外的兜底。
+    #[serde(default)]
+    pub tool_data_dirs: BTreeMap<String, String>,
     /// Polling interval seconds. 0 = use per-provider default.
     pub poll_interval_seconds: u32,
     /// Persisted dashboard position (last known). Restored on startup.
@@ -166,6 +176,8 @@ impl Default for Settings {
         Self {
             enabled_providers: Vec::new(),
             accounts: Vec::new(),
+            tool_data_roots: Vec::new(),
+            tool_data_dirs: BTreeMap::new(),
             poll_interval_seconds: 0,
             dashboard_x: None,
             dashboard_y: None,
@@ -287,6 +299,27 @@ impl SettingsStore {
     /// would only come from an in-flight `save`, which hasn't happened yet).
     pub fn read_blocking(&self) -> Settings {
         self.cache.try_read().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// 把本机工具的数据目录配置应用到扫描器的进程级快照。启动与设置保存时
+    /// 各调一次即可（见 [`crate::local::roots`]）。空串条目被忽略，允许 UI
+    /// 保留一个空的输入框而不影响解析。
+    pub fn apply_tool_roots(&self) {
+        let s = self.read_blocking();
+        let extra = s
+            .tool_data_roots
+            .iter()
+            .map(|r| r.trim())
+            .filter(|r| !r.is_empty())
+            .map(PathBuf::from)
+            .collect();
+        let overrides = s
+            .tool_data_dirs
+            .iter()
+            .map(|(k, v)| (k.trim().to_string(), PathBuf::from(v.trim())))
+            .filter(|(k, v)| !k.is_empty() && !v.as_os_str().is_empty())
+            .collect();
+        crate::local::roots::set_config(extra, overrides);
     }
 
     /// Sync, non-async read of `close_to_tray`. Used by the synchronous

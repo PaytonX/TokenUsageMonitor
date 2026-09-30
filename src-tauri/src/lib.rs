@@ -297,6 +297,10 @@ pub fn run() {
             let settings_store = settings::SettingsStore::new(data_dir)
                 .expect("loading settings store");
 
+            // 本机工具的数据目录配置（重定位根目录 + 每工具覆盖）必须在任何
+            // 扫描发生前就位：本地工具缓存在下方预热，watch 循环随后启动。
+            settings_store.apply_tool_roots();
+
             // 启动自愈：自启开启时按设置对账一次注册表项，失败不阻断启动。
             //
             // 这里必须无条件 enable()，不能只在 is_enabled() 为假时补写：

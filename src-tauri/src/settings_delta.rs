@@ -117,7 +117,11 @@ impl SettingsDelta {
             || old.edge_snap != new.edge_snap
             || old.autostart != new.autostart
             || old.dashboard_x != new.dashboard_x
-            || old.dashboard_y != new.dashboard_y;
+            || old.dashboard_y != new.dashboard_y
+            // 数据目录变了 → 本地工具面板必须重扫（save_settings 已清缓存并
+            // 重建 roots 快照；此处保证前端也收到刷新信号）。
+            || old.tool_data_roots != new.tool_data_roots
+            || old.tool_data_dirs != new.tool_data_dirs;
 
         Self {
             poll_relevant,

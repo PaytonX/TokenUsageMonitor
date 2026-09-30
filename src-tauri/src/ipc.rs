@@ -950,6 +950,15 @@ pub async fn save_settings(
         .await
         .map_err(|e| e.to_string())?;
 
+    // 本机工具数据目录改动：立即刷新扫描器的根目录快照，并强制重扫本地工具，
+    // 否则面板会继续显示旧目录（可能是停更的僵留副本）的数据。
+    let roots_changed = old_settings.tool_data_roots != new_settings.tool_data_roots
+        || old_settings.tool_data_dirs != new_settings.tool_data_dirs;
+    if roots_changed {
+        state.settings.apply_tool_roots();
+        state.local.store(crate::local::LocalToolsPayload::default()).await;
+    }
+
     // Mirror the cached window-behavior flags so the synchronous window-event
     // handlers (close-to-tray, edge snap) pick up the change immediately.
     state.close_to_tray.store(new_settings.close_to_tray, std::sync::atomic::Ordering::SeqCst);

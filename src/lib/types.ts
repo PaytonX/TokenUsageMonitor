@@ -286,6 +286,11 @@ export interface Settings {
   countdown_mode: boolean;
   /** Currency used to render estimated costs: "auto" | "USD" | "CNY" | ... */
   display_currency: string;
+  /** 额外的本机工具数据根目录；其下的点目录（.claude/.zcode/.minimax…）会被
+   *  自动命中。多个候选目录并存时按新鲜度择优（见 local/roots.rs）。 */
+  tool_data_roots?: string[];
+  /** 每工具精确目录覆盖，key 为工具标识（.minimax / cherry-studio …）。 */
+  tool_data_dirs?: Record<string, string>;
   /** Multi-device hub role: "off" | "hub" | "agent". */
   hub_mode: string;
   /** Local port the hub listener binds to when `hub_mode == "hub"`. */
