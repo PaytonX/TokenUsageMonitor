@@ -38,6 +38,16 @@
 
   type Tab = "general" | "accounts" | "interaction" | "network" | "about";
 
+  /** 可做精确覆盖的工具标识（须与后端 local::roots 的 key 一致）。 */
+  const TOOL_DATA_DIR_KEYS = [".claude", ".codex", ".zcode", ".minimax", "cherry-studio"] as const;
+  const TOOL_DATA_LABELS: Record<string, string> = {
+    ".claude": "Claude Code（.claude）",
+    ".codex": "Codex（.codex）",
+    ".zcode": "ZCode（.zcode）",
+    ".minimax": "MiniMax Code（.minimax）",
+    "cherry-studio": "Cherry Studio（.cherrystudio）",
+  };
+
   /** One account as rendered in the Settings UI. Meta edits are batched into
    * `save_settings`; credential ops hit the backend immediately by
    * `instance_id`. */
@@ -109,6 +119,9 @@
   // 网络代理（spec §3.4）：空字符串 = 不设置代理（跟随系统环境变量）。
   let proxyEnabled = $state(false);
   let proxyUrl = $state("");
+  // 本机工具数据目录（重定位）：额外根目录列表 + 每工具精确覆盖。
+  let toolDataRoots = $state<string[]>([]);
+  let toolDataDirs = $state<Record<string, string>>({});
   let proxyTesting = $state(false);
   let proxyResult = $state<ProxyTestResult | null>(null);
   // 汇率（B.6/C6）：编辑态覆盖值 + 最近一次生效快照（供 placeholder/更新时间展示）。
@@ -189,6 +202,8 @@
       proxyUrl = s.proxy_url ?? "";
       proxyEnabled = !!s.proxy_url;
       rateOverrides = { ...(s.rate_overrides ?? {}) };
+      toolDataRoots = [...(s.tool_data_roots ?? [])];
+      toolDataDirs = { ...(s.tool_data_dirs ?? {}) };
       forms = buildForms();
       // 选中项失效（账户被删/首次加载）时回落到第一个账户。
       if (!selectedAccountId || !forms.some((f) => f.meta.instance_id === selectedAccountId)) {
@@ -470,6 +485,13 @@
         hub_token_configured: true,
         rate_overrides: buildRateOverrides(),
         proxy_url: proxyEnabled && proxyUrl.trim() ? proxyUrl.trim() : null,
+        // 本机工具数据目录：空串条目剔除（允许保留一个空输入框）。
+        tool_data_roots: toolDataRoots.map((r) => r.trim()).filter(Boolean),
+        tool_data_dirs: Object.fromEntries(
+          Object.entries(toolDataDirs)
+            .map(([k, v]) => [k, v.trim()])
+            .filter(([, v]) => v.length > 0),
+        ),
       };
       await saveSettings(next);
       // Mirror the display-currency choice into localStorage so every window
@@ -1247,6 +1269,57 @@ async function handleMinimize() {
                 </div>
               {/if}
             {/if}
+          </div>
+
+          <div class="section">
+            <h3 class="section__title">本机工具数据目录</h3>
+            <p class="hint">
+              Claude Code / ZCode / MiniMax Code 等工具默认把数据写在用户主目录的
+              点目录下（<code>.claude</code>、<code>.zcode</code>、<code>.minimax</code>…）。
+              若你把这些目录整体搬到了别处，在这里填一个<strong>额外数据根目录</strong>即可——
+              其下的所有点目录会被自动命中，无需逐个工具填写。
+              搬迁后旧位置常残留停更的副本，程序会自动选择<strong>最近活跃</strong>的那个。
+            </p>
+
+            <div class="roots-list">
+              {#each toolDataRoots as root, i (i)}
+                <div class="roots-row">
+                  <input
+                    class="field__input roots-input"
+                    type="text"
+                    placeholder="D:\Lab\.agentdata"
+                    bind:value={toolDataRoots[i]}
+                  />
+                  <button
+                    type="button"
+                    class="btn btn--ghost"
+                    aria-label="删除该根目录"
+                    onclick={() => toolDataRoots = toolDataRoots.filter((_, j) => j !== i)}
+                  >×</button>
+                </div>
+              {/each}
+            </div>
+            <div class="account__actions">
+              <button
+                class="btn btn--ghost"
+                onclick={() => toolDataRoots = [...toolDataRoots, ""]}
+              >＋ 添加根目录</button>
+            </div>
+
+            <h3 class="section__title" style="margin-top: 14px;">单工具精确覆盖</h3>
+            <p class="hint">仅当上面的根目录规则不适用时使用，直接指定某个工具的数据目录。</p>
+            {#each TOOL_DATA_DIR_KEYS as key (key)}
+              <label class="field">
+                <span class="field__label">{TOOL_DATA_LABELS[key]}</span>
+                <input
+                  class="field__input"
+                  type="text"
+                  placeholder="留空 = 使用默认位置"
+                  value={toolDataDirs[key] ?? ""}
+                  oninput={(e) => toolDataDirs = { ...toolDataDirs, [key]: e.currentTarget.value }}
+                />
+              </label>
+            {/each}
           </div>
         </div>
 
@@ -2327,4 +2400,20 @@ async function handleMinimize() {
     padding: var(--tum-space-4) var(--tum-space-5);
     border-top: 1px solid var(--tum-border);
   }
+  .roots-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .roots-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .roots-input {
+    flex: 1;
+    min-width: 0;
+  }
+
 </style>
