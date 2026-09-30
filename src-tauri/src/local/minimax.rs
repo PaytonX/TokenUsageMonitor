@@ -36,24 +36,21 @@ struct Agg {
     rows: u64,
 }
 
-fn home() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        if let Ok(p) = std::env::var("USERPROFILE").map(PathBuf::from) {
-            return Some(p);
-        }
-    }
-    std::env::var("HOME").ok().map(PathBuf::from)
+/// `.minimax` 数据目录。走 roots 解析：默认 `~`、用户声明的额外数据根目录、
+/// 精确覆盖三者取**最近活跃**的那个——用户搬迁数据目录后旧位置常残留停更
+/// 副本，只认 `~` 会让最近几天用量读成 0（见 `local::roots`）。
+fn data_dir() -> Option<PathBuf> {
+    super::roots::pick_freshest(&super::roots::windows_candidates(".minimax", ".minimax"))
 }
 
 fn v2_db() -> PathBuf {
-    home()
-        .map(|h| h.join(".minimax").join("v2").join("sqlite").join("runtime-state.sqlite"))
+    data_dir()
+        .map(|d| d.join("v2").join("sqlite").join("runtime-state.sqlite"))
         .unwrap_or_default()
 }
 fn legacy_db() -> PathBuf {
-    home()
-        .map(|h| h.join(".minimax").join("sqlite.db"))
+    data_dir()
+        .map(|d| d.join("sqlite.db"))
         .unwrap_or_default()
 }
 

@@ -238,16 +238,21 @@ fn hash_file(path: &Path, hasher: &mut DefaultHasher) {
     }
 }
 
+/// MiniMax Code 的 SQLite（v2 runtime + 旧版）。默认在 `~`，但用户常把点目录
+/// 整体搬到自定义根目录，故走 roots 解析：多个候选取**最近活跃**的那个，
+/// 避免停更的僵留副本遮蔽活跃目录。
 fn minimax_dbs() -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    if let Some(home) = std::env::var("USERPROFILE")
-        .map(std::path::PathBuf::from)
-        .ok()
-    {
-        out.push(home.join(".minimax").join("v2").join("sqlite").join("runtime-state.sqlite"));
-        out.push(home.join(".minimax").join("sqlite.db"));
-    }
-    out
+    let cands = super::roots::windows_candidates(".minimax", ".minimax");
+    let Some(dir) = super::roots::pick_freshest(&cands) else {
+        return Vec::new();
+    };
+    vec![
+        dir.join("v2").join("sqlite").join("runtime-state.sqlite"),
+        dir.join("sqlite.db"),
+    ]
+    .into_iter()
+    .filter(|p| p.exists())
+    .collect()
 }
 
 /// ZCode 的消息库目录（Windows + 每个 WSL home 的 `.zcode/cli/db`）。
@@ -258,14 +263,34 @@ fn zcode_db_dirs() -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-fn cherry_db() -> Option<std::path::PathBuf> {
-    if let Ok(p) = std::env::var("APPDATA").map(std::path::PathBuf::from) {
-        return Some(p.join("CherryStudio").join("Data").join("cherrystudio.sqlite"));
+/// Cherry Studio 的 SQLite。默认在 `%APPDATA%\CherryStudio\Data`，同时支持
+/// 通过额外数据根目录命中 `<根>/.cherrystudio/Data/cherrystudio.sqlite`。
+pub fn cherry_db() -> Option<std::path::PathBuf> {
+    const REL: &str = "Data/cherrystudio.sqlite";
+    let mut cands: Vec<std::path::PathBuf> = Vec::new();
+    for key in ["APPDATA", "LOCALAPPDATA"] {
+        if let Ok(base) = std::env::var(key).map(std::path::PathBuf::from) {
+            cands.push(base.join("CherryStudio").join(REL));
+        }
     }
-    std::env::var("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .map(|p| p.join("CherryStudio").join("Data").join("cherrystudio.sqlite"))
-        .ok()
+    for root in super::roots::extra_roots() {
+        cands.push(root.join(".cherrystudio").join(REL));
+    }
+    if let Some(o) = super::roots::override_for("cherry-studio") {
+        // 覆盖项既可直接指向 sqlite 文件，也可指向其所在目录。
+        cands.push(o.join(REL));
+        cands.push(o);
+    }
+    cands.retain(|p| p.is_file());
+    // 比较的是文件而非目录，直接按 mtime 取最新，无需目录遍历。
+    cands.into_iter().max_by_key(|p| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    })
 }
 
 #[cfg(test)]

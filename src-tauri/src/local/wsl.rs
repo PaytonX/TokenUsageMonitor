@@ -102,21 +102,28 @@ pub fn all_home_roots() -> Vec<PathBuf> {
 }
 
 /// Helper used by the per-tool scanners: build the list of candidate `.config`
-/// dirs to scan. Each entry is `<root>/<dotdir>` for every home root. Only
-/// existing dirs are returned so callers can `read_dir` blindly.
+/// dirs to scan.
+///
+/// 两侧语义不同，故合并前分别处理：
+/// - **Windows 侧**：默认 home、用户声明的额外数据根目录、每工具精确覆盖三者
+///   取并集后**按新鲜度只留一个**——它们通常是同一份数据的搬迁前/后位置，
+///   并集会让同一天重复计数，并让停更的僵留副本遮蔽活跃目录
+///   （见 [`crate::local::roots`]）。
+/// - **WSL 侧**：每个发行版 home 都保留。它们是不同机器的真实数据，不互斥。
+///
+/// Only existing dirs are returned so callers can `read_dir` blindly.
 pub fn existing_dotdirs(dotdir: &str) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    let mut push_if = |root: &PathBuf| {
+    if let Some(win) = super::roots::pick_freshest(&super::roots::windows_candidates(
+        dotdir, dotdir,
+    )) {
+        dirs.push(win);
+    }
+    for root in all_home_roots() {
         let p = root.join(dotdir);
         if p.is_dir() {
             dirs.push(p);
         }
-    };
-    if let Some(home) = home_windows() {
-        push_if(&home);
-    }
-    for root in all_home_roots() {
-        push_if(&root);
     }
     dirs
 }

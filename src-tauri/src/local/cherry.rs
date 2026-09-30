@@ -24,22 +24,12 @@ const QRY: &str =
      model_name, cost, cost_currency \
      FROM ai_usage_record";
 
+/// Cherry Studio 的库文件。默认在 `%APPDATA%\CherryStudio\Data`（回退
+/// `%LOCALAPPDATA%`，随构建而异），同时支持用户声明的额外数据根目录
+/// （`<根>/.cherrystudio/Data/...`）与精确覆盖。复用 `cache::cherry_db`，
+/// 避免扫描器与指纹层各维护一份路径逻辑而分叉。
 fn data_dir() -> PathBuf {
-    // Prefer the roaming app-data location; `Local` varies by editor build.
-    if let Ok(p) = std::env::var("APPDATA").map(PathBuf::from) {
-        let p = p.join("CherryStudio").join("Data").join("cherrystudio.sqlite");
-        if p.exists() {
-            return p;
-        }
-    }
-    std::env::var("LOCALAPPDATA")
-        .map(|p| {
-            PathBuf::from(p)
-                .join("CherryStudio")
-                .join("Data")
-                .join("cherrystudio.sqlite")
-        })
-        .unwrap_or_default()
+    super::cache::cherry_db().unwrap_or_default()
 }
 
 /// 从一个已打开的 Cherry Studio LEDGER 连接读取并聚合（供 `scan` 与测试复用）。

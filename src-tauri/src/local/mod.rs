@@ -19,6 +19,7 @@ pub mod delta;
 pub mod dsh;
 pub mod hermes;
 pub mod minimax;
+pub mod roots;
 pub mod watch;
 pub mod wsl;
 pub mod zcode;
