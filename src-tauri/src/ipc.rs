@@ -222,19 +222,23 @@ pub async fn get_hub_devices(
         &id, &host, &os, &arch, &ver, tool_tokens, provider_count, tool_count, usage,
     );
 
-    // 候选设备：agent 模式下优先拉远端 hub 列表，其次本地存储。
+    // 候选设备：单机模式（off）不合并任何远端/存储设备——用户关掉多端同步
+    // 后，面板上残留的旧设备卡片和"全端汇总"会误导（看起来同步还开着）。
+    // 仅 hub/agent/lan 模式拉取；存储行保留（切回多端模式后自动恢复显示）。
     let s = state.settings.get().await;
     let mut warning: Option<String> = None;
     let mut sources: Vec<Vec<HubDevice>> = Vec::new();
-    if s.hub_mode == "agent" && !s.hub_base.is_empty() {
-        let client = state.http.read().await.clone();
-        match crate::hub::fetch_devices(&client, &s.hub_base, &s.hub_token).await {
-            Ok(remote) => sources.push(remote),
-            Err(e) => warning = Some(format!("远端 hub 拉取失败：{e}")),
+    if s.hub_mode != "off" {
+        if s.hub_mode == "agent" && !s.hub_base.is_empty() {
+            let client = state.http.read().await.clone();
+            match crate::hub::fetch_devices(&client, &s.hub_base, &s.hub_token).await {
+                Ok(remote) => sources.push(remote),
+                Err(e) => warning = Some(format!("远端 hub 拉取失败：{e}")),
+            }
         }
-    }
-    if let Ok(local) = state.storage.list_hub_devices() {
-        sources.push(local);
+        if let Ok(local) = state.storage.list_hub_devices() {
+            sources.push(local);
+        }
     }
 
     // 去重合并：本机恒在首位，余下按来源顺序去重（避免重复 device_id）。
@@ -250,6 +254,53 @@ pub async fn get_hub_devices(
         }
     }
     Ok(HubDevicesResult { devices, warning })
+}
+
+/// 移除一台设备的上报记录。注意：若该设备仍在同步（lan mesh 30s 上报 /
+/// agent 周期上报），它会在下一个周期重新出现——本命令主要用于清理改名
+/// 残留、已退役机器等"幽灵设备"。本机行由自报维护，不允许移除。
+#[tauri::command]
+pub async fn remove_hub_device(
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<(), String> {
+    let (id, _, _, _, _) = crate::hub::machine_info();
+    if device_id == id {
+        return Err("本机设备无法移除".to_string());
+    }
+    state
+        .storage
+        .remove_hub_device(&device_id)
+        .map_err(|e| e.to_string())
+}
+
+/// 手动添加远端设备：从指定 hub 地址拉取设备列表并入本地存储，返回并入条数。
+/// 适合"用量集中在另一台机器，本机想直接看它"的一次性拉取；之后该机器正常
+/// 同步时自动刷新。共享密钥沿用设置里的 hub_token（对端启用鉴权时必需）。
+#[tauri::command]
+pub async fn add_remote_device(
+    state: State<'_, AppState>,
+    base: String,
+) -> Result<usize, String> {
+    let base = base.trim().trim_end_matches('/').to_string();
+    if base.is_empty() {
+        return Err("hub 地址不能为空".to_string());
+    }
+    let base = if base.starts_with("http://") || base.starts_with("https://") {
+        base
+    } else {
+        format!("http://{base}")
+    };
+    let client = state.http.read().await.clone();
+    let token = state.settings.get().await.hub_token;
+    let devices = crate::hub::fetch_devices(&client, &base, &token)
+        .await
+        .map_err(|e| e.to_string())?;
+    let count = devices.len();
+    for d in &devices {
+        let _ = state.storage.upsert_hub_device(d);
+    }
+    Ok(count)
 }
 
 /// 当前生效的汇率快照（覆盖 > 缓存 > 内置默认）。缓存陈旧时顺带触发一次

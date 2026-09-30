@@ -286,6 +286,19 @@ impl Storage {
         Ok(out)
     }
 
+    /// 移除一台设备的上报记录（用户在设备页主动删除）。注意：若该设备仍在
+    /// 同步（lan mesh 30s 上报 / agent 周期上报），它会在下一个周期重新出现——
+    /// 移除的意义是清掉改名残留、已退役机器等"幽灵设备"。
+    pub fn remove_hub_device(&self, device_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM hub_device WHERE device_id = ?1",
+            [device_id],
+        )
+        .with_context(|| "removing hub device")?;
+        Ok(())
+    }
+
     /// 记录一个 jsonl 文件的续读指针 `offset`（停在完整行末尾），供字节级增量扫描
     /// 判定"从哪读新增行"以及是否轮转。`len`/`mtime` 为记录时刻的文件元数据。
     pub fn upsert_tool_file_offset(

@@ -780,6 +780,8 @@ pub fn run() {
             ipc::export_data,
             ipc::get_device_report,
             ipc::get_hub_devices,
+            ipc::remove_hub_device,
+            ipc::add_remote_device,
             ipc::get_exchange_rates,
             ipc::refresh_exchange_rates,
             ipc::set_autostart,
