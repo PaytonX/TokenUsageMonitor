@@ -254,6 +254,16 @@ export async function getHubDevices(): Promise<HubDevicesResult> {
   return invoke<HubDevicesResult>("get_hub_devices");
 }
 
+/** 移除一台设备的上报记录。设备若仍在同步，会在下个周期重新出现。 */
+export async function removeHubDevice(deviceId: string): Promise<void> {
+  return invoke<void>("remove_hub_device", { deviceId });
+}
+
+/** 手动添加远端设备：从指定 hub 地址拉取设备列表并入本地存储，返回并入条数。 */
+export async function addRemoteDevice(base: string): Promise<number> {
+  return invoke<number>("add_remote_device", { base });
+}
+
 import type { HubDevicesResult } from "./types";
 
 import type { RatesSnapshot } from "./types";

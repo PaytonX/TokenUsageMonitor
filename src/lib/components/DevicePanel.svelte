@@ -1,7 +1,7 @@
 <script lang="ts">
   // 设备页（B5 设备视图 / B8 多端同步 hub）。从本地 hub 拉取设备列表：本机恒在首位，
   // 其余为已上报到 hub 的其它实例。hub 模式由设置控制（hub/agent/off）。
-  import { getHubDevices, onToolsUpdated } from "../api";
+  import { addRemoteDevice, getHubDevices, onToolsUpdated, removeHubDevice } from "../api";
   import type { HubDevice } from "../types";
   import TrendLineChart from "./TrendLineChart.svelte";
 
@@ -16,6 +16,44 @@
   let warning = $state<string | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  // 移除确认：第二次点击同一条目才真正删除（与账户删除同口径）。
+  let removeConfirmId = $state<string>("");
+  // 手动添加远端设备（一次性拉取其 hub 列表并入本地存储）。
+  let adding = $state(false);
+  let addBase = $state("");
+  let addBusy = $state(false);
+  let addError = $state<string | null>(null);
+  let addOk = $state<number | null>(null);
+
+  async function removeDevice(id: string) {
+    if (removeConfirmId !== id) {
+      removeConfirmId = id;
+      return;
+    }
+    removeConfirmId = "";
+    try {
+      await removeHubDevice(id);
+      await load();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function submitAdd() {
+    addBusy = true;
+    addError = null;
+    addOk = null;
+    try {
+      addOk = await addRemoteDevice(addBase);
+      addBase = "";
+      adding = false;
+      await load();
+    } catch (e) {
+      addError = String(e);
+    } finally {
+      addBusy = false;
+    }
+  }
 
   async function load() {
     loading = true;
@@ -191,38 +229,40 @@
   {#if devices.length === 0}
     <div class="dev__empty">暂无设备</div>
   {:else}
-    <div class="dev__agg">
-      <div class="dev__agg-head">
-        <span class="dev__agg-title">全端汇总</span>
-        <span class="dev__agg-sub">{devices.length} 台设备 · 近 90 天 · 按设备去重</span>
-      </div>
-      <div class="dev__stats dev__agg-stats">
-        <span class="dev__stat"><b>{fmtTokens(aggTotal)}</b><span>全端合计</span></span>
-        <span class="dev__stat"><b>{fmtTokens(aggToday)}</b><span>今日全端</span></span>
-        <span class="dev__stat"><b>{devices.length}</b><span>设备</span></span>
-      </div>
-      {#if aggDays.length > 0}
-        <div class="dev__chart dev__agg-chart">
-          <TrendLineChart
-            days={aggDays}
-            colors={Object.fromEntries(aggLegend.map((l) => [l.id, l.color]))}
-            maxY={aggMax}
-            tickEvery={deviceTick(aggDays.length)}
-            {accent}
-            stacked={true}
-          />
+    {#if devices.length > 1}
+      <div class="dev__agg">
+        <div class="dev__agg-head">
+          <span class="dev__agg-title">全端汇总</span>
+          <span class="dev__agg-sub">{devices.length} 台设备 · 近 90 天 · 按设备去重</span>
         </div>
-        <div class="dev__agg-legend">
-          {#each aggLegend as l (l.id)}
-            <span class="dev__agg-item" title="{l.name} · {fmtTokens(l.total)} tokens">
-              <span class="dev__agg-dot" style="background: {l.color};"></span>
-              <span class="dev__agg-name">{l.name}</span>
-              <span class="dev__agg-total tum-numeric">{fmtTokens(l.total)}</span>
-            </span>
-          {/each}
+        <div class="dev__stats dev__agg-stats">
+          <span class="dev__stat"><b>{fmtTokens(aggTotal)}</b><span>全端合计</span></span>
+          <span class="dev__stat"><b>{fmtTokens(aggToday)}</b><span>今日全端</span></span>
+          <span class="dev__stat"><b>{devices.length}</b><span>设备</span></span>
         </div>
-      {/if}
-    </div>
+        {#if aggDays.length > 0}
+          <div class="dev__chart dev__agg-chart">
+            <TrendLineChart
+              days={aggDays}
+              colors={Object.fromEntries(aggLegend.map((l) => [l.id, l.color]))}
+              maxY={aggMax}
+              tickEvery={deviceTick(aggDays.length)}
+              {accent}
+              stacked={true}
+            />
+          </div>
+          <div class="dev__agg-legend">
+            {#each aggLegend as l (l.id)}
+              <span class="dev__agg-item" title="{l.name} · {fmtTokens(l.total)} tokens">
+                <span class="dev__agg-dot" style="background: {l.color};"></span>
+                <span class="dev__agg-name">{l.name}</span>
+                <span class="dev__agg-total tum-numeric">{fmtTokens(l.total)}</span>
+              </span>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     <div class="dev__list">
       {#each devices as d, i (d.device_id)}
@@ -233,6 +273,16 @@
               <span class="dev__badge">本机</span>
             {:else}
               <span class="dev__badge dev__badge--remote">{relTime(d.reported_at)}</span>
+              <button
+                type="button"
+                class="dev__remove"
+                class:dev__remove--confirm={removeConfirmId === d.device_id}
+                title={removeConfirmId === d.device_id
+                  ? "再次点击确认移除（设备仍在同步时会自动重新出现）"
+                  : "移除该设备"}
+                aria-label={`移除 ${d.hostname}`}
+                onclick={() => void removeDevice(d.device_id)}
+              >×</button>
             {/if}
           </div>
           <div class="dev__meta">
@@ -259,6 +309,36 @@
           {/if}
         </div>
       {/each}
+    </div>
+
+    <div class="dev__add">
+      {#if adding}
+        <div class="dev__add-form">
+          <input
+            class="dev__add-input"
+            type="text"
+            placeholder="对端 hub 地址，如 192.168.1.23:43210"
+            aria-label="对端 hub 地址"
+            bind:value={addBase}
+            onkeydown={(e) => {
+              if (e.key === "Enter") void submitAdd();
+            }}
+          />
+          <button type="button" class="btn-add-ok" disabled={addBusy || !addBase.trim()} onclick={() => void submitAdd()}>
+            {addBusy ? "拉取中…" : "拉取"}
+          </button>
+          <button type="button" class="btn-add-cancel" onclick={() => { adding = false; addError = null; }}>取消</button>
+        </div>
+        {#if addError}
+          <div class="dev__add-err">{addError}</div>
+        {/if}
+        <p class="dev__add-hint">从对端的 hub 拉取设备列表并入本机（一次性快照，之后由正常同步刷新）。若对端启用了共享密钥，将自动使用本机设置中的密钥。</p>
+      {:else}
+        {#if addOk !== null}
+          <span class="dev__add-ok">已并入 {addOk} 台设备</span>
+        {/if}
+        <button type="button" class="dev__add-btn" onclick={() => { addOk = null; adding = true; }}>＋ 添加设备</button>
+      {/if}
     </div>
 
     <div class="dev__sync">
@@ -465,6 +545,108 @@
     width: 100%;
     height: 100%;
   }
+  .dev__remove {
+    margin-left: auto;
+    width: 18px;
+    height: 18px;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
+    border-radius: 50%;
+    background: transparent;
+    color: rgba(232, 234, 240, 0.55);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .dev__remove:hover {
+    color: #ff7a6e;
+    border-color: rgba(255, 122, 110, 0.5);
+  }
+  .dev__remove--confirm {
+    color: #fff;
+    background: var(--tum-danger, #ff5f56);
+    border-color: var(--tum-danger, #ff5f56);
+  }
+
+  .dev__add {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .dev__add-btn {
+    align-self: flex-start;
+    border: 1px dashed var(--tum-border-strong, rgba(255, 255, 255, 0.14));
+    border-radius: 8px;
+    background: transparent;
+    color: rgba(232, 234, 240, 0.65);
+    font-size: 11px;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .dev__add-btn:hover {
+    color: var(--tum-text-primary, #e6e8ea);
+    border-color: var(--tum-accent-stroke, rgba(76, 194, 255, 0.45));
+  }
+  .dev__add-form {
+    display: flex;
+    gap: 6px;
+  }
+  .dev__add-input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--tum-text-primary, #e6e8ea);
+    font-size: 11px;
+    font-family: var(--tum-font-mono);
+    padding: 5px 8px;
+    outline: none;
+  }
+  .dev__add-input:focus {
+    border-color: var(--tum-accent-stroke, rgba(76, 194, 255, 0.45));
+  }
+  .dev__add-form button {
+    flex: none;
+    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
+    border-radius: 8px;
+    background: transparent;
+    color: rgba(232, 234, 240, 0.75);
+    font-size: 11px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  .dev__add-form .btn-add-ok {
+    background: var(--tum-accent-fill, rgba(76, 194, 255, 0.12));
+    border-color: var(--tum-accent-stroke, rgba(76, 194, 255, 0.45));
+    color: var(--tum-text-primary, #e6e8ea);
+  }
+  .dev__add-form button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .dev__add-err {
+    font-size: 11px;
+    color: #ff7a6e;
+    word-break: break-all;
+  }
+  .dev__add-ok {
+    font-size: 11px;
+    color: var(--tum-ok, #6ccb5f);
+  }
+  .dev__add-hint {
+    margin: 0;
+    font-size: 10px;
+    line-height: 1.6;
+    color: rgba(232, 234, 240, 0.5);
+  }
+
   .dev__sync {
     margin-top: 14px;
     border: 1px dashed var(--tum-border-strong, rgba(255, 255, 255, 0.14));
