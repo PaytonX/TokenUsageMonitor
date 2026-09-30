@@ -51,8 +51,10 @@ fn effective_interval(provider_id: &str, global_seconds: u32) -> Duration {
     Duration::from_secs(secs)
 }
 
-/// Max gap between two snapshots that still allows a burn diff (seconds).
-const MAX_BURN_GAP_SECS: i64 = 1800;
+/// 燃烧率基线的最长跨度（秒）：基线钉在"最近一次观测到用量上升"的采样上，
+/// 跨越多个无变化采样维持显示；闲置超过此时长视为会话结束，隐藏燃烧率。
+/// 600s = 活跃生成期间整数粒度额度（如百分比 1% 一跳）之间也能稳定显示。
+const BURN_BASELINE_MAX_SECS: i64 = 600;
 /// Sanity ceiling for burn rate (units/minute). Above this, treat the diff
 /// as a reset/corruption rather than real consumption.
 const MAX_BURN_RATE_PER_MIN: f64 = 10_000_000.0;
@@ -84,20 +86,21 @@ fn most_critical_window(snap: &UsageSnapshot) -> Option<(&'static str, &WindowUs
         })
 }
 
-/// Pure burn diff between two consecutive snapshots of the same provider.
-/// Returns None on reset, missing window, oversized gap, non-positive or
-/// absurd rate.
-pub fn compute_burn(prev: &UsageSnapshot, cur: &UsageSnapshot) -> Option<BurnInfo> {
-    let (prev_key, prev_w) = most_critical_window(prev)?;
+/// Pure burn diff between a baseline snapshot and the current one. Returns
+/// None on window-key change (reset), oversized span, non-positive or absurd
+/// rate. The baseline is pinned by `BurnTracker` at the last observed growth,
+/// so consecutive no-change samples keep the rate stable instead of nulled.
+pub fn compute_burn(base: &UsageSnapshot, cur: &UsageSnapshot) -> Option<BurnInfo> {
+    let (base_key, base_w) = most_critical_window(base)?;
     let (cur_key, cur_w) = most_critical_window(cur)?;
-    if prev_key != cur_key {
+    if base_key != cur_key {
         return None;
     }
-    let elapsed = (cur.timestamp - prev.timestamp).num_seconds();
-    if elapsed <= 0 || elapsed > MAX_BURN_GAP_SECS {
+    let elapsed = (cur.timestamp - base.timestamp).num_seconds();
+    if elapsed <= 0 || elapsed > BURN_BASELINE_MAX_SECS {
         return None;
     }
-    let delta = cur_w.used - prev_w.used;
+    let delta = cur_w.used - base_w.used;
     let rate = delta / (elapsed as f64) * 60.0;
     if !rate.is_finite() || rate <= 0.0 || rate > MAX_BURN_RATE_PER_MIN {
         return None;
@@ -119,23 +122,87 @@ pub fn compute_burn(prev: &UsageSnapshot, cur: &UsageSnapshot) -> Option<BurnInf
     })
 }
 
-/// Per-provider previous-snapshot memory for burn diffing.
+/// Per-provider burn memory. `prev` feeds the activity detection (usage grew
+/// since the last sample); `base` pins the snapshot at the last observed
+/// growth so the burn rate averages over the whole growth span; `last` keeps
+/// the most recent valid rate so integer-granularity quota percentages
+/// (MiniMax reports whole percents) don't null the display on the many
+/// no-change polls between steps.
 #[derive(Default)]
 pub struct BurnTracker {
     prev: HashMap<String, UsageSnapshot>,
+    base: HashMap<String, (String, UsageSnapshot)>,
+    last: HashMap<String, BurnInfo>,
 }
 
 impl BurnTracker {
     /// Feed a fresh snapshot; returns the burn info (if any) and whether the
     /// provider is actively generating (used grew since the previous sample).
     pub fn observe(&mut self, id: &str, snap: &UsageSnapshot) -> (Option<BurnInfo>, bool) {
-        let burn = self
-            .prev
-            .get(id)
-            .and_then(|prev| compute_burn(prev, snap));
         let active = match self.prev.get(id) {
             Some(prev) => total_used(snap) > total_used(prev),
             None => false,
+        };
+        let cur_key = most_critical_window(snap).map(|(k, _)| k);
+        let burn = match (self.base.get(id).cloned(), cur_key) {
+            (Some((base_key, base)), Some(cur_key)) if base_key == cur_key => {
+                let span = (snap.timestamp - base.timestamp).num_seconds();
+                if span > BURN_BASELINE_MAX_SECS {
+                    // 基线跨度超限 = 自上次增长后长时间无消耗，会话结束：
+                    // 重置基线并隐藏燃烧率（旧的速率对现在的窗口已无意义）。
+                    self.base
+                        .insert(id.to_string(), (cur_key.to_string(), snap.clone()));
+                    self.last.remove(id);
+                    None
+                } else {
+                    let base_w = most_critical_window(&base).map(|(_, w)| w);
+                    let cur_w = most_critical_window(snap).map(|(_, w)| w);
+                    match (base_w, cur_w) {
+                        (Some(bw), Some(cw)) if cw.used > bw.used => {
+                            // 基线之上有增长 → 更新燃烧率并前移基线。
+                            match compute_burn(&base, snap) {
+                                Some(burn) => {
+                                    self.base.insert(
+                                        id.to_string(),
+                                        (cur_key.to_string(), snap.clone()),
+                                    );
+                                    self.last.insert(id.to_string(), burn.clone());
+                                    Some(burn)
+                                }
+                                None => {
+                                    // 增长但速率异常（超过合理性上限）：视为
+                                    // 纠偏，重置基线并隐藏。
+                                    self.base.insert(
+                                        id.to_string(),
+                                        (cur_key.to_string(), snap.clone()),
+                                    );
+                                    self.last.remove(id);
+                                    None
+                                }
+                            }
+                        }
+                        (Some(bw), Some(cw)) if cw.used < bw.used => {
+                            // 用量回落 = 窗口重置/服务端纠偏 → 重置基线并隐藏。
+                            self.base
+                                .insert(id.to_string(), (cur_key.to_string(), snap.clone()));
+                            self.last.remove(id);
+                            None
+                        }
+                        _ => {
+                            // 平稳（与基线持平）：基线不动，保持上次燃烧率。
+                            self.last.get(id).cloned()
+                        }
+                    }
+                }
+            }
+            (_, Some(cur_key)) => {
+                // 首个采样或关键窗口切换（重置）：只建立基线，本轮无燃烧率。
+                self.base
+                    .insert(id.to_string(), (cur_key.to_string(), snap.clone()));
+                self.last.remove(id);
+                None
+            }
+            _ => None,
         };
         self.prev.insert(id.to_string(), snap.clone());
         (burn, active)
@@ -484,7 +551,7 @@ mod burn_tests {
     }
 
     #[test]
-    fn gap_over_1800_seconds_is_none() {
+    fn gap_over_baseline_cap_is_none() {
         let t0 = chrono::Utc::now() - chrono::Duration::seconds(2000);
         let t1 = chrono::Utc::now();
         let prev = snap_with_monthly(1000.0, 10_000.0, t0);
@@ -508,6 +575,84 @@ mod burn_tests {
         let prev = snap_with_monthly(0.0, 1_000_000_000.0, t0);
         let cur = snap_with_monthly(500_000_000.0, 1_000_000_000.0, t1);
         assert!(compute_burn(&prev, &cur).is_none());
+    }
+}
+
+#[cfg(test)]
+mod burn_tracker_tests {
+    use super::*;
+    use crate::providers::{UsageUnit, UsageWindows, WindowUsage};
+
+    fn window(used: f64, quota: f64) -> WindowUsage {
+        WindowUsage {
+            used,
+            quota,
+            unit: UsageUnit::Tokens,
+            reset_at: None,
+            over_quota: false,
+            cost_source: Default::default(),
+            tokens: None,
+        }
+    }
+
+    fn snap_at(used: f64, quota: f64, secs: i64) -> crate::providers::UsageSnapshot {
+        crate::providers::UsageSnapshot {
+            provider_id: "p".to_string(),
+            provider_display_name: "P".to_string(),
+            plan_tier: None,
+            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                .unwrap()
+                + chrono::Duration::seconds(secs),
+            windows: UsageWindows {
+                monthly: Some(window(used, quota)),
+                ..Default::default()
+            },
+            heatmap: None,
+        }
+    }
+
+    /// 核心回归：整数粒度额度（百分比 1% 一跳）下，相邻采样 delta=0 不得把
+    /// 燃烧率抹掉——平稳采样保持上一次的有效速率。
+    #[test]
+    fn flat_sample_keeps_last_burn() {
+        let mut t = BurnTracker::default();
+        let _ = t.observe("p", &snap_at(1000.0, 10_000.0, 0)); // 建基线
+        let (b1, _) = t.observe("p", &snap_at(2000.0, 10_000.0, 60)); // 增长
+        assert!(b1.is_some(), "growth must produce burn");
+        let rate1 = b1.unwrap().rate_per_min;
+        let (b2, _) = t.observe("p", &snap_at(2000.0, 10_000.0, 90)); // 平稳
+        assert!(b2.is_some(), "flat sample must keep the last rate");
+        assert!((b2.unwrap().rate_per_min - rate1).abs() < f64::EPSILON);
+        let (b3, _) = t.observe("p", &snap_at(2500.0, 10_000.0, 120)); // 再增长
+        assert!(b3.is_some());
+        // 基线钉在最近一次增长（t=60），速率按该段平均：(2500-2000)/60s*60
+        assert!((b3.unwrap().rate_per_min - 500.0).abs() < 1.0);
+    }
+
+    /// 闲置超过基线上限（600s）→ 燃烧率隐藏并重置基线，随后的新会话正常。
+    #[test]
+    fn idle_beyond_cap_hides_then_reseeds() {
+        let mut t = BurnTracker::default();
+        let _ = t.observe("p", &snap_at(1000.0, 10_000.0, 0));
+        let _ = t.observe("p", &snap_at(2000.0, 10_000.0, 60));
+        let (b, _) = t.observe("p", &snap_at(2000.0, 10_000.0, 700)); // 闲置超限
+        assert!(b.is_none(), "idle past the cap must hide the burn");
+        let (b2, _) = t.observe("p", &snap_at(2100.0, 10_000.0, 760));
+        assert!(b2.is_some(), "growth after rebase immediately produces burn");
+        let (b3, _) = t.observe("p", &snap_at(2200.0, 10_000.0, 820));
+        assert!(b3.is_some(), "new session keeps producing burn");
+    }
+
+    /// 用量回落（窗口重置/纠偏）→ 燃烧率隐藏、基线重置，负速率不外泄。
+    #[test]
+    fn drop_resets_baseline_without_negative_rate() {
+        let mut t = BurnTracker::default();
+        let _ = t.observe("p", &snap_at(1000.0, 10_000.0, 0));
+        let _ = t.observe("p", &snap_at(2000.0, 10_000.0, 60));
+        let (b, _) = t.observe("p", &snap_at(1500.0, 10_000.0, 120));
+        assert!(b.is_none(), "drop must not produce a negative rate");
+        let (b2, _) = t.observe("p", &snap_at(1600.0, 10_000.0, 180));
+        assert!(b2.is_some(), "growth after the drop seeds a fresh baseline");
     }
 }
 
