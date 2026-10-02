@@ -8,6 +8,8 @@
 // 全部为纯函数：不 import api.ts，不发 IPC，可直接单测。
 
 import { normalizeKind } from "./brand-glyphs";
+import type { UsageDailyRow } from "./api";
+import { providerForModel } from "./model-provider";
 
 /** 某个 provider kind 在统一账本里对应的日序列。 */
 export type LedgerSeries =
@@ -68,4 +70,85 @@ export function highlightKeyForKind(kind: string): string | null {
   const base = normalizeKind(kind);
   if (ACCOUNT_DAILY_KINDS.has(base)) return null;
   return KIND_TO_PROVIDER_KEY[base] ?? null;
+}
+
+/** 某一天的用量拆解。 */
+export interface DayBreakdown {
+  /** 当日全部本机工具 token 总量。 */
+  total: number;
+  /** 当日按 provider key 的拆解。 */
+  byProvider: Record<string, number>;
+}
+
+/** 某个 provider 在窗口内的口径统计，用于日历统计行的第二行。 */
+export interface FocusStats {
+  /** 窗口内有该 provider 用量的天数。 */
+  days: number;
+  sum: number;
+  peak: number;
+  /** 占窗口总量的百分比（0-100，整数）。 */
+  share: number;
+}
+
+/**
+ * 账本行 → 按日、按 Provider 拆解。
+ *
+ * 关键口径（两行互不重叠，这是修掉旧实现翻倍 bug 的核心）：
+ * - `model === ""` 的**来源总量行** → 只计入 `total`；
+ * - `model !== ""` 的**分模型行** → 只计入 `byProvider`。
+ *
+ * 理由：provider 归因信息只存在于模型行（总量行没有模型名）；而总量必须用
+ * 总量行，否则分模型行求和会因未覆盖模型而漏计。两者分别取，加起来才是完整
+ * 一天。旧实现（HeatmapGrid.svelte:57-65）对 `p:<key>` 不按 model 过滤，
+ * 两类行同时累加 → 翻倍。
+ *
+ * 仅消费 `kind === 'tool'` 行：provider 账本行单位非 token，混算即错。
+ */
+export function buildLedgerBreakdown(
+  rows: UsageDailyRow[],
+): Map<string, DayBreakdown> {
+  const out = new Map<string, DayBreakdown>();
+  const slot = (date: string): DayBreakdown => {
+    let e = out.get(date);
+    if (!e) {
+      e = { total: 0, byProvider: {} };
+      out.set(date, e);
+    }
+    return e;
+  };
+  for (const r of rows) {
+    if (r.kind !== "tool") continue;
+    const e = slot(r.date);
+    if (r.model === "") {
+      e.total += r.total;
+    } else {
+      const key = providerForModel(r.model, r.source);
+      e.byProvider[key] = (e.byProvider[key] ?? 0) + r.total;
+    }
+  }
+  return out;
+}
+
+/** 某 provider 在 `windowDates` 窗口内的口径统计。 */
+export function focusStats(
+  byDate: Map<string, DayBreakdown>,
+  windowDates: string[],
+  providerKey: string,
+  windowTotal: number,
+): FocusStats {
+  let days = 0;
+  let sum = 0;
+  let peak = 0;
+  for (const d of windowDates) {
+    const v = byDate.get(d)?.byProvider[providerKey] ?? 0;
+    if (v > 0) days += 1;
+    sum += v;
+    if (v > peak) peak = v;
+  }
+  return {
+    days,
+    sum,
+    peak,
+    share: windowTotal > 0 ? Math.round((sum / windowTotal) * 100) : 0,
+  };
 }
