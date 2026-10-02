@@ -179,7 +179,12 @@
     </svg>
 
     {#if hover}
-      <div class="tl__tip" style={`left:${clamp(hoverX, 60, Math.max(60, width - 60))}px`}>
+      <div
+        class="tl__tip"
+        style={hoverX > width / 2
+          ? `right:${Math.max(4, width - hoverX + 10)}px`
+          : `left:${Math.max(4, hoverX + 10)}px`}
+      >
         <div class="tl__tip-date">{hover.date}</div>
         <div class="tl__tip-row"><span class="tl__tip-k">总量</span><b>{hover.total.toLocaleString()}</b></div>
         {#each hover.parts as p (p.id)}
@@ -256,7 +261,6 @@
   .tl__tip {
     position: absolute;
     top: 2px;
-    transform: translateX(-50%);
     pointer-events: none;
     min-width: 110px;
     padding: 5px 7px;

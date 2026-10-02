@@ -4,7 +4,7 @@
   // 趋势窗口（TrendWindow，堆叠柱 + 滚动），获得可放大的明细视图。
   import { getHubDevices, onTabsChanged, openTrendWindow } from "../api";
   import { readAggMode, readPref, writePref } from "../prefs";
-  import { buildDeviceSeries, deviceColor } from "../device-agg";
+  import { buildDeviceSeries, stackColors } from "../device-agg";
   import {
     buildTrendDays,
     fetchToolSeries,
@@ -82,9 +82,8 @@
 
   let activeIds = $derived(srcIds);
   let activeSeries = $derived(srcSeries);
-  let activeColors = $derived.by(() =>
-    Object.fromEntries(srcIds.map((id) => [id, deviceColor(id)])),
-  );
+  // 堆叠顺序配色：相邻层不同色相（哈希配色会让相近色叠在一起）。
+  let activeColors = $derived(stackColors(srcIds));
 
   let days = $derived(buildTrendDays(activeSeries, activeIds, rangeDef.days));
   let maxTotal = $derived(

@@ -483,6 +483,11 @@
   // 差分类 provider（MiniMax/DeepSeek/Kimi 的百分比/金额差分）退出历史视图。
   const HEATMAP_TOOLS = "__tools__";
   const PROVIDER_DAILY_KINDS = new Set(["volcengine", "openai", "xai"]);
+  // 点击卡片时日历应聚焦的关联工具（该 provider 生态的本机用量通道）。
+  const CARD_TOOL_FOR_KIND: Record<string, string> = {
+    minimax: "minimax-code",
+    deepseek: "deepseek-harness",
+  };
   let heatmapTabId = $state<string>(HEATMAP_TOOLS);
   let heatmapTools = $state<string[]>([]); // 账本中有数据的工具 id（供分工具胶囊）
   let heatmapToolSel = $state<string>(""); // tools 模式下的具体工具（空=合并全部）
@@ -1097,10 +1102,17 @@
               onHover={onCardHover}
               onSelect={() => {
                 focus = snap.provider_id;
-                // 只有带真实服务端日账的 provider 有自己的日历；其余回到全部工具。
-                heatmapTabId = PROVIDER_DAILY_KINDS.has(snap.provider_id.split("-")[0])
-                  ? snap.provider_id
-                  : HEATMAP_TOOLS;
+                const kind = snap.provider_id.split("-")[0];
+                // 日历跟随卡片：MiniMax → MiniMax Code 工具序列，DeepSeek →
+                // DeepSeek Harness，带服务端日账的 provider → 账户日账，
+                // 其余 → 全部工具。
+                if (PROVIDER_DAILY_KINDS.has(kind)) {
+                  heatmapTabId = snap.provider_id;
+                } else if (CARD_TOOL_FOR_KIND[kind]) {
+                  heatmapTabId = `tool:${CARD_TOOL_FOR_KIND[kind]}`;
+                } else {
+                  heatmapTabId = HEATMAP_TOOLS;
+                }
               }}
             />
           </div>
@@ -1118,7 +1130,10 @@
               ...heatmapTools.map((t) => ({ id: `tool:${t}`, label: t })),
               ...snapshots
                 .filter((s) => PROVIDER_DAILY_KINDS.has(s.provider_id.split("-")[0]))
-                .map((s) => ({ id: s.provider_id, label: s.provider_display_name })),
+                .map((s) => ({
+                  id: s.provider_id,
+                  label: `${s.provider_display_name} · 账户日账`,
+                })),
             ]}
             value={heatmapTabId}
             onPick={(id) => {

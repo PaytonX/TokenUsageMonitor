@@ -29,6 +29,19 @@ export function deviceColor(id: string): string {
   return DEV_COLORS[Math.abs(h) % DEV_COLORS.length];
 }
 
+/** 堆叠面积图的配色：按**堆叠顺序**（即传入 ids 的顺序）分配，相邻层必然
+ *  不同色相——哈希分配会让颜色相近的两层叠在一起无法分辨。
+ *  色板按蓝→琥珀→粉→绿→紫→橙→青设计，相邻高对比。 */
+const STACK_COLORS = ["#4cc2ff", "#f2b35b", "#f27b9b", "#5fd4a2", "#b58cf5", "#e8934a", "#6fd1d1"];
+
+export function stackColors(ids: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  ids.forEach((id, i) => {
+    out[id] = STACK_COLORS[i % STACK_COLORS.length];
+  });
+  return out;
+}
+
 /** 同一设备只保留一条；保持原顺序（本机在首位）。 */
 export function dedupeDevices(devices: HubDevice[]): HubDevice[] {
   const seen = new Set<string>();
