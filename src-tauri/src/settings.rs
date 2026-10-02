@@ -41,6 +41,11 @@ pub struct Settings {
     /// Compact-mode flag.
     #[serde(default)]
     pub compact_mode: bool,
+    /// 胶囊上次贴边的锚点。None = 上次是浮动。
+    /// 存下来是为了重启后回到同一条边、同一个位置——否则每次启动都靠系统
+    /// 随手放，用户看到的现象就是「窗口老在左上角」。
+    #[serde(default)]
+    pub dock: Option<crate::dock::DockAnchor>,
     /// Whether to launch automatically at system boot (Windows: HKCU Run key,
     /// managed via tauri-plugin-autostart).
     #[serde(default)]
@@ -182,6 +187,7 @@ impl Default for Settings {
             dashboard_x: None,
             dashboard_y: None,
             compact_mode: false,
+            dock: None,
             autostart: false,
             close_to_tray: default_close_to_tray(),
             notify_enabled: default_notify_enabled(),
@@ -340,6 +346,20 @@ impl SettingsStore {
     /// dock the window as a compact pill before it is shown.
     pub fn compact_mode_now(&self) -> bool {
         self.cache.try_read().map(|s| s.compact_mode).unwrap_or(false)
+    }
+
+    /// Sync, non-async read of `dock`. Same rationale as `compact_mode_now`:
+    /// startup positioning runs synchronously inside `setup`, which can't await.
+    pub fn dock_now(&self) -> Option<crate::dock::DockAnchor> {
+        self.cache.try_read().ok().and_then(|s| s.dock)
+    }
+
+    /// Sync, non-async read of the persisted free-floating position.
+    pub fn get_xy_now(&self) -> (Option<i32>, Option<i32>) {
+        self.cache
+            .try_read()
+            .map(|s| (s.dashboard_x, s.dashboard_y))
+            .unwrap_or((None, None))
     }
 
     pub async fn save(&self, new_settings: Settings) -> Result<()> {
@@ -505,5 +525,32 @@ notify_crit_percent = 90
         assert!(default_dumped.contains("close_to_tray = true"));
         assert!(default_dumped.contains("notify_warn_percent = 80"));
         assert!(default_dumped.contains("notify_crit_percent = 95"));
+    }
+
+    #[test]
+    fn a_config_without_the_dock_field_deserialises_to_none() {
+        // 老配置里根本没有 dock 这行；serde(default) 必须给出 None 而不是报错，
+        // 否则升级即读不出配置，用户会以为设置被清空了。
+        // raw 里必须列全所有**没有** #[serde(default)] 的字段，否则解析失败。
+        let raw = "\
+enabled_providers = []
+poll_interval_seconds = 30
+dashboard_x = 100
+dashboard_y = 200
+compact_mode = true
+";
+        let s: Settings = toml::from_str(raw).expect("old config must still parse");
+        assert_eq!(s.dock, None);
+    }
+
+    #[test]
+    fn a_config_with_a_dock_field_round_trips() {
+        use crate::dock::{DockAnchor, DockSide};
+        let a = DockAnchor { side: DockSide::Bottom, along: 640 };
+        let base = Settings::default();
+        let s = Settings { dock: Some(a), ..base };
+        let text = toml::to_string(&s).expect("serialize");
+        let back: Settings = toml::from_str(&text).expect("deserialize");
+        assert_eq!(back.dock, Some(a));
     }
 }

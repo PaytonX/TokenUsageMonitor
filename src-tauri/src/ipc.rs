@@ -492,6 +492,42 @@ pub fn apply_anchor(window: &WebviewWindow, a: DockAnchor) -> bool {
     true
 }
 
+/// 回写「贴边锚点 + 自由位置」到 `config.toml`，让下次启动回到同一形态。
+///
+/// 与 `apply_anchor` 分开是刻意的：几何函数保持同步纯函数，回写是**副作用**，
+/// 交给调用方在落位成功后决定何时做。`apply_anchor` 返回 false（位置本就没动）
+/// 时调用方可以跳过这次写盘。
+///
+/// 两个字段必须**一起**写。贴边态的位置是从锚点反算的（不是用户拖出来的坐标），
+/// 浮动态则没有锚点可依；只写其一会留下半新半旧的状态——例如退出时胶囊已浮到
+/// 屏幕正中，配置里却还留着上次贴右的锚点，下次启动就被拉回右缘。
+///
+/// `anchor == None` 即浮动态，此时把当前位置存进 `dashboard_x/y`（从项目第一天
+/// 起就只写不读，这里顺手接通）。
+pub async fn persist_placement(app: &AppHandle, anchor: Option<DockAnchor>) {
+    let Some(state) = app.try_state::<AppState>() else { return };
+    let settings = state.settings.clone();
+    let mut next = settings.get().await.clone();
+    let mut changed = next.dock != anchor;
+    if let Some(pos) = app
+        .get_webview_window("dashboard")
+        .and_then(|w| w.outer_position().ok())
+    {
+        if next.dashboard_x != Some(pos.x) || next.dashboard_y != Some(pos.y) {
+            next.dashboard_x = Some(pos.x);
+            next.dashboard_y = Some(pos.y);
+            changed = true;
+        }
+    }
+    if !changed {
+        return;
+    }
+    next.dock = anchor;
+    if let Err(e) = settings.save(next).await {
+        tracing::warn!(target: "tum.window", "persist placement failed: {e}");
+    }
+}
+
 /// 把手窗的物理位置。
 /// 位置**从锚点算**，不再读 dashboard 的当前位置——锚点是唯一真值，
 /// 胶囊在滑出动画里怎么动都不会带着把手抖。
@@ -637,6 +673,12 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
         other => return Err(format!("unknown window mode: {other}")),
     }
 
+    // 浮动位置也要持久化：dashboard_x/y 从项目第一天起就只写不读（见
+    // docs/superpowers/specs/2026-09-15-focus-provider-and-pill-design.md:133
+    // 「等 window-state 插件接管」——那步始终没做）。这里顺手接通；锚点一并
+    // 落盘，免得切完模式后配置里还留着上一次的形态。
+    persist_placement(&app, current_anchor(&window)).await;
+
     Ok(())
 }
 
@@ -677,7 +719,11 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
         "revealed" | "docked" => {
             // docked 才贴死；revealed 时窗口已贴边，不再移动，避免每帧校正抖动。
             if state == "docked" {
-                apply_anchor(&dash, anchor);
+                // 贴死成功即回写持久化锚点，让下次启动回到同一条边、同一位置。
+                // 位置本就没动（apply_anchor 返回 false）时不写盘。
+                if apply_anchor(&dash, anchor) {
+                    persist_placement(&app, Some(anchor)).await;
+                }
             }
 
             let peek = match app.get_webview_window("peek") {

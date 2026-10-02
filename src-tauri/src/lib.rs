@@ -640,22 +640,50 @@ pub fn run() {
             let dash = app
                 .get_webview_window("dashboard")
                 .expect("dashboard window must exist");
-            // 显示形态是持久的：上次停在 compact 胶囊态就先按胶囊尺寸定好大小，
-            // 再显示窗口（配置里 visible=false）—— 否则启动会先闪一个 400x680 的全窗。
-            // 恢复后是常态浮动（只把窗口拉回屏内，不贴边），只有用户把它拖到屏幕边缘
-            // 松手才由前端判定贴边收起。前端挂载后会按窗宽自行对齐视图，故无需额外通知。
-            if app.state::<AppState>().settings.compact_mode_now() {
-                let _ = dash.set_size(tauri::LogicalSize::new(168u32, 56u32));
-                ipc::clamp_window_to_work_area(&dash, 8.0);
+            // 显示形态与位置都是持久的：上次停在 compact 胶囊态就先按胶囊尺寸定好
+            // 大小（配置里 visible=false），上次贴边就回到那一条边、同一个位置，
+            // 上次浮动就回到那个自由位置。
+            //
+            // 旧行为是「只把窗口拉回屏内，不贴边，位置由系统随手放」——那正是用户
+            // 看到的「窗口老在左上角」：dashboard_x/y 两个字段从项目第一天起只写不读
+            // （spec:133 注明是等 window-state 插件接管，那步始终没做）。
+            let saved_anchor = app.state::<AppState>().settings.dock_now();
+            let compact_now = app.state::<AppState>().settings.compact_mode_now();
+            // 顺序要点：apply_anchor 靠**当前**尺寸反算贴边位置，前端也靠窗宽判定
+            // 该渲染胶囊还是主窗，所以定尺寸必须排在它之前。
+            let (w, h) = if compact_now { (168u32, 56u32) } else { (400u32, 680u32) };
+            let _ = dash.set_size(tauri::LogicalSize::new(w, h));
+            match saved_anchor {
+                // 贴边：回到上次那条边、同一个位置。
+                Some(a) => { ipc::apply_anchor(&dash, a); }
+                // 浮动态：用持久化的自由位置。
+                None => {
+                    let (x, y) = app.state::<AppState>().settings.get_xy_now();
+                    match (x, y) {
+                        (Some(x), Some(y)) => {
+                            let _ = dash.set_position(tauri::PhysicalPosition::new(x, y));
+                        }
+                        // 从没存过位置：只把越界的窗口拉回屏内，不贴边。
+                        _ => { ipc::clamp_window_to_work_area(&dash, 8.0); }
+                    }
+                }
+            }
+            if compact_now {
                 app.state::<AppState>()
                     .compact_mode
                     .store(true, std::sync::atomic::Ordering::SeqCst);
             }
             let _ = dash.show();
+            // 恢复了贴边锚点时**不能再跑**下面那个 first-focus 夹取：
+            // clamp_rect 是「无条件留 8px 余量」而非「只在出屏时才拉」，于是它会把
+            // 刚贴死的窗口又拽离屏幕边缘 8px（把手贴边画，胶囊却差一截，肉眼可见）。
+            // 锚点路径由 anchor_rect 保证已夹在工作区内，不需要这层兜底。
+            let restored_dock = saved_anchor.is_some();
             let startup_clamped = std::sync::atomic::AtomicBool::new(false);
             let dash_for_clamp = dash.clone();
             dash.on_window_event(move |event| {
                 if matches!(event, tauri::WindowEvent::Focused(true))
+                    && !restored_dock
                     && !startup_clamped.swap(true, std::sync::atomic::Ordering::SeqCst)
                 {
                     ipc::clamp_window_to_work_area(&dash_for_clamp, 8.0);
@@ -758,7 +786,14 @@ pub fn run() {
                     }
                     state.pill_drag.store(false, Ordering::SeqCst);
                     if let Some(w) = settle_handle.get_webview_window("dashboard") {
+                        // 拖拽落点即最终形态：贴边记锚点、浮动记自由位置。
+                        // 之所以写在这里而**不是** sync_peek_window 的 floating
+                        // 分支：启动时前端也会走一次 floating 结算（App.svelte 的
+                        // 启动恢复分支恒置 pillDocked=false），在那一处写会把刚
+                        // 恢复出来的锚点当场抹掉，重启后仍回到左上角。
+                        let anchor = ipc::current_anchor(&w);
                         let _ = w.emit("pill-drag-settled", ());
+                        ipc::persist_placement(&settle_handle, anchor).await;
                     }
                 }
             });
