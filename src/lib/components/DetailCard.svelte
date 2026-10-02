@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getHeatmap, forceRefresh } from "../api";
+  import { getUsageHistory, forceRefresh } from "../api";
   import {
     displayCurrency,
     estimateCostUsd,
@@ -104,16 +104,38 @@
     return `${Math.floor(mins / 60)}h 前`;
   });
 
-  // --- 近 7 日迷你柱状：自拉 get_heatmap；provider 切换时作废在途请求 ---
+  // --- 近 7 日迷你柱状：统一账本口径 ---
+  // 数据源选择：有本机工具关联的 provider（MiniMax→minimax-code）用该工具的
+  // token 序列；有真实服务端日账的 provider（volcengine/openai/xai）用其日账；
+  // 差分类 provider（无日账）不显示小图——避免把百分比/金额差分伪装成用量。
+  const LEDGER_TOOL_FOR_KIND: Record<string, string> = { minimax: "minimax-code" };
+  const PROVIDER_LEDGER_KINDS = new Set(["volcengine", "openai", "xai"]);
   let weekCells = $state<HeatmapCell[]>([]);
   let weekSeq = 0;
 
   $effect(() => {
     const providerId = snapshot.provider_id;
+    const kind = providerId.split("-")[0];
+    const tool = LEDGER_TOOL_FOR_KIND[kind];
     const seq = ++weekSeq;
-    getHeatmap(providerId, 7)
-      .then((rows) => {
-        if (seq === weekSeq) weekCells = rows;
+    getUsageHistory(7)
+      .then(({ rows }) => {
+        if (seq !== weekSeq) return;
+        let picked = rows.filter((r) => r.model === "");
+        if (tool) {
+          picked = picked.filter((r) => r.kind === "tool" && r.source === tool);
+        } else if (PROVIDER_LEDGER_KINDS.has(kind)) {
+          picked = picked.filter(
+            (r) => r.kind === "provider" && r.source.split("-")[0] === kind,
+          );
+        } else {
+          picked = [];
+        }
+        weekCells = picked.map((r) => ({
+          date: r.date,
+          value: r.total,
+          unit: (r.unit === "usd" ? "usd" : r.unit === "cny" ? "cny" : "tokens") as UsageUnit,
+        }));
       })
       .catch(() => {
         if (seq === weekSeq) weekCells = [];

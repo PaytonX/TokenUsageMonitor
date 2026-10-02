@@ -2,7 +2,7 @@
   // 模型用量面板（B5 模型视图 / 本地工具按模型聚合）：跨工具把相同模型归并，
   // 展示各模型的 token 总量与成本；点选模型查看其逐日走势（线图）。
   // 数据复用 get_local_tools 的 models 字段（claude/cherry/minimax 已按模型聚合）。
-  import { getHubDevices, getLocalTools, onTabsChanged, onToolsUpdated } from "../api";
+  import { getHubDevices, getUsageHistory, onTabsChanged, onToolsUpdated } from "../api";
   import { readAggMode, readPref, writePref } from "../prefs";
   import { buildAggregateModels, staleDetailDevices } from "../device-agg";
   import type { LocalModelUsage, LocalToolsPayload } from "../types";
@@ -69,8 +69,65 @@
           sessions_parsed: 0,
         };
       } else {
+        // 本机模式：数据源 = 统一账本（与日历/趋势严格同源）。把账本的分模型
+        // 行合成单一"全部工具"载体，复用既有渲染路径。
         staleDevs = [];
-        payload = await getLocalTools(force);
+        const { rows } = await getUsageHistory(90);
+        const byModel = new Map<string, {
+          total: number;
+          cost: number;
+          currencies: Set<string>;
+          cost_estimated: boolean;
+          days: Map<string, { date: string; input: number; cache_read: number; output: number; total: number }>;
+        }>();
+        const dayMap = new Map<string, { date: string; input: number; cache_read: number; output: number; total: number }>();
+        for (const r of rows) {
+          if (r.kind !== "tool") continue;
+          if (r.model === "") {
+            const cur = dayMap.get(r.date) ?? { date: r.date, input: 0, cache_read: 0, output: 0, total: 0 };
+            cur.input += r.input; cur.cache_read += r.cache_read;
+            cur.output += r.output; cur.total += r.total;
+            dayMap.set(r.date, cur);
+            continue;
+          }
+          let m = byModel.get(r.model);
+          if (!m) {
+            m = { total: 0, cost: 0, currencies: new Set(), cost_estimated: false, days: new Map() };
+            byModel.set(r.model, m);
+          }
+          m.total += r.total;
+          if ((r.cost ?? 0) > 0) {
+            m.cost += r.cost!;
+            if (r.currency) m.currencies.add(r.currency);
+          }
+          if (r.cost_estimated) m.cost_estimated = true;
+          const d = m.days.get(r.date) ?? { date: r.date, input: 0, cache_read: 0, output: 0, total: 0 };
+          d.input += r.input; d.cache_read += r.cache_read;
+          d.output += r.output; d.total += r.total;
+          m.days.set(r.date, d);
+        }
+        const models: LocalModelUsage[] = [...byModel.entries()].map(([model, m]) => ({
+          model,
+          total_tokens: m.total,
+          cost: m.cost,
+          currency: m.currencies.size === 1 ? [...m.currencies][0] : m.currencies.size > 1 ? "USD" : "",
+          cost_estimated: m.cost_estimated,
+          daily: [...m.days.values()].sort((a, b) => a.date.localeCompare(b.date)),
+        })).sort((a, b) => b.total_tokens - a.total_tokens);
+        const daily = [...dayMap.values()].sort((a, b) => a.date.localeCompare(b.date));
+        payload = {
+          tools: [{
+            id: "__ledger__",
+            name: "全部工具",
+            daily,
+            total_tokens: daily.reduce((s, d) => s + d.total, 0),
+            session_count: 0,
+            project_count: 0,
+            scanned_at: new Date().toISOString(),
+            models,
+          }],
+          sessions_parsed: 0,
+        };
       }
       if (activeId === null || !modelList.some((m) => m.id === activeId)) {
         activeId = modelList[0]?.id ?? null;
