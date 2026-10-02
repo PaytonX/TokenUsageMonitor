@@ -7,7 +7,7 @@
 // （get_hub_devices）。provider 差分序列（percent/cny）不再进入趋势视图，
 // 也不再跨单位相加。
 import { getUsageHistory } from "./api";
-import { providerColor, providerForModel, providerLabel } from "./model-provider";
+import { providerForModel, providerLabel, providerPalette } from "./model-provider";
 
 export type RangeKey = "7d" | "30d" | "90d";
 export interface RangeDef {
@@ -80,20 +80,20 @@ export async function fetchProviderCrossToolSeries(
     }
     m.set(r.date, (m.get(r.date) ?? 0) + r.total);
   }
-  const totals = [...byProvider.entries()].map(([key, m]) => ({
-    key,
-    total: [...m.values()].reduce((s, v) => s + v, 0),
-  }));
+  const totals = [...byProvider.entries()]
+    .map(([key, m]) => ({ key, total: [...m.values()].reduce((s, v) => s + v, 0) }))
+    // 区间内零用量的 Provider 不进序列（否则图例出现 0M 的空条）。
+    .filter((t) => t.total > 0);
   totals.sort((a, b) => b.total - a.total);
+  // ids 已按用量降序 → providerPalette 据此区分主次配色。
   const ids = totals.map((t) => t.key);
   const series: Record<string, Record<string, number>> = {};
   const names: Record<string, string> = {};
-  const colors: Record<string, string> = {};
   for (const { key } of totals) {
     series[key] = Object.fromEntries(byProvider.get(key)!);
     names[key] = providerLabel(key);
-    colors[key] = providerColor(key);
   }
+  const colors = providerPalette(ids);
   return { ids, series, names, colors };
 }
 
