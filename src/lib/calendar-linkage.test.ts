@@ -3,6 +3,7 @@ import {
   buildLedgerBreakdown,
   DIM_FACTOR,
   focusStats,
+  hexToRgbTriplet,
   highlightKeyForKind,
   ledgerSeriesForKind,
   LEVEL_ALPHA,
@@ -235,5 +236,24 @@ describe("paintCell · highlight 模式", () => {
     expect(DIM_FACTOR).toBeGreaterThan(0);
     expect(DIM_FACTOR).toBeLessThan(1);
     expect(LEVEL_ALPHA[4] * DIM_FACTOR).toBeGreaterThan(0.1);
+  });
+});
+
+describe("hexToRgbTriplet", () => {
+  it("解析 6 位十六进制（大小写皆可）", () => {
+    expect(hexToRgbTriplet("#5b8cff")).toEqual([91, 140, 255]);
+    expect(hexToRgbTriplet("#5B8CFF")).toEqual([91, 140, 255]);
+  });
+
+  it("3 位简写不解析（避免与 6 位语义混淆）", () => {
+    expect(hexToRgbTriplet("#fff")).toEqual([76, 194, 255]);
+  });
+
+  it("非法输入回落到强调色，不返回 NaN", () => {
+    for (const bad of ["", "not-a-color", "#12345", "5b8cff", "#gggggg"]) {
+      const rgb = hexToRgbTriplet(bad);
+      expect(rgb, `input=${bad}`).toEqual([76, 194, 255]);
+      expect(rgb.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)).toBe(true);
+    }
   });
 });
