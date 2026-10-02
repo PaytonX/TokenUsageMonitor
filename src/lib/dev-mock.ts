@@ -127,6 +127,10 @@ const ACCOUNTS = [
   { instance_id: "minimax", provider_kind: "minimax", label: "MiniMax Token Plan", accent_color: "#e9477e", enabled: true },
   { instance_id: "volcengine", provider_kind: "volcengine", label: "Volcano Agent Plan", accent_color: "#00dcff", enabled: true },
   { instance_id: "deepseek", provider_kind: "deepseek", label: "DeepSeek API", accent_color: "#3b82f6", enabled: true },
+  // 覆盖用例：差分类 Provider（只有额度百分比/余额差分，无按日账本）。
+  // 真实账户里目前没有这一类，但没有它就永远看不到 DetailCard 的
+  // 「该 Provider 无按日用量数据」空态分支，也点不出那条静默路径。
+  { instance_id: "kimi", provider_kind: "kimi", label: "Kimi", accent_color: "#1783ff", enabled: true },
 ];
 
 const now = Date.now();
@@ -161,6 +165,9 @@ function snapshot() {
     mk("minimax", "MiniMax Token Plan", "Max", { h5: 3.4e7, h5q: 5e7, wk: 1.8e8, wkq: 2.5e8, mo: 6.2e8, moq: 8.6e8, unit: "tokens" }),
     mk("deepseek", "DeepSeek API", null, { h5: 1.1e7, h5q: 5e7, wk: 6.4e7, wkq: 2.5e8, mo: 2.1e8, moq: 8.6e8, unit: "tokens" }),
     mk("volcengine", "Volcano Agent Plan", "Agent", { h5: 8.6e6, h5q: 1e7, wk: 5.2e7, wkq: 6e7, mo: 1.8e8, moq: 2e8, unit: "afp" }),
+    // 差分类：只有额度百分比/金额，无按日账本 → DetailCard 应显示无按日数据说明。
+    // CNY 用真实量级（几十~几百元），别用 token 量级否则会显示成 ¥2200000.00。
+    mk("kimi", "Kimi", null, { h5: 22, h5q: 50, wk: 94, wkq: 250, mo: 310, moq: 860, unit: "cny" }),
   ];
 }
 

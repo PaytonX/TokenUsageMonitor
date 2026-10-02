@@ -17,6 +17,7 @@
     type WindowKey,
     type WindowUsage,
   } from "../types";
+  import { buildLedgerBreakdown, ledgerSeriesForKind } from "../calendar-linkage";
   import ProviderLogo from "./ProviderLogo.svelte";
 
   interface Props {
@@ -105,42 +106,89 @@
   });
 
   // --- 近 7 日迷你柱状：统一账本口径 ---
-  // 数据源选择：有本机工具关联的 provider（MiniMax→minimax-code）用该工具的
-  // token 序列；有真实服务端日账的 provider（volcengine/openai/xai）用其日账；
-  // 差分类 provider（无日账）不显示小图——避免把百分比/金额差分伪装成用量。
-  const LEDGER_TOOL_FOR_KIND: Record<string, string> = { minimax: "minimax-code" };
-  const PROVIDER_LEDGER_KINDS = new Set(["volcengine", "openai", "xai"]);
+  // 数据源选择交给 calendar-linkage（唯一数据源），本组件不再维护映射表。
+  // 旧实现有两处问题：① 自带一份 LEDGER_TOOL_FOR_KIND，与 App 侧不一致
+  // （App 有 deepseek，DetailCard 没有）—— 正是 calendar-linkage 要消灭的漂移；
+  // ② 按 source === 工具 id 过滤，漏掉跨工具归因的行，与日历高亮的口径不同。
+  // 现直接复用 buildLedgerBreakdown，与日历/趋势页完全同一口径。
+  //
+  // 「无按日数据」的判据是**账本里近 90 天是否真的出现过这个 provider**，
+  // 而不是注册表里有没有它的 key：注册表回答的是"能不能归因到它"，可一个
+  // 配了账户却从不经被扫描工具使用的 Provider（如 Kimi 账号）映射非空、
+  // 序列却恒为空——只判 null 会漏掉这类最常见的"点了没反应"。
+  const PROBE_DAYS = 90; // 存在性探测窗口；小图仍只画近 7 天
   let weekCells = $state<HeatmapCell[]>([]);
   let weekSeq = 0;
+  let noDailyNote = $state<string | null>(null);
 
   $effect(() => {
     const providerId = snapshot.provider_id;
     const kind = providerId.split("-")[0];
-    const tool = LEDGER_TOOL_FOR_KIND[kind];
+    const series = ledgerSeriesForKind(kind, providerId);
     const seq = ++weekSeq;
-    getUsageHistory(7)
+    if (!series) {
+      noDailyNote = "该 Provider 无按日用量数据，无法按天查看";
+      weekCells = [];
+      return;
+    }
+    noDailyNote = null;
+    getUsageHistory(PROBE_DAYS)
       .then(({ rows }) => {
         if (seq !== weekSeq) return;
-        let picked = rows.filter((r) => r.model === "");
-        if (tool) {
-          picked = picked.filter((r) => r.kind === "tool" && r.source === tool);
-        } else if (PROVIDER_LEDGER_KINDS.has(kind)) {
-          picked = picked.filter(
-            (r) => r.kind === "provider" && r.source.split("-")[0] === kind,
+        if (series.mode === "account-daily") {
+          // 服务端日账：单位可能是 tokens / usd / cny / afp，保留行上单位。
+          const picked = rows.filter(
+            (r) => r.kind === "provider" && r.source === series.providerId,
           );
-        } else {
-          picked = [];
+          if (picked.length === 0) {
+            noDailyNote = "该账户尚无服务端日账数据";
+            weekCells = [];
+            return;
+          }
+          weekCells = picked
+            .filter((r) => r.date >= lastNDays(7)[0])
+            .map((r) => ({
+              date: r.date,
+              value: r.total,
+              unit: (r.unit === "usd"
+                ? "usd"
+                : r.unit === "cny"
+                  ? "cny"
+                  : "tokens") as UsageUnit,
+            }));
+          return;
         }
-        weekCells = picked.map((r) => ({
-          date: r.date,
-          value: r.total,
-          unit: (r.unit === "usd" ? "usd" : r.unit === "cny" ? "cny" : "tokens") as UsageUnit,
+        // 跨工具：与日历高亮同一拆解（分模型行按 provider 归因），口径一致。
+        const map = buildLedgerBreakdown(rows);
+        const key = series.providerKey;
+        const appears = [...map.values()].some((d) => (d.byProvider[key] ?? 0) > 0);
+        if (!appears) {
+          noDailyNote = "近 90 天账本中没有该 Provider 的用量记录";
+          weekCells = [];
+          return;
+        }
+        weekCells = lastNDays(7).map((date) => ({
+          date,
+          value: map.get(date)?.byProvider[key] ?? 0,
+          unit: "tokens" as UsageUnit,
         }));
       })
       .catch(() => {
         if (seq === weekSeq) weekCells = [];
       });
   });
+
+  /** 最近 n 天的日期键（升序，含今天），本地时区。 */
+  function lastNDays(n: number): string[] {
+    const out: string[] = [];
+    const today = new Date();
+    for (let i = n - 1; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      out.push(localDateKey(d));
+    }
+    return out;
+  }
 
   function localDateKey(d: Date): string {
     const y = d.getFullYear();
@@ -258,6 +306,9 @@
 
   <div class="detail__chart">
     <span class="detail__chart-label">近 7 日</span>
+    {#if noDailyNote}
+      <p class="detail__chart-note">{noDailyNote}</p>
+    {/if}
     <div class="detail__bars">
       {#each bars as b (b.date)}
         <div class="detail__bar-wrap" title={`${b.date} · ${formatUsage(b.value, barUnit)}`}>
@@ -462,6 +513,13 @@
     color: var(--tum-text-muted);
     letter-spacing: 0.8px;
     text-transform: uppercase;
+  }
+
+  /* 差分类 provider 无按日数据：说明占柱图位置，不用空白让用户猜。 */
+  .detail__chart-note {
+    font-size: var(--tum-font-size-xs);
+    color: var(--tum-text-muted);
+    line-height: 1.5;
   }
 
   .detail__bars {
