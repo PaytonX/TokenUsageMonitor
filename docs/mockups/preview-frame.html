@@ -40,15 +40,18 @@
 
   <p class="hint">
     主窗口在 <code>tauri.conf.json</code> 里是 <b>400×680 且不可缩放</b>，所以上面的定尺就是它的真实版式。
-    趋势 / 工具的<b>独立窗口</b>分别是 680×780 与 760×480，可把下面按钮切过去看。
+    趋势 / 工具的<b>独立窗口</b>尺寸取自 <code>src-tauri/src/ipc.rs</code>，可缩放——下面按钮按各自真实尺寸切换。
   </p>
 
 <script>
-  // 独立窗口的真实尺寸来自 ipc.rs（open_trend_window / open_tool_window）
+  // 独立窗口的真实尺寸来自 src-tauri/src/ipc.rs（open_trend_window /
+  // open_tool_window / open_settings）。⚠️ 曾经把这三个的尺寸张冠李戴过
+  // （把 680×780 当成趋势窗），导致「趋势窗预览」其实是个又高又窄的框，
+  // 日历显小、柱显宽——真机是 760×480 的矮宽窗，完全相反。改这里前先核对 ipc.rs。
   const WINDOWS = [
     { key:"dashboard", label:"主窗口 · 400×680",  src:"/index.html",      w:400, h:680 },
-    { key:"settings",  label:"设置 · 760×480",    src:"/settings.html",   w:760, h:480 },
-    { key:"trend",     label:"趋势独立窗 · 680×780", src:"/trend.html",    w:680, h:780 },
+    { key:"settings",  label:"设置 · 680×780",    src:"/settings.html",   w:680, h:780 },
+    { key:"trend",     label:"趋势独立窗 · 780×720", src:"/trend.html",    w:780, h:720 },
     { key:"tools",     label:"工具独立窗 · 760×480", src:"/toolwindow.html", w:760, h:480 },
   ];
   const holder = document.getElementById("sizes");

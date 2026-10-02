@@ -24,6 +24,9 @@
     accountSources?: { id: string; label: string }[];
     /** 账户清单（供 accountSources 自行派生时使用）。 */
     snapshots?: UsageSnapshot[];
+    /** 日历区最大宽度。独立窗口很宽时不限会摊出 26px 的大格子、吃掉纵向预算，
+     *  反而把上方的趋势图挤扁；限宽后密度与总览页一致。 */
+    maxWidth?: string;
   }
 
   let {
@@ -32,6 +35,7 @@
     highlightKey = $bindable(null),
     accountSources,
     snapshots = [],
+    maxWidth,
   }: Props = $props();
 
   // 口径下拉：全部工具（账本 tokens）vs 各账户的服务端日账。二者单位不同、
@@ -80,6 +84,7 @@
 
 <section
   class="cal-sec"
+  style={maxWidth ? `max-width:${maxWidth}` : ""}
   onclick={(e) => e.stopPropagation()}
   onpointerdown={(e) => e.stopPropagation()}
   role="presentation"

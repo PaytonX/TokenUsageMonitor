@@ -187,7 +187,10 @@
       <span class="tw__legend-hint">放大本窗口可获得更粗的柱与更多细节</span>
     </div>
 
-    <CalendarSection series={seriesIds} colors={seriesColors} bind:highlightKey />
+    <!-- 限宽 440px：独立窗口比总览页宽得多，不限的话日历每格近 26px、
+         七行吃掉大半个窗口，堆叠柱被挤成一条。限到与总览页同密度后，
+         省下的纵向空间全部让给趋势图（.tw__body 是 flex:1）。 -->
+    <CalendarSection series={seriesIds} colors={seriesColors} maxWidth="440px" bind:highlightKey />
   {/if}
 </div>
 

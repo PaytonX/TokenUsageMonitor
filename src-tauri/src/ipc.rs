@@ -815,9 +815,12 @@ pub async fn open_trend_window(app: AppHandle) -> Result<(), String> {
         tauri::WebviewUrl::App("trend.html".into()),
     )
     .title("TokenUsageMonitor · 用量趋势")
-    .inner_size(760.0, 480.0)
+    // 760×480 是宽而矮的横窗：日历（26 列）在这种比例下每格近 26px，七行就
+    // 吃掉大半个窗口，堆叠柱只剩 ~140px——真机验收反馈「日历太大、柱太挤」。
+    // 拉高到 720，并把最小尺寸一起抬高，避免用户缩回矮窗时重现同一问题。
+    .inner_size(780.0, 720.0)
     .resizable(true)
-    .min_inner_size(520.0, 360.0)
+    .min_inner_size(620.0, 560.0)
     .visible(false)
     .decorations(false)
     .transparent(true)
