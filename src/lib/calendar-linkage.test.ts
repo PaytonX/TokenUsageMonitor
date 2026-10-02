@@ -170,4 +170,11 @@ describe("focusStats", () => {
     const s = focusStats(toMap(days), win, "minimax", 0);
     expect(s.share).toBe(0);
   });
+
+  it("分模型合计超过总量时占比夹到 100（迁移遗留 hermes 行）", () => {
+    // hermes 迁移只写模型行不写总量行 → sum(byProvider) > total → 原算法会算出
+    // 100% 以上的"占比"。这是数据层瑕疵，不该以百分比外溢到 UI。
+    const s = focusStats(toMap(days), win, "minimax", 50);
+    expect(s.share).toBe(100);
+  });
 });
