@@ -790,6 +790,7 @@ pub fn run() {
             ipc::export_data,
             ipc::get_device_report,
             ipc::get_hub_devices,
+            ipc::get_usage_history,
             ipc::remove_hub_device,
             ipc::add_remote_device,
             ipc::get_exchange_rates,

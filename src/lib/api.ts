@@ -264,6 +264,28 @@ export async function addRemoteDevice(base: string): Promise<number> {
   return invoke<number>("add_remote_device", { base });
 }
 
+/** 统一历史视图数据源：usage_daily 账本原始行（三视图共用的唯一口径）。 */
+export interface UsageDailyRow {
+  source: string;
+  kind: "tool" | "provider";
+  date: string;
+  model: string;
+  input: number;
+  cache_read: number;
+  output: number;
+  total: number;
+  unit: string;
+  cost: number | null;
+  currency: string | null;
+  cost_estimated: boolean;
+}
+export interface UsageHistoryResult {
+  rows: UsageDailyRow[];
+}
+export async function getUsageHistory(days: number): Promise<UsageHistoryResult> {
+  return invoke<UsageHistoryResult>("get_usage_history", { days });
+}
+
 import type { HubDevicesResult } from "./types";
 
 import type { RatesSnapshot } from "./types";

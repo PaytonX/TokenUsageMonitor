@@ -20,7 +20,7 @@ pub struct Storage {
 
 /// 统一日账本（usage_daily）的一行。`model` 为空串 = 来源总量行；
 /// 非空 = 该模型的分项行。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct UsageDailyRow {
     pub source: String,
     pub kind: String, // "tool" | "provider"

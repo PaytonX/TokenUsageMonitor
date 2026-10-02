@@ -89,23 +89,6 @@ pub async fn get_heatmap(
     provider_id: String,
     days: u32,
 ) -> Result<Vec<HeatmapCell>, String> {
-    // MiniMax 账户卡片：若本机 MiniMax Code 工具**近期仍在用**，优先展示它更
-    // 细粒度的 token 热力图（由 get_local_tools 写入 minimax-code 键，避免重扫
-    // 大库）。
-    //
-    // 但必须校验新鲜度：这是本机工具的数据，不是云账户的。停用 MiniMax Code
-    // 后该键会停在最后使用日，而账户自身的百分比历史仍在更新——此时若还返回
-    // 旧序列，卡片近几日会显示 0，看起来像"用量没被记录"。故最近 2 天内
-    // 无数据即回退到账户自身序列。
-    if provider_id.starts_with("minimax") {
-        let cells = state
-            .storage
-            .load_heatmap("minimax-code", days)
-            .unwrap_or_default();
-        if minimax_code_series_is_fresh(&cells, chrono::Local::now().date_naive()) {
-            return Ok(cells);
-        }
-    }
     {
         let guard = state.state.read().await;
         if let Some(ps) = guard.get(&provider_id) {
@@ -120,19 +103,26 @@ pub async fn get_heatmap(
         .map_err(|e| e.to_string())
 }
 
-/// 本机 MiniMax Code 的 token 序列是否"近期仍在用"（今天或昨天有一格）。
-/// 停用该工具后序列会停在最后使用日，此时账户卡片必须回退到自身的百分比历史，
-/// 否则近几日显示 0，看上去像"用量没被记录"。序列按日期升序（`load_heatmap`
-/// 已反转）。
-///
-/// 窗口刻意收紧到 1 天：宽窗口（如 2 天）会把"最后使用日 = 前天"的序列判为
-/// 仍在用，恰好漏掉本 bug 的真实场景（本机 Code 停在 09-28、账户仍在出数）。
-const MINIMAX_CODE_FRESH_DAYS: i64 = 1;
-
-fn minimax_code_series_is_fresh(cells: &[HeatmapCell], today: chrono::NaiveDate) -> bool {
-    let cutoff = today - chrono::Duration::days(MINIMAX_CODE_FRESH_DAYS);
-    cells.last().is_some_and(|c| c.date >= cutoff)
+/// 统一历史视图数据源：日历/趋势/模型三个页签共用 `usage_daily` 账本。
+/// 返回原始行（source/kind/date/model/四分量/成本），前端按维度聚合。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UsageHistoryResult {
+    pub rows: Vec<crate::storage::UsageDailyRow>,
 }
+
+#[tauri::command]
+pub async fn get_usage_history(
+    state: State<'_, AppState>,
+    days: u32,
+) -> Result<UsageHistoryResult, String> {
+    let days = days.clamp(1, 400);
+    let rows = state
+        .storage
+        .load_usage_daily(None, days)
+        .map_err(|e| e.to_string())?;
+    Ok(UsageHistoryResult { rows })
+}
+
 
 ///
 
@@ -175,7 +165,7 @@ pub async fn get_local_tools(
 
     // 把本地 MiniMax token 用量持久化到 DB（键 minimax-code），供 MiniMax 账户
     // 卡片日历热力图快速读取，无需每次重新扫描 ~/.minimax 的大 SQLite。
-    crate::local::persist_minimax(&state.storage, &tools);
+    crate::local::persist_all_tools(&state.storage, &tools);
 
     // Persist the result + source fingerprint for the second-level cache.
     let _ = state.storage.save_local_scan_cache(
@@ -1473,50 +1463,6 @@ pub async fn detect_codex_token() -> Result<Option<DetectedCodexToken>, String> 
         account_id: auth.account_id,
         last_refresh: auth.last_refresh,
     }))
-}
-
-#[cfg(test)]
-mod minimax_heatmap_tests {
-    use super::*;
-    use chrono::NaiveDate;
-
-    fn cell(date: &str) -> HeatmapCell {
-        HeatmapCell {
-            date: NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap(),
-            value: 1.0,
-            unit: crate::providers::UsageUnit::Tokens,
-        }
-    }
-
-    /// 回归：本机 MiniMax Code 停用后（序列停在 09-28，今天 09-30），
-    /// 账户卡片必须回退到自身序列，否则近两日显示 0。
-    #[test]
-    fn stale_minimax_code_series_is_not_preferred() {
-        let today = NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
-        let cells = vec![cell("2026-09-26"), cell("2026-09-27"), cell("2026-09-28")];
-        assert!(!minimax_code_series_is_fresh(&cells, today));
-    }
-
-    #[test]
-    fn active_minimax_code_series_is_preferred() {
-        let today = NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
-        let cells = vec![cell("2026-09-28"), cell("2026-09-29"), cell("2026-09-30")];
-        assert!(minimax_code_series_is_fresh(&cells, today));
-    }
-
-    /// 边界：昨天仍算新鲜（容忍一次漏轮询），前天即判为停用。
-    #[test]
-    fn yesterday_counts_as_fresh_two_days_ago_does_not() {
-        let today = NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
-        assert!(minimax_code_series_is_fresh(&[cell("2026-09-29")], today));
-        assert!(!minimax_code_series_is_fresh(&[cell("2026-09-28")], today));
-    }
-
-    #[test]
-    fn empty_series_is_never_fresh() {
-        let today = NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
-        assert!(!minimax_code_series_is_fresh(&[], today));
-    }
 }
 
 #[cfg(test)]
