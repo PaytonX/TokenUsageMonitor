@@ -84,6 +84,24 @@ export async function syncPeekWindow(state: PeekState): Promise<PeekSide> {
   return invoke<PeekSide>("sync_peek_window", { state });
 }
 
+/** 拖拽松手时问 Rust 该贴哪条边；null = 不贴边（保持浮动）。 */
+export async function dockSideOf(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  drag: [number, number] | null,
+): Promise<PeekSide | null> {
+  return invoke<PeekSide | null>("dock_side_of", {
+    x,
+    y,
+    w,
+    h,
+    dragX: drag?.[0] ?? null,
+    dragY: drag?.[1] ?? null,
+  });
+}
+
 /** 告知后端「用户开始/结束原生拖拽」：拖拽结束判定在 Rust 侧完成。 */
 export async function setPillDragging(active: boolean): Promise<void> {
   await invoke<void>("set_pill_dragging", { active });

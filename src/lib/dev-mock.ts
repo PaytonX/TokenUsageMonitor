@@ -325,6 +325,23 @@ function mockInvoke(cmd: string, args: any = {}): any {
         .map((r) => ({ date: r.date, value: r.total, unit: r.unit }));
     }
 
+    // 窗口/贴边命令：真机走 Rust 的 nearest_side，桩只需回一个合法边让预览不报错。
+    case "sync_peek_window": return "right";
+    case "dock_side_of": {
+      // 简化桩：只按四边距离取最近，不做角落的拖拽方向裁决（真机那部分在
+      // dock.rs 的 nearest_side），预览够用。
+      const near = 40;
+      const W = 1920, H = 1040;
+      const cands: Array<[string, number]> = [
+        ["left", args.x],
+        ["right", W - (args.x + args.w)],
+        ["top", args.y],
+        ["bottom", H - (args.y + args.h)],
+      ];
+      const min = Math.min(...cands.map(([, d]) => d));
+      return min <= near ? cands.find(([, d]) => d === min)![0] : null;
+    }
+
     // 事件系统：listen 返回 id，unlisten 空实现。桩不发任何事件。
     case "plugin:event|listen": return nextEventId();
     case "plugin:event|unlisten": return null;

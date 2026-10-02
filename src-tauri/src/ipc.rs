@@ -620,6 +620,40 @@ pub fn snap_to_edges(window: &WebviewWindow, margin_logical: f64) -> bool {
     false
 }
 
+/// 前端拖拽松手时问一次「这次该贴哪条边」。判定逻辑只有一份（在 dock.rs 的
+/// `nearest_side`），前端不再自己算——旧实现前端算 min(距左,距右)、Rust 算
+/// 中心比较，两套口径迟早对不上。
+#[tauri::command]
+pub async fn dock_side_of(
+    window: tauri::Window,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    drag_x: Option<f64>,
+    drag_y: Option<f64>,
+) -> Result<Option<String>, String> {
+    let monitor = window
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no monitor".to_string())?;
+    let area = monitor.work_area();
+    let drag = match (drag_x, drag_y) {
+        (Some(dx), Some(dy)) => Some((dx, dy)),
+        _ => None,
+    };
+    Ok(nearest_side(
+        x, y, w, h,
+        f64::from(area.position.x),
+        f64::from(area.position.y),
+        f64::from(area.size.width),
+        f64::from(area.size.height),
+        DOCK_SNAP_MARGIN_PX * f64::from(monitor.scale_factor()),
+        drag,
+    )
+    .map(|s| s.as_str().to_string()))
+}
+
 /// Switch the dashboard window between full and compact modes.
 ///
 /// 关键：换尺寸**必须同时换位置**，且位置由锚点算。旧实现只 `set_size`

@@ -4,7 +4,7 @@
   import { fly } from "svelte/transition";
   import { highlightKeyForKind, ledgerSeriesForKind } from "./lib/calendar-linkage";
   import { LogicalSize } from "@tauri-apps/api/dpi";
-  import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import {
     getUsage,
     getProviderStates,
@@ -15,6 +15,7 @@
     setWindowMode,
     saveSettings,
     syncPeekWindow,
+    dockSideOf,
     setPillDragging,
     emitPeekShow,
     onPeekHover,
@@ -278,7 +279,6 @@
   const PILL_PEEK_LEAD_MS = 120; // 滑出进行中就让把手接回鼠标并复现（时间线重叠）
   const PILL_REVEAL_MINI_MS = 120; // 滑入开始后展开明细的延迟
   const PILL_DOCK_DELAY_MS = 320; // 指针离开后停留多久才收起
-  const PILL_DOCK_THRESHOLD_PX = 40; // 松手时距左/右边缘多少逻辑像素内算「拖到边缘」
   // 模式恢复判定阈值（逻辑像素）：介于 compact(168) 与 dashboard(400) 之间。
   const PILL_RESTORE_MAX_W = 200;
   let settings = $state<Settings | null>(null);
@@ -503,6 +503,11 @@
   );
 
   let pillDragStart: { x: number; y: number; fromControl: boolean } | null = null;
+  // 原生拖拽的**窗口**起点（屏幕物理坐标）：松手时用它算位移。指针起点
+  // pillDragStart 是窗口内 client 坐标，拖动后指针已不在窗口内，算不出位移。
+  // 必须在 pointerdown 里读——那时 startDragging() 还没调（它在 pointermove
+  // 里越过阈值才触发），窗口停在原地，读到的就是起点。
+  let pillDragOrigin: { x: number; y: number } | null = null;
   let pillDidDrag = false;
 
   // peek 双窗状态：pillDocked = 胶囊贴边（把手窗口存在）；pillRevealed = 层可见
@@ -712,6 +717,14 @@
       fromControl: (event.target as HTMLElement).closest("button") !== null,
     };
     pillDidDrag = false;
+    void (async () => {
+      try {
+        const p = await getCurrentWindow().outerPosition();
+        pillDragOrigin = { x: p.x, y: p.y };
+      } catch {
+        pillDragOrigin = null;
+      }
+    })();
     if (!pillDragStart.fromControl) {
       (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     }
@@ -746,42 +759,37 @@
     }
   }
 
-  /** 拖拽结束：贴近左/右边缘（40 逻辑 px 内）→ 贴边收起；否则恢复常态浮动。 */
+  /** 拖拽结束：贴哪条边由 Rust 的 `dock_side_of` 判（四条边，角落按拖拽主方向）；
+   *  判为 None（离四条边都远）→ 恢复常态浮动。 */
   async function settlePillAfterDrag() {
     if (mode !== "compact") return;
     pillDragActive = false;
     void setPillDragging(false);
     clearDockTimer();
+    // 落点判定统一交给 Rust 的 nearest_side（四条边 + 角落按拖拽主方向裁决）。
+    // 前端只负责把「拖了多远」报上去——自己再算一遍必然和 Rust 的阈值/坐标
+    // 空间对不上，这正是旧实现只有 min(距左, 距右) 的原因。
+    let side: PeekSide | null = null;
     try {
       const win = getCurrentWindow();
-      const [pos, size, monitor] = await Promise.all([
-        win.outerPosition(),
-        win.outerSize(),
-        currentMonitor(),
-      ]);
-      const nearEdge =
-        monitor !== null &&
-        Math.min(
-          pos.x - monitor.workArea.position.x,
-          monitor.workArea.position.x +
-            monitor.workArea.size.width -
-            (pos.x + size.width),
-        ) <= PILL_DOCK_THRESHOLD_PX * monitor.scaleFactor;
-      if (nearEdge) {
-        // 贴边：先置收起态并同步 docked —— Rust 立刻贴死边缘 + 建把手 + 主窗穿透，
-        // 随后进入正常收起链路滑出，因此胶囊滑出时窗口已经贴边。
-        pillDocked = true;
-        pillRevealed = false;
-        void syncPeek().then(() => dockPill());
-      } else {
-        // 浮动：层保持可见、主窗接管鼠标，把手窗口由 Rust 销毁。
-        pillDocked = false;
-        pillRevealed = true;
-        pillCollapsing = false;
-        void syncPeek();
-      }
+      const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()]);
+      const drag = pillDragOrigin
+        ? ([pos.x - pillDragOrigin.x, pos.y - pillDragOrigin.y] as [number, number])
+        : null;
+      side = await dockSideOf(pos.x, pos.y, size.width, size.height, drag);
     } catch {
-      // 读不到窗口几何：按浮动处理，至少保证胶囊可交互。
+      side = null; // 读不到窗口几何：按浮动处理，至少保证胶囊可交互
+    }
+    pillDragOrigin = null;
+
+    if (side) {
+      // 贴边：先置收起态并同步 docked —— Rust 立刻贴死边缘 + 建把手 + 主窗穿透，
+      // 随后进入正常收起链路滑出，因此胶囊滑出时窗口已经贴边。
+      pillDocked = true;
+      pillRevealed = false;
+      void syncPeek().then(() => dockPill());
+    } else {
+      // 浮动：层保持可见、主窗接管鼠标，把手窗口由 Rust 销毁。
       pillDocked = false;
       pillRevealed = true;
       pillCollapsing = false;
@@ -1184,6 +1192,14 @@
 
   .pill-layer.is-docked[data-side="left"] {
     transform: translateX(-100%);
+  }
+
+  .pill-layer.is-docked[data-side="bottom"] {
+    transform: translateY(100%);
+  }
+
+  .pill-layer.is-docked[data-side="top"] {
+    transform: translateY(-100%);
   }
 
   .shell:active {
