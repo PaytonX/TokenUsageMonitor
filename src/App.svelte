@@ -2,7 +2,6 @@
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { fly } from "svelte/transition";
-  import { providerColor, providerLabel } from "./lib/model-provider";
   import { ledgerSeriesForKind } from "./lib/calendar-linkage";
   import { LogicalSize } from "@tauri-apps/api/dpi";
   import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
@@ -43,7 +42,6 @@
   } from "./lib";
   import ProviderCard from "./lib/components/ProviderCard.svelte";
   import ProgressRing from "./lib/components/ProgressRing.svelte";
-  import HeatmapGrid from "./lib/components/HeatmapGrid.svelte";
   import MiniPanel from "./lib/components/MiniPanel.svelte";
   import DetailCard from "./lib/components/DetailCard.svelte";
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
@@ -449,13 +447,9 @@
     focusedSnapshot ? isPayAsYouGo(focusedSnapshot) : false,
   );
 
-  // 日历区状态拆成两个正交概念（P2）：
-  //  - calendarSource = **数据口径**：全部工具合并，还是某个账户的服务端日账。
-  //  - highlightKey    = **高亮焦点**：在口径不变的前提下高亮哪个 provider。
-  // 旧实现把两者塞进同一个下拉 id（既选口径又存焦点），点卡片既切口径又切
-  // 数据，导致「日历变了」无法归因；拆分后点卡片只改焦点，数字恒定。
-  const HEATMAP_TOOLS = "__tools__";
-  let calendarSource = $state<string>(HEATMAP_TOOLS);
+  // 日历高亮焦点：在趋势页（TrendPanel → CalendarSection）消费，跨页共享。
+  // 总览页卡片点击会预置它，切到趋势页即生效——这是日历迁走后，卡片↔日历
+  // 在 400px 窗口无法同屏时的替代路径。
   let highlightKey = $state<string | null>(null);
 
   // Provider behind the floating detail overlay (hovered card). Rendered once
@@ -1062,7 +1056,7 @@
                 const kind = snap.provider_id.split("-")[0];
                 const series = ledgerSeriesForKind(kind, snap.provider_id);
                 // 无按日数据的 kind（差分类）：不猜、不静默改视图，交给
-                // DetailCard 说明。点击既不改焦点也不改口径。
+                // DetailCard 说明。点击既不改焦点也不改高亮。
                 if (!series) return;
                 // 再点一次已聚焦的卡片 = 取消高亮，让焦点可撤销。
                 if (focus === snap.provider_id && highlightKey !== null) {
@@ -1071,14 +1065,10 @@
                   return;
                 }
                 focus = snap.provider_id;
-                if (series.mode === "cross-tool") {
-                  // 切回工具口径：账户日账单位不同，不能在高亮态下混算。
-                  calendarSource = HEATMAP_TOOLS;
-                  highlightKey = series.providerKey;
-                } else {
-                  calendarSource = series.providerId;
-                  highlightKey = null;
-                }
+                // 日历已迁至趋势页，卡片点击不再直接驱动它；但仍把高亮焦点
+                // 预置到趋势页，切过去即可看到该 provider 的逐日构成。
+                // 账户日账口径单位不同，不能在高亮态下混算，故清空。
+                highlightKey = series.mode === "cross-tool" ? series.providerKey : null;
               }}
             />
           </div>
@@ -1086,61 +1076,11 @@
       {/if}
     </section>
 
-    {#if snapshots.length > 0}
-      <section class="shell__heatmap" data-tauri-drag-region={false}>
-        <div class="heatmap__head">
-          <span class="heatmap__title">日历热力图</span>
-          <PillsOrSelect
-            items={[
-              { id: HEATMAP_TOOLS, label: "全部工具" },
-              ...snapshots
-                .filter((s) => ledgerSeriesForKind(s.provider_id.split("-")[0], s.provider_id)?.mode === "account-daily")
-                .map((s) => ({
-                  id: s.provider_id,
-                  label: `${s.provider_display_name} · 账户日账`,
-                })),
-            ]}
-            value={calendarSource}
-            onPick={(id) => {
-              calendarSource = id;
-              // 手动切口径时清掉高亮：高亮只在工具口径下有意义。
-              if (id !== HEATMAP_TOOLS) highlightKey = null;
-            }}
-            dotFor={(id) =>
-              id === HEATMAP_TOOLS ? "#4cc2ff" : colorOf(id)
-            }
-          />
-          {#if highlightKey}
-            <span
-              class="heatmap__follow"
-              style={`--follow:${providerColor(highlightKey)}`}
-            >
-              高亮 {providerLabel(highlightKey)}
-              <button
-                type="button"
-                class="heatmap__follow-x"
-                aria-label="取消高亮"
-                onclick={() => {
-                  highlightKey = null;
-                  focus = "all";
-                }}
-              >×</button>
-            </span>
-          {/if}
-        </div>
-        <HeatmapGrid
-          ledger={calendarSource === HEATMAP_TOOLS ? "all" : null}
-          providerId={calendarSource === HEATMAP_TOOLS ? "" : calendarSource}
-          {highlightKey}
-          emptyHint={calendarSource === HEATMAP_TOOLS
-            ? "暂无本机工具用量——使用 Claude Code / ZCode 等工具后会自动记录"
-            : "该来源暂无热力图数据"}
-        />
-      </section>
-    {/if}
     {:else if view === "trend"}
       {#if snapshots.length > 0}
-        <TrendPanel />
+        <!-- 日历已迁入 TrendPanel（bind:highlightKey）：总览卡片点击预置的
+             高亮焦点，切到趋势页即生效——卡片↔日历的跨页联动由此保留。 -->
+        <TrendPanel bind:highlightKey {snapshots} />
       {:else}
         <div class="shell__empty"><p>暂无用量数据</p></div>
       {/if}
@@ -1373,31 +1313,6 @@
     letter-spacing: 0.5px;
     text-transform: uppercase;
   }
-
-  .shell__heatmap {
-    padding: var(--tum-space-2) 0;
-    border-top: 1px solid var(--tum-border);
-    display: flex;
-    flex-direction: column;
-    gap: var(--tum-space-2);
-  }
-
-  .heatmap__head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: var(--tum-space-2);
-    flex-wrap: wrap;
-  }
-
-  .heatmap__title {
-    font-size: var(--tum-font-size-xs);
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-    color: var(--tum-text-muted);
-    font-family: var(--tum-font-mono);
-  }
-
 
   .focus-row {
     display: flex;
@@ -1673,36 +1588,5 @@
      "refresh this account" stays clickable. */
   .detail-overlay :global(.detail__actions) {
     pointer-events: auto;
-  }
-
-  /* 日历高亮胶囊：只声明「现在高亮谁」，× 撤销。不驱动数据，只驱动呈现。 */
-  .heatmap__follow {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: var(--tum-font-size-xs);
-    font-weight: 600;
-    color: var(--follow);
-    background: color-mix(in srgb, var(--follow) 16%, transparent);
-    border: 1px solid color-mix(in srgb, var(--follow) 45%, transparent);
-    border-radius: var(--tum-radius-pill);
-    padding: 2px 4px 2px 8px;
-  }
-  .heatmap__follow-x {
-    appearance: none;
-    border: 0;
-    background: rgba(0, 0, 0, 0.3);
-    color: inherit;
-    cursor: pointer;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    font-size: 10px;
-    line-height: 1;
-    display: grid;
-    place-items: center;
-  }
-  .heatmap__follow-x:hover {
-    background: rgba(0, 0, 0, 0.55);
   }
 </style>

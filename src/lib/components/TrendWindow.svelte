@@ -7,16 +7,23 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import {
     buildTrendDays,
-    fetchToolSeries,
+    dimOthers,
+    fetchProviderCrossToolSeries,
     formatCompact,
     RANGES,
     type RangeKey,
   } from "../trend-data";
-  import { deviceColor } from "../device-agg";
   import { hexToRgb } from "../types";
+  import CalendarSection from "./CalendarSection.svelte";
 
   let status: "loading" | "ready" | "empty" = $state("loading");
   let seriesIds: string[] = $state([]);
+  // 序列按 Provider 跨工具聚合（与嵌入版 TrendPanel 同口径）。原先这里用的是
+  // fetchToolSeries（按工具），是 723e360 重构时的遗漏：两个趋势视图对同一份
+  // 数据给出两种切分，且日历的药丸条只能按 provider 高亮，键空间对不上。
+  let seriesNames: Record<string, string> = $state({});
+  let seriesColors: Record<string, string> = $state({});
+  let highlightKey: string | null = $state(null);
 
   let range: RangeKey = $state("30d");
   let rangeDef = $derived(RANGES.find((r) => r.key === range)!);
@@ -38,13 +45,15 @@
 
   onMount(async () => {
     try {
-      const built = await fetchToolSeries(rangeDef.days);
+      const built = await fetchProviderCrossToolSeries(rangeDef.days);
       if (built.ids.length === 0) {
         status = "empty";
         return;
       }
       seriesIds = built.ids;
       seriesById = built.series;
+      seriesNames = built.names;
+      seriesColors = built.colors;
       status = "ready";
     } catch {
       status = "empty";
@@ -56,8 +65,10 @@
   $effect(() => {
     void refreshTrendTick; // 依赖刷新 tick：周期刷新后重建顶层对象触发重渲染
     if (seriesIds.length === 0 || status !== "ready") return;
-    void fetchToolSeries(rangeDef.days).then((r) => {
+    void fetchProviderCrossToolSeries(rangeDef.days).then((r) => {
       seriesById = r.series;
+      seriesNames = r.names;
+      seriesColors = r.colors;
     });
   });
 
@@ -69,10 +80,17 @@
   });
 
   function colorOf(id: string): string {
-    return deviceColor(id);
+    return dimOthers(seriesColors, highlightKey)[id] ?? "#8a8f98";
+  }
+  function nameOf(id: string): string {
+    return seriesNames[id] ?? id;
   }
   function segStyle(id: string): string {
-    const rgb = hexToRgb(colorOf(id)) ?? "76,194,255";
+    const c = colorOf(id);
+    // 高亮时 colorOf 返回的已是 rgba(...)（压暗过的），不能再包一层——否则
+    // hexToRgb 解析失败会全部回落到同一个系统蓝，压暗效果被抹掉。
+    if (c.startsWith("rgba(")) return `background: ${c}`;
+    const rgb = hexToRgb(c) ?? "76,194,255";
     return `background: rgba(${rgb}, 0.85)`;
   }
 
@@ -163,11 +181,13 @@
       {#each seriesIds as id (id)}
         <span class="tw__key">
           <i class="tw__swatch" style={`background:${colorOf(id)}`}></i>
-          <span>{id}</span>
+          <span>{nameOf(id)}</span>
         </span>
       {/each}
       <span class="tw__legend-hint">放大本窗口可获得更粗的柱与更多细节</span>
     </div>
+
+    <CalendarSection series={seriesIds} colors={seriesColors} bind:highlightKey />
   {/if}
 </div>
 

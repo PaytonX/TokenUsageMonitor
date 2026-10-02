@@ -1,0 +1,234 @@
+<script lang="ts">
+  // 趋势页的日历区：provider 高亮药丸条 + 口径下拉 + 月历热力图。
+  //
+  // 2026-10 从总览页迁来。理由是维度对齐：总览回答"账户额度还剩多少"
+  // （provider 口径），趋势回答"用量烧了多少、哪天烧的"（时间序列口径），
+  // 原来把工具口径的日历挂在额度卡片下面是错配。
+  //
+  // 迁来后卡片↔日历在 400px 窗口里无法同屏，联动载体顺势换成这条药丸条——
+  // 它与趋势页已有的"7天/30天/90天"区间按钮同构，且不占垂直空间。
+  // 配色/拆解/统计全部复用 calendar-linkage.ts 的纯函数，逻辑未变。
+  import HeatmapGrid from "./HeatmapGrid.svelte";
+  import { providerColor, providerLabel } from "../model-provider";
+  import { hexToRgbTriplet } from "../calendar-linkage";
+  import type { UsageSnapshot } from "../types";
+
+  interface Props {
+    /** 可高亮的 provider key 序列（来自趋势序列，有数据才能高亮）。 */
+    series: string[];
+    /** provider key → 品牌色（与堆叠层同色，保证两处识别一致）。 */
+    colors: Record<string, string>;
+    /** 当前高亮焦点；null = 不高亮。父组件可双向绑定，实现跨页联动。 */
+    highlightKey?: string | null;
+    /** 日历数据口径下拉的可选项（账户日账）。空数组则不渲染下拉。 */
+    accountSources?: { id: string; label: string }[];
+    /** 账户清单（供 accountSources 自行派生时使用）。 */
+    snapshots?: UsageSnapshot[];
+  }
+
+  let {
+    series,
+    colors,
+    highlightKey = $bindable(null),
+    accountSources,
+    snapshots = [],
+  }: Props = $props();
+
+  // 口径下拉：全部工具（账本 tokens）vs 各账户的服务端日账。二者单位不同、
+  // 覆盖的调用集合也不同，故独立成列而非相加（见 docs/usage-ledger.md）。
+  const TOOLS_SOURCE = "__tools__";
+  let calendarSource = $state(TOOLS_SOURCE);
+  let source = $derived(calendarSource);
+
+  const accounts = $derived(
+    accountSources ??
+    snapshots
+      .filter((s) => s.windows.daily && s.windows.five_hour)
+      .map((s) => ({ id: s.provider_id, label: `${s.provider_display_name} · 账户日账` })),
+  );
+
+  // 选中非工具口径时高亮无意义（日历画的不是同一个量），自动清掉。
+  let effectiveHighlight = $derived(
+    calendarSource === TOOLS_SOURCE ? highlightKey : null,
+  );
+
+  function pick(key: string) {
+    highlightKey = highlightKey === key ? null : key;
+  }
+  function hexTriplet(hex: string): [number, number, number] {
+    return hexToRgbTriplet(colors[hex] ?? providerColor(hex));
+  }
+  function stroke(key: string): string {
+    const [r, g, b] = hexTriplet(key);
+    return `rgba(${r},${g},${b},0.45)`;
+  }
+  function fill(key: string): string {
+    const [r, g, b] = hexTriplet(key);
+    return `rgba(${r},${g},${b},0.12)`;
+  }
+  function pickSource(id: string) {
+    calendarSource = id;
+  }
+</script>
+
+<section class="cal-sec">
+  <div class="cal-sec__head">
+    <span class="cal-sec__title">日历热力图</span>
+    <div class="cal-sec__tools">
+      {#if accounts.length > 0}
+        <select
+          class="cal-sec__sel"
+          value={source}
+          aria-label="日历数据口径"
+          onchange={(e) => pickSource(e.currentTarget.value)}
+        >
+          <option value={TOOLS_SOURCE}>全部工具</option>
+          {#each accounts as a (a.id)}
+            <option value={a.id}>{a.label}</option>
+          {/each}
+        </select>
+      {/if}
+      <span class="cal-sec__range">近 6 个月</span>
+    </div>
+  </div>
+
+  {#if series.length > 0}
+    <div class="cal-sec__pills" role="group" aria-label="高亮 Provider">
+      <button
+        type="button"
+        class="cal-sec__pill"
+        class:is-on={effectiveHighlight === null}
+        onclick={(e) => {
+          e.stopPropagation();
+          highlightKey = null;
+        }}
+      >全部</button>
+      {#each series as key (key)}
+        <button
+          type="button"
+          class="cal-sec__pill"
+          class:is-on={effectiveHighlight === key}
+          style={effectiveHighlight === key
+            ? `color:${colors[key] ?? providerColor(key)};border-color:${stroke(key)};background:${fill(key)}`
+            : ""}
+          onclick={(e) => {
+            e.stopPropagation();
+            pick(key);
+          }}
+        >
+          <i style={`background:${colors[key] ?? providerColor(key)}`}></i>
+          {providerLabel(key)}
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  <div class="cal-sec__grid" onclick={(e) => e.stopPropagation()} role="presentation">
+    <HeatmapGrid
+      ledger={calendarSource === TOOLS_SOURCE ? "all" : null}
+      providerId={calendarSource === TOOLS_SOURCE ? "" : calendarSource}
+      highlightKey={effectiveHighlight}
+      emptyHint={calendarSource === TOOLS_SOURCE
+        ? "暂无本机工具用量——使用 Claude Code / ZCode 等工具后会自动记录"
+        : "该来源暂无热力图数据"}
+    />
+  </div>
+</section>
+
+<style>
+  .cal-sec {
+    flex: none;
+    border-top: 1px solid var(--tum-border);
+    padding-top: 8px;
+  }
+
+  .cal-sec__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .cal-sec__title {
+    font-size: var(--tum-font-size-xs);
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--tum-text-muted);
+    font-family: var(--tum-font-mono);
+  }
+
+  .cal-sec__tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .cal-sec__sel {
+    font-family: var(--tum-font);
+    font-size: 10px;
+    color: #e8eaf0;
+    background: rgba(45, 50, 60, 0.96);
+    border: 1px solid var(--tum-border-strong);
+    border-radius: var(--tum-radius-sm);
+    padding: 2px 6px;
+    outline: none;
+    cursor: pointer;
+    max-width: 190px;
+  }
+
+  .cal-sec__sel:focus-visible {
+    border-color: var(--tum-accent);
+  }
+
+  .cal-sec__sel option {
+    background-color: #23262d;
+    color: #e8eaf0;
+  }
+
+  .cal-sec__range {
+    font-size: 10px;
+    color: var(--tum-text-muted);
+    font-family: var(--tum-font-mono);
+  }
+
+  .cal-sec__pills {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+
+  .cal-sec__pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 21px;
+    padding: 0 9px;
+    border: 1px solid var(--tum-border);
+    border-radius: var(--tum-radius-pill);
+    background: transparent;
+    color: var(--tum-text-muted);
+    font-size: 10px;
+    font-family: var(--tum-font);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .cal-sec__pill:hover {
+    background: var(--tum-surface-hover);
+    color: var(--tum-text-primary);
+  }
+
+  .cal-sec__pill.is-on {
+    font-weight: 600;
+  }
+
+  .cal-sec__pill i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: none;
+    display: inline-block;
+  }
+</style>

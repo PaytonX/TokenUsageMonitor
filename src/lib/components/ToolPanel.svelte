@@ -429,9 +429,12 @@
     color: var(--tum-text-muted);
   }
   /* TrendLineChart 的根容器是 .tl（flex:1），在非 flex 的 .tool__stack 里
-     高度会塌陷为 0 导致图表不渲染——必须给容器本身高度，而不是里面的 svg。 */
+     高度会塌陷为 0 导致图表不渲染——必须给容器本身高度，而不是里面的 svg。
+     130px（原 110）：上方是「各工具横向构成」，需要看得清谁多谁少；
+     下方是「单工具时间走势」，需要时间分辨率。原 110px 下 7 条堆叠带挤在
+     一起分不开，130px 后上下约 1:1.4。 */
   .tool__stack :global(.tl) {
-    height: 110px;
+    height: 130px;
     width: 100%;
   }
 

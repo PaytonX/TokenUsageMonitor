@@ -144,3 +144,37 @@ export function formatCompact(v: number): string {
   if (v >= 1_000) return `${(v / 1e3).toFixed(1)}K`;
   return `${v}`;
 }
+
+/**
+ * 高亮某一 provider 时，把其余序列压暗。
+ *
+ * 焦点在趋势页只有一个含义，日历与堆叠柱必须一致表达：否则「点 GLM 之后
+ * 日历变了但柱子没变」会让用户怀疑高亮只对一半生效。压暗用与日历
+ * `DIM_FACTOR` 相同的 0.22，保证两处的视觉衰减量级一致。
+ *
+ * 返回新的 colors 映射；`highlightKey` 为空时原样返回（不产生无谓重渲染）。
+ */
+export function dimOthers(
+  colors: Record<string, string>,
+  highlightKey: string | null,
+  factor = 0.22,
+): Record<string, string> {
+  if (!highlightKey) return colors;
+  const out: Record<string, string> = {};
+  for (const [id, hex] of Object.entries(colors)) {
+    if (id === highlightKey) {
+      out[id] = hex;
+      continue;
+    }
+    if (/^#[0-9a-f]{6}$/i.test(hex)) {
+      const r = parseInt(hex.slice(1, 3), 16);
+      const g = parseInt(hex.slice(3, 5), 16);
+      const b = parseInt(hex.slice(5, 7), 16);
+      out[id] = `rgba(${r},${g},${b},${factor})`;
+    } else {
+      // 已是 rgba() 或颜色名：降不透明度只能整体替换，退回中性灰的压暗版本。
+      out[id] = `rgba(138,143,152,${factor})`;
+    }
+  }
+  return out;
+}

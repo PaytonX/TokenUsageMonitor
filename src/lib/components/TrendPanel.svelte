@@ -7,6 +7,7 @@
   import { buildDeviceSeries, stackColors } from "../device-agg";
   import {
     buildTrendDays,
+    dimOthers,
     fetchProviderCrossToolSeries,
     formatCompact,
     RANGES,
@@ -14,13 +15,23 @@
     type RangeKey,
   } from "../trend-data";
   import TrendLineChart from "./TrendLineChart.svelte";
+  import CalendarSection from "./CalendarSection.svelte";
+  import type { UsageSnapshot } from "../types";
 
   interface Props {
     /** 总量线 / 面积颜色（系统强调色）。 */
     accent?: string;
+    /** 日历高亮焦点。父级（App）可绑定，从而让总览页卡片点击预置趋势页高亮。 */
+    highlightKey?: string | null;
+    /** 账户清单，供日历区派生「账户日账」口径下拉。 */
+    snapshots?: UsageSnapshot[];
   }
 
-  let { accent = "#4cc2ff" }: Props = $props();
+  let {
+    accent = "#4cc2ff",
+    highlightKey = $bindable(null),
+    snapshots = [],
+  }: Props = $props();
 
   let range: RangeKey = $state(
     RANGES.some((r) => r.key === (readPref("tum.trend.range", "30d") as RangeKey))
@@ -164,7 +175,13 @@
   </div>
 
   <div class="trend__chart">
-    <TrendLineChart {days} colors={activeColors} maxY={maxTotal} {tickEvery} {accent} />
+    <TrendLineChart
+      {days}
+      colors={dimOthers(activeColors, highlightKey)}
+      maxY={maxTotal}
+      {tickEvery}
+      {accent}
+    />
   </div>
 
   <div class="trend__legend">
@@ -175,6 +192,15 @@
       </span>
     {/each}
   </div>
+
+  <!-- 日历区（2026-10 从总览页迁入）。药丸条承载 provider 高亮：
+       日历离开总览后卡片↔日历无法同屏，联动载体换成这条与区间按钮同构的条。 -->
+  <CalendarSection
+    series={aggMode ? [] : activeIds}
+    colors={activeColors}
+    {snapshots}
+    bind:highlightKey
+  />
 </div>
 
 <style>
