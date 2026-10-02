@@ -35,7 +35,22 @@ describe("ledgerSeriesForKind", () => {
     });
   });
 
-  it("未登记的 kind 返回 null（诚实：不猜）", () => {
+  it("注册表覆盖全部可产出 p: key 的 kind（回归：漏一个就少一张卡片能联动）", () => {
+    // providerForModel 能产出的 key 里，除合成兜底桶 "other"（无对应卡片）外，
+    // 每个都必须能反查到 kind，否则该 Provider 的卡片点了没反应。
+    // 曾经的真实漏项：spark 有品牌登记、有 PREFIX_RULES，却不在注册表里。
+    const pKeys = [
+      "anthropic", "deepseek", "doubao", "gemini", "glm", "kimi",
+      "minimax", "openai", "qwen", "spark", "volcengine", "xai",
+    ];
+    for (const k of pKeys) {
+      expect(ledgerSeriesForKind(k, `${k}-1-0`), `kind=${k}`).not.toBeNull();
+    }
+  });
+
+  it("未知 kind 返回 null（诚实：不猜）", () => {
+    // 单词未知 kind（不靠 normalizeKind 截断也能判空），与上面的多词兜底互不替代
+    expect(ledgerSeriesForKind("zzz", "x-1-0")).toBeNull();
     expect(ledgerSeriesForKind("some_unknown_thing", "x-1-0")).toBeNull();
   });
 });

@@ -31,6 +31,11 @@ const KIND_TO_PROVIDER_KEY: Record<string, string> = {
   xai: "xai",
   openai: "openai",
   volcengine: "volcengine",
+  // 品牌注册表里有 spark（types.ts 的 SHORT_KIND_NAMES / brand-glyphs 均已登记），
+  // 且 PREFIX_RULES 含 ["spark","spark"]，即 `p:spark` 序列真实可达。漏掉它会让
+  // Spark 卡片点击后无联动。此表须覆盖**全部**可产出 p: key 的 kind（"other"
+  // 除外——它是归因兜底桶，不对应任何卡片）。
+  spark: "spark",
 };
 
 /** 有真实服务端日账的 kind（双写进 usage_daily，kind='provider'）。 */
