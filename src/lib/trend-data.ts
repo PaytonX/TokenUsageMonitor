@@ -7,6 +7,7 @@
 // （get_hub_devices）。provider 差分序列（percent/cny）不再进入趋势视图，
 // 也不再跨单位相加。
 import { getUsageHistory } from "./api";
+import { providerColor, providerForModel, providerLabel } from "./model-provider";
 
 export type RangeKey = "7d" | "30d" | "90d";
 export interface RangeDef {
@@ -57,6 +58,43 @@ export async function fetchToolSeries(days: number): Promise<NamedSeries> {
     series[r.source][r.date] = (series[r.source][r.date] ?? 0) + r.total;
   }
   return { ids, series, names };
+}
+
+/**
+ * 本机模式趋势数据源：**按 Provider 跨工具**聚合的日序列。
+ * 归因顺序：模型名前缀 → 单 Provider 工具兜底 → other（见 model-provider.ts）。
+ * ids 按窗口内总量降序（图例与堆叠顺序一致），颜色取 provider 品牌色。
+ */
+export async function fetchProviderCrossToolSeries(
+  days: number,
+): Promise<NamedSeries & { colors: Record<string, string> }> {
+  const { rows } = await getUsageHistory(days);
+  const byProvider = new Map<string, Map<string, number>>();
+  for (const r of rows) {
+    if (r.kind !== "tool") continue;
+    const key = providerForModel(r.model, r.source);
+    let m = byProvider.get(key);
+    if (!m) {
+      m = new Map();
+      byProvider.set(key, m);
+    }
+    m.set(r.date, (m.get(r.date) ?? 0) + r.total);
+  }
+  const totals = [...byProvider.entries()].map(([key, m]) => ({
+    key,
+    total: [...m.values()].reduce((s, v) => s + v, 0),
+  }));
+  totals.sort((a, b) => b.total - a.total);
+  const ids = totals.map((t) => t.key);
+  const series: Record<string, Record<string, number>> = {};
+  const names: Record<string, string> = {};
+  const colors: Record<string, string> = {};
+  for (const { key } of totals) {
+    series[key] = Object.fromEntries(byProvider.get(key)!);
+    names[key] = providerLabel(key);
+    colors[key] = providerColor(key);
+  }
+  return { ids, series, names, colors };
 }
 
 function localDateKey(d: Date): string {

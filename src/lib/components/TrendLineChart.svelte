@@ -6,8 +6,10 @@
 
   interface Props {
     days: TrendDay[];
-    /** provider_id -> 颜色。 */
+    /** 序列 id -> 颜色。 */
     colors: Record<string, string>;
+    /** 序列 id -> 展示名（tooltip/图例用；缺省显示 id）。 */
+    names?: Record<string, string>;
     /** y 轴最大值（各 provider 总值）。 */
     maxY: number;
     /** x 轴刻度稀疏倍数（minimum；会根据像素宽度自适应加稀）。 */
@@ -18,7 +20,7 @@
     stacked?: boolean;
   }
 
-  let { days, colors, maxY, tickEvery, accent, stacked = true }: Props = $props();
+  let { days, colors, names = {}, maxY, tickEvery, accent, stacked = true }: Props = $props();
 
   // 监听容器尺寸，SVG 随面板缩放重算几何。
   let width = $state(0);
@@ -191,7 +193,7 @@
           <div class="tl__tip-row">
             <span class="tl__tip-k">
               <i class="tl__tip-swatch" style={`background:${colors[p.id] ?? '#8a8f98'}`}></i>
-              {p.id}
+              {names[p.id] ?? p.id}
             </span>
             <b>{p.value.toLocaleString()}</b>
           </div>

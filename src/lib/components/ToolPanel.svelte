@@ -2,9 +2,9 @@
   // 本机工具用量面板（C8 / B7）：读取本地 AI 工具会话日志聚合的逐日 token 用量。
   // 首版支持 Claude Code（后端 local::claude 扫描 ~/.claude/projects）。展示
   // 累计/会话/项目统计 + 跨日期的 input/cache/output 堆叠柱状。
-  import { getHubDevices, getLocalTools, onTabsChanged, onToolsUpdated, openToolWindow } from "../api";
+  import { getHubDevices, getLocalTools, getUsageHistory, onTabsChanged, onToolsUpdated, openToolWindow } from "../api";
   import { readAggMode, readPref, writePref } from "../prefs";
-  import { buildAggregateToolsPayload, staleDetailDevices } from "../device-agg";
+  import { buildAggregateToolsPayload, stackColors, staleDetailDevices } from "../device-agg";
   import type { LocalDay, LocalToolsPayload } from "../types";
   import PillsOrSelect from "./PillsOrSelect.svelte";
   import TrendLineChart from "./TrendLineChart.svelte";
@@ -36,6 +36,43 @@
   // 全端汇总模式：数据源从本机扫描切到多端合并（设置页开关，tabs-changed 广播）。
   let aggMode = $state(readAggMode());
   let staleDevs = $state<string[]>([]);
+  // 全工具堆叠面积图（账本/设备序列，按工具堆叠；随 range 刷新）。
+  let stackIds = $state<string[]>([]);
+  let stackSeries = $state<Record<string, Record<string, number>>>({});
+  let stackNames = $state<Record<string, string>>({});
+  let stackRefresh = $state(0);
+
+  async function loadStack() {
+    try {
+      if (aggMode) {
+        const r = await getHubDevices();
+        // 全端模式：堆叠按设备（与设备页汇总同源）。
+        const byDev = new Map<string, Map<string, number>>();
+        for (const d of r.devices) {
+          const m = new Map<string, number>();
+          for (const day of d.daily ?? []) m.set(day.date, day.total);
+          byDev.set(d.hostname || d.device_id, m);
+        }
+        stackIds = [...byDev.keys()];
+        stackSeries = Object.fromEntries([...byDev.entries()].map(([k, m]) => [k, Object.fromEntries(m)]));
+        stackNames = {};
+        return;
+      }
+      const { rows } = await getUsageHistory(rangeDays);
+      const byTool = new Map<string, Map<string, number>>();
+      for (const r of rows) {
+        if (r.kind !== "tool" || r.model !== "") continue;
+        let m = byTool.get(r.source);
+        if (!m) { m = new Map(); byTool.set(r.source, m); }
+        m.set(r.date, (m.get(r.date) ?? 0) + r.total);
+      }
+      stackIds = [...byTool.keys()];
+      stackSeries = Object.fromEntries([...byTool.entries()].map(([k, m]) => [k, Object.fromEntries(m)]));
+      stackNames = {};
+    } catch {
+      /* 保留旧值 */
+    }
+  }
 
   async function load(force = false) {
     loading = true;
@@ -58,7 +95,15 @@
     } finally {
       loading = false;
     }
+    void loadStack();
   }
+
+  $effect(() => {
+    void rangeDays;
+    void stackRefresh;
+    void aggMode;
+    void loadStack();
+  });
 
   $effect(() => {
     void load();
@@ -128,6 +173,29 @@
   let lineColors = $derived(tool ? { [tool.id]: accent } : {});
   let maxLine = $derived(Math.max(1, ...lineDays.map((d) => d.total)));
 
+  let stackDays = $derived.by(() => {
+    const today = new Date();
+    const out: { date: string; label: string; parts: { id: string; value: number }[]; total: number }[] = [];
+    for (let i = rangeDays - 1; i >= 0; i--) {
+      const dt = new Date(today);
+      dt.setDate(today.getDate() - i);
+      const m = String(dt.getMonth() + 1).padStart(2, "0");
+      const dd = String(dt.getDate()).padStart(2, "0");
+      const key = `${dt.getFullYear()}-${m}-${dd}`;
+      const parts = stackIds
+        .map((id) => ({ id, value: stackSeries[id]?.[key] ?? 0 }))
+        .filter((p) => p.value > 0);
+      out.push({
+        date: key,
+        label: `${m}/${dd}`,
+        parts,
+        total: parts.reduce((s, p) => s + p.value, 0),
+      });
+    }
+    return out;
+  });
+  let stackMax = $derived(Math.max(1, ...stackDays.map((d) => d.total)));
+
   function fmtTokens(v: number): string {
     if (v >= 1_000_000) return `${(v / 1e6).toFixed(1)}M`;
     if (v >= 1_000) return `${(v / 1e3).toFixed(1)}K`;
@@ -183,7 +251,26 @@
     <div class="tool__empty">正在扫描本地工具日志…</div>
   {:else if error && !payload}
     <div class="tool__empty tool__empty--err">扫描失败：{error}</div>
-  {:else if !tool}
+  {:else}
+    {#if stackIds.length > 0}
+    <div class="tool__stack">
+      <div class="tool__stack-head">
+        <span class="tool__stack-title">{aggMode ? "全端各设备" : "全部工具"}</span>
+        <span class="tool__stack-sub">按日堆叠 · tokens</span>
+      </div>
+      <TrendLineChart
+        days={stackDays}
+        colors={stackColors(stackIds)}
+        names={stackNames}
+        maxY={stackMax}
+        tickEvery={1}
+        {accent}
+        stacked={true}
+      />
+    </div>
+  {/if}
+
+  {#if !tool}
     <div class="tool__empty">未发现本地工具日志（{payload?.sessions_parsed ?? 0} 会话）</div>
   {:else}
     {#if (payload?.tools.length ?? 0) > 1}
@@ -211,6 +298,7 @@
     <div class="tool__chart">
       <TrendLineChart days={lineDays} colors={lineColors} maxY={maxLine} tickEvery={1} {accent} />
     </div>
+  {/if}
   {/if}
 </div>
 
@@ -316,6 +404,35 @@
     color: var(--tum-accent);
     border-color: var(--tum-accent-stroke);
     background: var(--tum-accent-fill);
+  }
+
+  .tool__stack {
+    border: 1px solid var(--tum-border);
+    border-radius: var(--tum-radius-sm);
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .tool__stack-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 6px;
+  }
+  .tool__stack-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--tum-text-primary);
+  }
+  .tool__stack-sub {
+    font-size: 9px;
+    font-family: var(--tum-font-mono);
+    color: var(--tum-text-muted);
+  }
+  /* TrendLineChart 的根容器是 .tl（flex:1），在非 flex 的 .tool__stack 里
+     高度会塌陷为 0 导致图表不渲染——必须给容器本身高度，而不是里面的 svg。 */
+  .tool__stack :global(.tl) {
+    height: 110px;
+    width: 100%;
   }
 
   .tool__stats {

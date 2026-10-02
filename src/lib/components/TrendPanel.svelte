@@ -7,7 +7,7 @@
   import { buildDeviceSeries, stackColors } from "../device-agg";
   import {
     buildTrendDays,
-    fetchToolSeries,
+    fetchProviderCrossToolSeries,
     formatCompact,
     RANGES,
     tickEveryFor,
@@ -55,11 +55,14 @@
         srcNames = built.names;
       });
     } else {
-      void fetchToolSeries(rangeDef.days).then((built) => {
+      // 本机模式：按 Provider 跨工具聚合（MiniMax 线 = 全部工具对其模型的
+      // 使用合计，含 MiniMax Code 未标记行的兜底归因）。
+      void fetchProviderCrossToolSeries(rangeDef.days).then((built) => {
         if (mySeq !== seq) return;
         srcIds = built.ids;
         srcSeries = built.series;
         srcNames = built.names;
+        providerColorsFromLedger = built.colors;
       });
     }
   });
@@ -83,7 +86,14 @@
   let activeIds = $derived(srcIds);
   let activeSeries = $derived(srcSeries);
   // 堆叠顺序配色：相邻层不同色相（哈希配色会让相近色叠在一起）。
-  let activeColors = $derived(stackColors(srcIds));
+  // 本机模式：provider 品牌色；全端模式：按堆叠顺序的高对比配色。
+  let providerColorsFromLedger = $state<Record<string, string>>({});
+  let activeColors = $derived.by(() => {
+    if (aggMode) return stackColors(srcIds);
+    return Object.keys(providerColorsFromLedger).length > 0
+      ? providerColorsFromLedger
+      : stackColors(srcIds);
+  });
 
   let days = $derived(buildTrendDays(activeSeries, activeIds, rangeDef.days));
   let maxTotal = $derived(

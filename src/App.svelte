@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { fly } from "svelte/transition";
+  import { providerColor, providerForModel, providerLabel } from "./lib/model-provider";
   import { LogicalSize } from "@tauri-apps/api/dpi";
   import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
   import {
@@ -356,23 +357,25 @@
       }),
     );
 
-    // 日历区的分工具胶囊：从账本取有数据的工具清单。
-    const refreshHeatmapTools = async () => {
+    // 日历区的 Provider 胶囊：从账本归因（模型名前缀 + 单 Provider 工具兜底）。
+    const refreshHeatmapProviders = async () => {
       try {
         const { rows } = await getUsageHistory(90);
-        heatmapTools = [
-          ...new Set(
-            rows
-              .filter((r) => r.kind === "tool" && r.model === "")
-              .map((r) => r.source),
-          ),
-        ];
+        const byProvider = new Map<string, number>();
+        for (const r of rows) {
+          if (r.kind !== "tool") continue;
+          const key = providerForModel(r.model, r.source);
+          byProvider.set(key, (byProvider.get(key) ?? 0) + r.total);
+        }
+        heatmapProviders = [...byProvider.entries()]
+          .map(([key, total]) => ({ key, label: providerLabel(key), total }))
+          .sort((a, b) => b.total - a.total);
       } catch {
         /* 保持旧值 */
       }
     };
-    void refreshHeatmapTools();
-    unlistenFns.push(await onToolsUpdated(() => void refreshHeatmapTools()));
+    void refreshHeatmapProviders();
+    unlistenFns.push(await onToolsUpdated(() => void refreshHeatmapProviders()));
 
     // Settings saved (from the Settings window): the backend has already
     // dropped disabled providers from its cache and stopped their pollers,
@@ -489,8 +492,8 @@
     deepseek: "deepseek-harness",
   };
   let heatmapTabId = $state<string>(HEATMAP_TOOLS);
-  let heatmapTools = $state<string[]>([]); // 账本中有数据的工具 id（供分工具胶囊）
-  let heatmapToolSel = $state<string>(""); // tools 模式下的具体工具（空=合并全部）
+  // 账本中有用量的 Provider（跨工具归因后），供日历的跨工具胶囊。
+  let heatmapProviders = $state<{ key: string; label: string; total: number }[]>([]);
 
   // The active snapshot whose heatmap is shown in the bottom panel.
   let activeSnapshot = $derived(
@@ -1103,13 +1106,13 @@
               onSelect={() => {
                 focus = snap.provider_id;
                 const kind = snap.provider_id.split("-")[0];
-                // 日历跟随卡片：MiniMax → MiniMax Code 工具序列，DeepSeek →
-                // DeepSeek Harness，带服务端日账的 provider → 账户日账，
-                // 其余 → 全部工具。
-                if (PROVIDER_DAILY_KINDS.has(kind)) {
+                // 日历跟随卡片：MiniMax/DeepSeek → 跨工具归因的 Provider 序列
+                // （含 MiniMax Code / Harness 的兜底归因）；带服务端日账的
+                // provider → 账户日账；其余 → 全部工具。
+                if (CARD_TOOL_FOR_KIND[kind]) {
+                  heatmapTabId = `p:${CARD_TOOL_FOR_KIND[kind]}`;
+                } else if (PROVIDER_DAILY_KINDS.has(kind)) {
                   heatmapTabId = snap.provider_id;
-                } else if (CARD_TOOL_FOR_KIND[kind]) {
-                  heatmapTabId = `tool:${CARD_TOOL_FOR_KIND[kind]}`;
                 } else {
                   heatmapTabId = HEATMAP_TOOLS;
                 }
@@ -1127,7 +1130,10 @@
           <PillsOrSelect
             items={[
               { id: HEATMAP_TOOLS, label: "全部工具" },
-              ...heatmapTools.map((t) => ({ id: `tool:${t}`, label: t })),
+              ...heatmapProviders.map((p) => ({
+                id: `p:${p.key}`,
+                label: `${p.label} · 跨工具`,
+              })),
               ...snapshots
                 .filter((s) => PROVIDER_DAILY_KINDS.has(s.provider_id.split("-")[0]))
                 .map((s) => ({
@@ -1136,11 +1142,12 @@
                 })),
             ]}
             value={heatmapTabId}
-            onPick={(id) => {
-              heatmapTabId = id;
-              heatmapToolSel = id.startsWith("tool:") ? id.slice(5) : "";
+            onPick={(id) => (heatmapTabId = id)}
+            dotFor={(id) => {
+              if (id === HEATMAP_TOOLS) return "#4cc2ff";
+              if (id.startsWith("p:")) return providerColor(id.slice(2));
+              return colorOf(id);
             }}
-            dotFor={(id) => (id === HEATMAP_TOOLS ? "#4cc2ff" : heatmapToolSel || id.startsWith("tool:") ? "#5fd4a2" : colorOf(id))}
           />
           <div class="heatmap__view" role="group" aria-label="热力图时间范围">
             <button
@@ -1158,7 +1165,11 @@
           </div>
         </div>
         <HeatmapGrid
-          ledger={heatmapTabId === HEATMAP_TOOLS ? "all" : heatmapTabId.startsWith("tool:") ? heatmapTabId.slice(5) : null}
+          ledger={heatmapTabId === HEATMAP_TOOLS
+            ? "all"
+            : heatmapTabId.startsWith("tool:") || heatmapTabId.startsWith("p:")
+              ? heatmapTabId
+              : null}
           providerId={heatmapTabId.startsWith("tool:") ? "" : heatmapTabId}
           view={heatmapView}
           emptyHint={heatmapTabId === HEATMAP_TOOLS

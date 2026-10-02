@@ -1,11 +1,13 @@
 ﻿<script lang="ts">
   import { getHeatmap, getUsageHistory } from "../api";
+  import { providerForModel } from "../model-provider";
   import { formatUsage, type HeatmapCell, type UsageUnit } from "../types";
 
   interface Props {
     /** provider 日账模式的数据键（volcengine/openai/xai 等真实服务端日账）。 */
     providerId?: string;
-    /** 账本模式：'all' = 合并全部本机工具；工具 id = 仅该工具。
+    /** 账本模式：'all' = 合并全部本机工具；'tool:<id>' = 仅该工具；
+     *  'p:<key>' = 按 Provider 跨工具聚合（模型名归因 + 单 Provider 工具兜底）。
      *  设置了 ledger 时优先于 providerId（统一账本口径）。 */
     ledger?: "all" | string | null;
     /** Shown instead of the default empty hint (e.g. DeepSeek ramp-up note). */
@@ -47,20 +49,25 @@
     loaded = false;
     cells = [];
     const fetcher = ledger
-      ? getUsageHistory(days).then(({ rows }) =>
-          rows
-            .filter(
-              (r) =>
-                r.kind === "tool" &&
-                r.model === "" &&
-                (ledger === "all" || r.source === ledger),
-            )
-            .map((r) => ({
-              date: r.date,
-              value: r.total,
-              unit: "tokens" as UsageUnit,
-            })),
-        )
+      ? getUsageHistory(days).then(({ rows }) => {
+          // "p:<key>"：按 Provider 跨工具聚合——模型名归因 + 单 Provider 工具
+          // 兜底（MiniMax Code → MiniMax），未命中归入 other。
+          const providerKey = ledger.startsWith("p:") ? ledger.slice(2) : null;
+          const byDate = new Map<string, number>();
+          for (const r of rows) {
+            if (r.kind !== "tool") continue;
+            if (!providerKey) {
+              if (ledger !== "all" && r.source !== ledger) continue;
+              if (r.model !== "") continue; // all 模式只取来源总量行，避免双计
+            } else {
+              if (providerForModel(r.model, r.source) !== providerKey) continue;
+            }
+            byDate.set(r.date, (byDate.get(r.date) ?? 0) + r.total);
+          }
+          return [...byDate.entries()]
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([date, value]) => ({ date, value, unit: "tokens" as UsageUnit }));
+        })
       : getHeatmap(providerId, days);
     fetcher
       .then((rows) => {
