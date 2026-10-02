@@ -5,9 +5,13 @@
   import { getHubDevices, getLocalTools, getUsageHistory, onTabsChanged, onToolsUpdated, openToolWindow } from "../api";
   import { readAggMode, readPref, writePref } from "../prefs";
   import { buildAggregateToolsPayload, stackColors, staleDetailDevices } from "../device-agg";
-  import type { LocalDay, LocalToolsPayload } from "../types";
+  import { dimOthers } from "../trend-data";
+  import type { LocalDay, LocalToolReport, LocalToolsPayload } from "../types";
   import PillsOrSelect from "./PillsOrSelect.svelte";
   import TrendLineChart from "./TrendLineChart.svelte";
+
+  /** 「全部工具」聚合视图的虚拟 id（不对应任何真实工具）。 */
+  const ALL_TOOLS_ID = "__all__";
 
   interface Props {
     accent?: string;
@@ -86,8 +90,8 @@
         staleDevs = [];
         payload = await getLocalTools(force);
       }
-      if (activeId === null || !payload.tools.some((t) => t.id === activeId)) {
-        activeId = payload.tools[0]?.id ?? null;
+      if (activeId && !payload.tools.some((t) => t.id === activeId)) {
+        activeId = null;
       }
       writePref("tum.tool.tab", activeId ?? "");
     } catch (e) {
@@ -132,11 +136,47 @@
     };
   });
 
+  // 当前视图：选中单个工具时用该工具；「全部工具」（activeId 为 null）时用
+  // 各工具逐日求和的聚合视图。与趋势页的 provider 高亮同构——焦点只有一个含义，
+  // 上方堆叠图和下方折线图都跟着它走。
+  let view = $derived.by<LocalToolReport | null>(() => {
+    const tools = payload?.tools ?? [];
+    if (activeId) {
+      const t = tools.find((x) => x.id === activeId);
+      if (t) return t;
+    }
+    if (tools.length === 0) return null;
+    const byDate = new Map<string, LocalDay>();
+    for (const t of tools) {
+      for (const d of t.daily) {
+        const cur = byDate.get(d.date) ?? { date: d.date, input: 0, cache_read: 0, output: 0, total: 0 };
+        cur.input += d.input;
+        cur.cache_read += d.cache_read;
+        cur.output += d.output;
+        cur.total += d.total;
+        byDate.set(d.date, cur);
+      }
+    }
+    const daily = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+    return {
+      id: ALL_TOOLS_ID,
+      name: "全部工具",
+      daily,
+      total_tokens: daily.reduce((s, d) => s + d.total, 0),
+      session_count: tools.reduce((s, t) => s + t.session_count, 0),
+      project_count: tools.reduce((s, t) => s + t.project_count, 0),
+      scanned_at: tools[0]?.scanned_at ?? "",
+      models: [],
+    };
+  });
+  // 选中单个工具时，上方堆叠图把其余工具压暗（activeId 为 null = 全部，不压暗）。
+  let stackColorsDim = $derived(
+    activeId ? dimOthers(stackColors(stackIds), activeId) : stackColors(stackIds),
+  );
   // 当前选中的工具窗口：取最近 N 天的逐日数据（旧→新）。
-  let tool = $derived(payload?.tools.find((t) => t.id === activeId) ?? payload?.tools[0] ?? null);
   let win: LocalDay[] = $derived.by(() => {
-    if (!tool) return [];
-    const all = tool.daily;
+    if (!view) return [];
+    const all = view.daily;
     return all.length > rangeDays ? all.slice(all.length - rangeDays) : all;
   });
 
@@ -148,10 +188,10 @@
   // 线图数据：生成区间内的连续日期序列（无用量日补 0），让 x 轴等距、刻度统一，
   // 避免 30/90 天出现柱状图的"显不全 / 刻度参差"问题。
   let dailyByDate = $derived(
-    tool ? new Map(tool.daily.map((d) => [d.date, d])) : new Map<string, LocalDay>(),
+    view ? new Map(view.daily.map((d) => [d.date, d])) : new Map<string, LocalDay>(),
   );
   let lineDays = $derived.by(() => {
-    if (!tool) return [] as { date: string; label: string; parts: { id: string; value: number }[]; total: number }[];
+    if (!view) return [] as { date: string; label: string; parts: { id: string; value: number }[]; total: number }[];
     const out: { date: string; label: string; parts: { id: string; value: number }[]; total: number }[] = [];
     const today = new Date();
     for (let i = rangeDays - 1; i >= 0; i--) {
@@ -164,13 +204,13 @@
       out.push({
         date: key,
         label: `${m}/${dd}`,
-        parts: total > 0 ? [{ id: tool.id, value: total }] : [],
+        parts: total > 0 ? [{ id: view.id, value: total }] : [],
         total,
       });
     }
     return out;
   });
-  let lineColors = $derived(tool ? { [tool.id]: accent } : {});
+  let lineColors = $derived(view ? { [view.id]: accent } : {});
   let maxLine = $derived(Math.max(1, ...lineDays.map((d) => d.total)));
 
   let stackDays = $derived.by(() => {
@@ -260,7 +300,7 @@
       </div>
       <TrendLineChart
         days={stackDays}
-        colors={stackColors(stackIds)}
+        colors={stackColorsDim}
         names={stackNames}
         maxY={stackMax}
         tickEvery={1}
@@ -270,23 +310,26 @@
     </div>
   {/if}
 
-  {#if !tool}
+  {#if !view}
     <div class="tool__empty">未发现本地工具日志（{payload?.sessions_parsed ?? 0} 会话）</div>
   {:else}
-    {#if (payload?.tools.length ?? 0) > 1}
+    {#if (payload?.tools.length ?? 0) > 0}
       <PillsOrSelect
-        items={(payload!.tools ?? []).map((t) => ({ id: t.id, label: t.name }))}
-        value={tool?.id ?? null}
+        items={[
+          { id: "", label: "全部工具" },
+          ...(payload!.tools ?? []).map((t) => ({ id: t.id, label: t.name })),
+        ]}
+        value={activeId ?? ""}
         onPick={(id) => {
-            activeId = id;
+            activeId = id === "" ? null : id;
             writePref("tum.tool.tab", id);
           }}
       />
     {/if}
     <div class="tool__stats">
-      <span class="tool__stat"><b>{fmtTokens(tool.total_tokens)}</b><span>累计 tokens</span></span>
-      <span class="tool__stat"><b>{tool.session_count}</b><span>会话</span></span>
-      <span class="tool__stat"><b>{tool.project_count}</b><span>项目</span></span>
+      <span class="tool__stat"><b>{fmtTokens(view.total_tokens)}</b><span>累计 tokens</span></span>
+      <span class="tool__stat"><b>{view.session_count}</b><span>会话</span></span>
+      <span class="tool__stat"><b>{view.project_count}</b><span>项目</span></span>
     </div>
 
     <div class="tool__breakdown">

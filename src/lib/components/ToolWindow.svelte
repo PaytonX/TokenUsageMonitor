@@ -5,7 +5,7 @@
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getLocalTools } from "../api";
-  import type { LocalDay, LocalToolsPayload } from "../types";
+  import type { LocalDay, LocalToolReport, LocalToolsPayload } from "../types";
   import { hexToRgb } from "../types";
 
   type RangeKey = "7d" | "30d" | "90d";
@@ -27,13 +27,42 @@
   let range: RangeKey = $state("30d");
   let rangeDef = $derived(RANGES.find((r) => r.key === range)!);
 
-  let tool = $derived(
-    payload?.tools.find((t) => t.id === activeId) ?? payload?.tools[0] ?? null,
-  );
+  // 与嵌入版 ToolPanel 同构：activeId 为 null = 全部工具（逐日求和的聚合视图）。
+  // 焦点只有一个含义——下方柱图画它，上方堆叠图也压暗其余工具。
+  let view = $derived.by<LocalToolReport | null>(() => {
+    const tools = payload?.tools ?? [];
+    if (activeId) {
+      const t = tools.find((x) => x.id === activeId);
+      if (t) return t;
+    }
+    if (tools.length === 0) return null;
+    const byDate = new Map<string, LocalDay>();
+    for (const t of tools) {
+      for (const d of t.daily) {
+        const cur = byDate.get(d.date) ?? { date: d.date, input: 0, cache_read: 0, output: 0, total: 0 };
+        cur.input += d.input;
+        cur.cache_read += d.cache_read;
+        cur.output += d.output;
+        cur.total += d.total;
+        byDate.set(d.date, cur);
+      }
+    }
+    const daily = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+    return {
+      id: "__all__",
+      name: "全部工具",
+      daily,
+      total_tokens: daily.reduce((s, d) => s + d.total, 0),
+      session_count: tools.reduce((s, t) => s + t.session_count, 0),
+      project_count: tools.reduce((s, t) => s + t.project_count, 0),
+      scanned_at: tools[0]?.scanned_at ?? "",
+      models: [],
+    };
+  });
   let win: LocalDay[] = $derived.by(() => {
-    if (!tool) return [];
+    if (!view) return [];
     // 生成区间内连续日期（无用量补 0），保证 x 轴等距、柱底对齐。
-    const byDate = new Map(tool.daily.map((d) => [d.date, d]));
+    const byDate = new Map(view.daily.map((d) => [d.date, d]));
     const out: LocalDay[] = [];
     const today = new Date();
     for (let i = rangeDef.days - 1; i >= 0; i--) {
@@ -80,7 +109,7 @@
   onMount(async () => {
     try {
       payload = await getLocalTools(false);
-      activeId = payload?.tools[0]?.id ?? null;
+      activeId = null; // 默认「全部工具」，与嵌入版一致
       status = payload && payload.tools.length > 0 ? "ready" : "empty";
     } catch {
       status = "empty";
@@ -120,11 +149,17 @@
   <header class="tw__head">
     <span class="tw__title">工具用量</span>
     <div class="tw__pickers" role="group" aria-label="选择工具">
+      <button
+        type="button"
+        class="tw__picker"
+        class:is-active={activeId === null}
+        onclick={() => (activeId = null)}
+      >全部工具</button>
       {#each payload?.tools ?? [] as t (t.id)}
         <button
           type="button"
           class="tw__picker"
-          class:is-active={t.id === tool?.id}
+          class:is-active={t.id === activeId}
           onclick={() => (activeId = t.id)}
         >{t.name}</button>
       {/each}

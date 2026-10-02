@@ -52,6 +52,13 @@
     calendarSource === TOOLS_SOURCE ? highlightKey : null,
   );
 
+  // Provider 过多时改用下拉。400px 面板一行约放得下 5 个药丸，超出就换行，
+  // 换行会吃掉日历的垂直预算（趋势页要在 680px 里同时装堆叠柱 + 日历）。
+  // 阈值取 6：与 PillsOrSelect 的 >3 不同，这里要保住"一眼看到全部 provider
+  // 构成"的价值，只在真的要溢出时才降级为下拉。
+  const PILL_LIMIT = 6;
+  let useSelect = $derived(series.length > PILL_LIMIT);
+
   function pick(key: string) {
     highlightKey = highlightKey === key ? null : key;
   }
@@ -93,34 +100,54 @@
   </div>
 
   {#if series.length > 0}
-    <div class="cal-sec__pills" role="group" aria-label="高亮 Provider">
-      <button
-        type="button"
-        class="cal-sec__pill"
-        class:is-on={effectiveHighlight === null}
-        onclick={(e) => {
-          e.stopPropagation();
-          highlightKey = null;
-        }}
-      >全部</button>
-      {#each series as key (key)}
+    {#if useSelect}
+      <div class="cal-sec__pills cal-sec__pills--select">
+        <span class="cal-sec__pill-label">高亮</span>
+        <select
+          class="cal-sec__sel cal-sec__sel--focus"
+          value={effectiveHighlight ?? ""}
+          aria-label="高亮 Provider"
+          onchange={(e) => {
+            const v = e.currentTarget.value;
+            highlightKey = v === "" ? null : v;
+          }}
+        >
+          <option value="">全部</option>
+          {#each series as key (key)}
+            <option value={key}>{providerLabel(key)}</option>
+          {/each}
+        </select>
+      </div>
+    {:else}
+      <div class="cal-sec__pills" role="group" aria-label="高亮 Provider">
         <button
           type="button"
           class="cal-sec__pill"
-          class:is-on={effectiveHighlight === key}
-          style={effectiveHighlight === key
-            ? `color:${colors[key] ?? providerColor(key)};border-color:${stroke(key)};background:${fill(key)}`
-            : ""}
+          class:is-on={effectiveHighlight === null}
           onclick={(e) => {
             e.stopPropagation();
-            pick(key);
+            highlightKey = null;
           }}
-        >
-          <i style={`background:${colors[key] ?? providerColor(key)}`}></i>
-          {providerLabel(key)}
-        </button>
-      {/each}
-    </div>
+        >全部</button>
+        {#each series as key (key)}
+          <button
+            type="button"
+            class="cal-sec__pill"
+            class:is-on={effectiveHighlight === key}
+            style={effectiveHighlight === key
+              ? `color:${colors[key] ?? providerColor(key)};border-color:${stroke(key)};background:${fill(key)}`
+              : ""}
+            onclick={(e) => {
+              e.stopPropagation();
+              pick(key);
+            }}
+          >
+            <i style={`background:${colors[key] ?? providerColor(key)}`}></i>
+            {providerLabel(key)}
+          </button>
+        {/each}
+      </div>
+    {/if}
   {/if}
 
   <div class="cal-sec__grid" onclick={(e) => e.stopPropagation()} role="presentation">
@@ -230,5 +257,23 @@
     border-radius: 50%;
     flex: none;
     display: inline-block;
+  }
+
+  /* Provider 过多时的降级形态：标签 + 下拉，单行不换行。 */
+  .cal-sec__pills--select {
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+
+  .cal-sec__pill-label {
+    font-size: 10px;
+    color: var(--tum-text-muted);
+    flex: none;
+  }
+
+  .cal-sec__sel--focus {
+    flex: 1;
+    min-width: 0;
+    max-width: none;
   }
 </style>
