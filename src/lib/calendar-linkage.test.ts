@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   buildLedgerBreakdown,
+  DIM_FACTOR,
   focusStats,
   highlightKeyForKind,
   ledgerSeriesForKind,
+  LEVEL_ALPHA,
+  paintCell,
 } from "./calendar-linkage";
 
 describe("ledgerSeriesForKind", () => {
@@ -176,5 +179,61 @@ describe("focusStats", () => {
     // 100% 以上的"占比"。这是数据层瑕疵，不该以百分比外溢到 UI。
     const s = focusStats(toMap(days), win, "minimax", 50);
     expect(s.share).toBe(100);
+  });
+});
+
+const BRAND: [number, number, number] = [91, 140, 255]; // minimax #5b8cff
+
+describe("paintCell · total 模式", () => {
+  it("按总量分级取 alpha，level 4 带辉光", () => {
+    const p = paintCell({ mode: "total", level: 4, isToday: false, focusValue: 0, brandRgb: BRAND });
+    expect(p.bg).toBe("rgba(76,194,255,0.94)");
+    expect(p.shadow).toContain("0 0 4px");
+  });
+
+  it("level 0 = 浅灰空档（保持网格可见）", () => {
+    expect(paintCell({ mode: "total", level: 0, isToday: false, focusValue: 0, brandRgb: BRAND }).bg)
+      .toBe("rgba(76,194,255,0)");
+  });
+
+  it("今天叠加琥珀描边", () => {
+    const p = paintCell({ mode: "total", level: 2, isToday: true, focusValue: 0, brandRgb: BRAND });
+    expect(p.shadow).toContain("var(--tum-amber)");
+  });
+});
+
+describe("paintCell · highlight 模式", () => {
+  it("焦点日用品牌色 + 亮描边，alpha 仍按总量分级（大小信息不丢）", () => {
+    const p = paintCell({ mode: "highlight", level: 3, isToday: false, focusValue: 500, brandRgb: BRAND });
+    expect(p.bg).toBe("rgba(91,140,255,0.66)");
+    expect(p.shadow).toContain("rgba(91,140,255,0.95)");
+  });
+
+  it("非焦点日压暗到 DIM_FACTOR 倍，但仍是同一个色相", () => {
+    const p = paintCell({ mode: "highlight", level: 4, isToday: false, focusValue: 0, brandRgb: BRAND });
+    expect(p.bg).toBe(`rgba(76,194,255,${LEVEL_ALPHA[4] * DIM_FACTOR})`);
+    expect(p.shadow).not.toContain("inset 0 0 0 1px rgba(91,140,255");
+  });
+
+  it("非焦点日不再有 level-4 辉光（避免和焦点日抢注意力）", () => {
+    const p = paintCell({ mode: "highlight", level: 4, isToday: false, focusValue: 0, brandRgb: BRAND });
+    expect(p.shadow).toBe("none");
+  });
+
+  it("焦点日若恰是今天，两个描边都在", () => {
+    const p = paintCell({ mode: "highlight", level: 2, isToday: true, focusValue: 1, brandRgb: BRAND });
+    expect(p.shadow).toContain("rgba(91,140,255,0.95)");
+    expect(p.shadow).toContain("var(--tum-amber)");
+  });
+
+  it("非焦点日若恰是今天，保留今天描边（今天必须始终可辨）", () => {
+    const p = paintCell({ mode: "highlight", level: 1, isToday: true, focusValue: 0, brandRgb: BRAND });
+    expect(p.shadow).toContain("var(--tum-amber)");
+  });
+
+  it("压暗系数是严格小于 1 的正数（不能把非焦点日抹成不可见）", () => {
+    expect(DIM_FACTOR).toBeGreaterThan(0);
+    expect(DIM_FACTOR).toBeLessThan(1);
+    expect(LEVEL_ALPHA[4] * DIM_FACTOR).toBeGreaterThan(0.1);
   });
 });

@@ -161,3 +161,79 @@ export function focusStats(
     share: windowTotal > 0 ? Math.min(100, Math.round((sum / windowTotal) * 100)) : 0,
   };
 }
+
+/** 强调色（系统蓝），与 HeatmapGrid 原有色阶一致。 */
+const ACCENT_RGB: [number, number, number] = [76, 194, 255];
+
+/** 总量色阶的 5 档 alpha。0 = 无用量。 */
+export const LEVEL_ALPHA = [0, 0.22, 0.42, 0.66, 0.94] as const;
+
+/** 非焦点格子的压暗系数：保留可辨的色相层次，不至于抹平成黑。 */
+export const DIM_FACTOR = 0.22;
+
+export type PaintMode = "total" | "highlight";
+
+export interface CellPaint {
+  bg: string;
+  shadow: string;
+}
+
+const rgba = (rgb: [number, number, number], a: number): string =>
+  `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;
+
+/**
+ * 某一天的格子该画成什么样子。
+ *
+ * `total` 模式 = 修复后的基线行为：按当日**总量**分级，全系统蓝。
+ * `highlight` 模式 = P2 方案二：总量色阶不变，只改色相与透明度——
+ *   该 provider 当天有用量 → 品牌色 + 亮描边（alpha 仍由总量分级决定，
+ *   所以"那天烧了多少"的信息不丢）；
+ *   否则 → 同一色相压暗到 {@link DIM_FACTOR}，退到背景层。
+ *
+ * 「今天」的琥珀描边在两种模式下都保留——它是时间锚点，不该被联动吞掉。
+ */
+export function paintCell(args: {
+  mode: PaintMode;
+  level: 0 | 1 | 2 | 3 | 4;
+  isToday: boolean;
+  /** 当日该 provider 的用量；0 表示当天没有它的消耗。 */
+  focusValue: number;
+  brandRgb: [number, number, number];
+}): CellPaint {
+  const { mode, level, isToday, focusValue, brandRgb } = args;
+  const today = isToday ? "inset 0 0 0 1.5px var(--tum-amber)" : "";
+
+  if (mode === "highlight" && focusValue > 0) {
+    return {
+      bg: rgba(brandRgb, LEVEL_ALPHA[level]),
+      shadow: [`inset 0 0 0 1px ${rgba(brandRgb, 0.95)}`, today]
+        .filter(Boolean)
+        .join(","),
+    };
+  }
+  if (mode === "highlight") {
+    return {
+      bg: rgba(ACCENT_RGB, LEVEL_ALPHA[level] * DIM_FACTOR),
+      shadow: today || "none",
+    };
+  }
+  return {
+    bg: rgba(ACCENT_RGB, LEVEL_ALPHA[level]),
+    shadow:
+      [level === 4 ? `0 0 4px ${rgba(ACCENT_RGB, 0.45)}` : "", today]
+        .filter(Boolean)
+        .join(",") || "none",
+  };
+}
+
+/** `#RRGGBB` → `[r,g,b]`；非法输入回落到强调色。 */
+export function hexToRgbTriplet(hex: string): [number, number, number] {
+  if (/^#[0-9a-f]{6}$/i.test(hex)) {
+    return [
+      parseInt(hex.slice(1, 3), 16),
+      parseInt(hex.slice(3, 5), 16),
+      parseInt(hex.slice(5, 7), 16),
+    ];
+  }
+  return ACCENT_RGB;
+}
