@@ -99,6 +99,13 @@
     const startKey = localDateKey(start);
     const windowCells = cells.filter((c) => c.date >= startKey && c.date <= todayKey);
     const windowDates = windowCells.map((c) => c.date);
+    // 分位数分档的基准：窗口内所有非零值升序排列（GitHub contribution graph
+    // 同款）。见 levelFor 的注释——线性分档在真实数据下会把几乎所有日子
+    // 压进最暗的一档，热力图退化成一块死板色。
+    const sortedNonZero = windowCells
+      .map((c) => c.value)
+      .filter((v) => v > 0)
+      .sort((a, b) => a - b);
     const cols: Day[][] = [];
     const monthLabels: Array<string | null> = [];
     let prevMonth = -1;
@@ -116,7 +123,7 @@
         col.push({
           date: dateStr,
           value,
-          level: levelFor(value, windowCells),
+          level: levelFor(value, sortedNonZero),
           isToday: dateStr === todayKey,
         });
       }
@@ -138,13 +145,27 @@
     return { cols, windowCells, windowDates, monthLabels, total, peak, activeDays, stats };
   });
 
-  function levelFor(value: number, all: HeatmapCell[]): 0 | 1 | 2 | 3 | 4 {
+  /**
+   * 色阶分档：**分位数**（GitHub contribution graph 同款），不是线性。
+   *
+   * 线性分档（value / max）在真实数据下会失效：实测本机账本近 200 天里最大
+   * 967M、中位仅 4M，跨度 240 倍，于是 95 个有效日中有 90 个落进最暗的 L1，
+   * 整张热力图退化成一块看不出规律的色块。分位数分档保证每档大致各占 1/4，
+   * 无论数据分布多偏。
+   *
+   * @param sortedNonZero 窗口内所有**非零**值，升序。
+   */
+  function levelFor(value: number, sortedNonZero: number[]): 0 | 1 | 2 | 3 | 4 {
     if (value <= 0) return 0;
-    const max = Math.max(1, ...all.map((c) => c.value));
-    const t = value / max;
-    if (t < 0.25) return 1;
-    if (t < 0.5) return 2;
-    if (t < 0.75) return 3;
+    const n = sortedNonZero.length;
+    if (n === 0) return 1;
+    // 低于 25% 分位 → L1，50% → L2，75% → L3，其余 L4。
+    // 用「小于该分位值的比例」判定，保证同值同档、且与样本量无关。
+    const rank = sortedNonZero.filter((v) => v < value).length;
+    const q = (p: number) => Math.max(1, Math.ceil(n * p));
+    if (rank < q(0.25)) return 1;
+    if (rank < q(0.5)) return 2;
+    if (rank < q(0.75)) return 3;
     return 4;
   }
 

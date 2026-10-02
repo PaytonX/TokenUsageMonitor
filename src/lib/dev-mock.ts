@@ -82,7 +82,10 @@ function buildData() {
 
     for (const t of TOOLS) {
       if (rnd() < t.skip) continue;
-      const v = t.base * weekend * (0.35 + rnd() * 1.5);
+      // 重尾分布：多数日子小、少数日子极大。这才是真实用量形态——实测本机账本
+      // 近 200 天最大 967M / 中位 4M（240 倍跨度）。早先这里用均匀的
+      // (0.35 + rnd()*1.5)，分布太好看，反而掩盖了色阶线性分档会失效的问题。
+      const v = t.base * weekend * (0.02 + Math.pow(rnd(), 3) * 3.5);
       bySource[t.id] = (bySource[t.id] ?? 0) + v;
       const prov = TOOL_PROVIDER[t.id] ?? "other";
       const m = MODEL_OF[prov];

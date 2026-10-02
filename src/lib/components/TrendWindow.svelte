@@ -187,10 +187,10 @@
       <span class="tw__legend-hint">放大本窗口可获得更粗的柱与更多细节</span>
     </div>
 
-    <!-- 限宽 440px：独立窗口比总览页宽得多，不限的话日历每格近 26px、
-         七行吃掉大半个窗口，堆叠柱被挤成一条。限到与总览页同密度后，
-         省下的纵向空间全部让给趋势图（.tw__body 是 flex:1）。 -->
-    <CalendarSection series={seriesIds} colors={seriesColors} maxWidth="440px" bind:highlightKey />
+    <!-- 不限宽：窗口已从 760×480 抬到 780×720，日历铺满 740px 时约占 260px，
+         剩下的都给趋势图（.tw__body 是 flex:1）。早先限宽 440px 是为了压住
+         480 矮窗的日历，但那样右侧会空出 340px，比原问题更难看。 -->
+    <CalendarSection series={seriesIds} colors={seriesColors} bind:highlightKey />
   {/if}
 </div>
 
