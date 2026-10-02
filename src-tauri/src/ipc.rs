@@ -585,6 +585,11 @@ pub fn snap_to_edges(window: &WebviewWindow, margin_logical: f64) -> bool {
 }
 
 /// Switch the dashboard window between full and compact modes.
+///
+/// 关键：换尺寸**必须同时换位置**，且位置由锚点算。旧实现只 `set_size`
+/// 不 `set_position`——Win32 保持左上原点，于是贴右的胶囊展开成 400 宽
+/// 后右侧溢出 232px 出屏，随后的 clamp 把它拉到「留 8px 边距」处，
+/// 再收回胶囊时它就停在离右边 240px 的地方，不再贴边。
 #[tauri::command]
 pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String> {
     use tauri::LogicalSize;
@@ -594,6 +599,9 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
         .ok_or_else(|| "dashboard window not found".to_string())?;
 
     let compact = app.state::<AppState>().compact_mode.clone();
+
+    // 改尺寸**之前**读锚点：旧尺寸才是胶囊的贴边尺寸。
+    let anchor = current_anchor(&window);
 
     match mode.as_str() {
         "dashboard" => {
@@ -606,7 +614,12 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
                 let _ = peek.close();
             }
             compact.store(false, Ordering::SeqCst);
-            clamp_window_to_work_area(&window, 8.0);
+            match anchor {
+                // 贴着边来的：按同一锚点重算 400×680 的位置，仍然贴死且不出屏。
+                Some(a) => { apply_anchor(&window, a); }
+                // 浮动来的：只把越界的位置拉回屏内，不强行贴边。
+                None => { clamp_window_to_work_area(&window, 8.0); }
+            }
         }
         "compact" => {
             // 迷你胶囊 168x56：主行 = 圆环 + 百分比 + 分隔线 + 品牌芯片。
@@ -616,7 +629,10 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
             compact.store(true, Ordering::SeqCst);
             // 常态浮动：胶囊停在原处，只把越界的位置拉回屏内 —— 不再强制贴边；
             // 只有用户把它拖到屏幕边缘松手，才由 sync_peek_window("docked") 贴死。
-            clamp_window_to_work_area(&window, 8.0);
+            match anchor {
+                Some(a) => { apply_anchor(&window, a); }
+                None => { clamp_window_to_work_area(&window, 8.0); }
+            }
         }
         other => return Err(format!("unknown window mode: {other}")),
     }
