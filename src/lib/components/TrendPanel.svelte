@@ -7,24 +7,20 @@
   import { buildDeviceSeries, deviceColor } from "../device-agg";
   import {
     buildTrendDays,
-    fetchProviderSeries,
+    fetchToolSeries,
     formatCompact,
     RANGES,
-    refreshProviderSeries,
     tickEveryFor,
     type RangeKey,
   } from "../trend-data";
   import TrendLineChart from "./TrendLineChart.svelte";
 
   interface Props {
-    /** Active snapshots; defines provider order + colors. */
-    providerIds: string[];
-    colors: Record<string, string>;
     /** 总量线 / 面积颜色（系统强调色）。 */
     accent?: string;
   }
 
-  let { providerIds, colors, accent = "#4cc2ff" }: Props = $props();
+  let { accent = "#4cc2ff" }: Props = $props();
 
   let range: RangeKey = $state(
     RANGES.some((r) => r.key === (readPref("tum.trend.range", "30d") as RangeKey))
@@ -33,48 +29,44 @@
   );
   let rangeDef = $derived(RANGES.find((r) => r.key === range)!);
 
-  // 全端汇总模式：序列来自各设备上报（按设备堆叠），否则为本机 provider。
+  // 全端汇总模式：序列来自各设备上报（按设备堆叠）；本机模式：账本中各
+  // 工具的 token 日序列（按工具堆叠）。两者同为 tokens 口径。
   let aggMode = $state(readAggMode());
-  let deviceIds = $state<string[]>([]);
-  let deviceSeries = $state<Record<string, Record<string, number>>>({});
-  let deviceNames = $state<Record<string, string>>({});
+  let srcIds = $state<string[]>([]);
+  let srcSeries = $state<Record<string, Record<string, number>>>({});
+  let srcNames = $state<Record<string, string>>({});
 
-  let seriesByProvider: Record<string, Record<string, number>> = $state({});
   let seq = 0;
   let refreshTick = $state(0);
 
-  // 拉取：aggMode → 设备序列；本机 → provider 系列。依赖 aggMode / range /
-  // refreshTick / providerIds，变化即重拉；aggMode 分支只写 device* 状态，
-  // 不读它们，避免 effect 自依赖循环。
+  // 拉取：aggMode → 设备序列；本机 → 账本工具序列。依赖 aggMode / range /
+  // refreshTick，变化即重拉；两个分支只写 src* 状态、不读它们，避免 effect
+  // 自依赖循环。
   $effect(() => {
     void rangeDef.days;
     void refreshTick;
-    const ids = providerIds;
     const mySeq = ++seq;
     if (aggMode) {
       void getHubDevices().then((r) => {
         if (mySeq !== seq) return;
         const built = buildDeviceSeries(r.devices);
-        deviceIds = built.ids;
-        deviceSeries = built.series;
-        deviceNames = built.names;
+        srcIds = built.ids;
+        srcSeries = built.series;
+        srcNames = built.names;
       });
     } else {
-      void fetchProviderSeries(ids, rangeDef.days).then((result) => {
-        if (mySeq === seq) seriesByProvider = result;
+      void fetchToolSeries(rangeDef.days).then((built) => {
+        if (mySeq !== seq) return;
+        srcIds = built.ids;
+        srcSeries = built.series;
+        srcNames = built.names;
       });
     }
   });
 
-  // 周期刷新"当天"用量（只在拉取过系列后生效）。
+  // 周期刷新（账本/设备序列都是整段重取，成本低）。
   $effect(() => {
-    const id = setInterval(() => {
-      if (aggMode) {
-        refreshTick++;
-      } else {
-        void refreshProviderSeries(providerIds, 2).then(() => refreshTick++);
-      }
-    }, 60_000);
+    const id = setInterval(() => refreshTick++, 60_000);
     return () => clearInterval(id);
   });
 
@@ -88,12 +80,11 @@
     });
   });
 
-  let activeIds = $derived(aggMode ? deviceIds : providerIds);
-  let activeSeries = $derived(aggMode ? deviceSeries : seriesByProvider);
-  let activeColors = $derived.by(() => {
-    if (aggMode) return Object.fromEntries(deviceIds.map((id) => [id, deviceColor(id)]));
-    return colors;
-  });
+  let activeIds = $derived(srcIds);
+  let activeSeries = $derived(srcSeries);
+  let activeColors = $derived.by(() =>
+    Object.fromEntries(srcIds.map((id) => [id, deviceColor(id)])),
+  );
 
   let days = $derived(buildTrendDays(activeSeries, activeIds, rangeDef.days));
   let maxTotal = $derived(
@@ -111,7 +102,7 @@
   let tickEvery = $derived(tickEveryFor(rangeDef.days));
   // 图例文案：聚合态显示主机名，本机态显示 provider id。
   function labelOf(id: string): string {
-    return deviceNames[id] ?? id;
+    return srcNames[id] ?? id;
   }
 </script>
 
@@ -130,7 +121,7 @@
     }}
   >
   <div class="trend__head">
-    <span class="trend__title">{aggMode ? "全端趋势看板" : "趋势看板"}</span>
+    <span class="trend__title">{aggMode ? "全端趋势看板" : "趋势看板 · 本机工具"}</span>
     <div class="trend__head-right" role="group" aria-label="时间区间">
       {#each RANGES as r (r.key)}
         <button
@@ -159,7 +150,7 @@
   </div>
 
   <div class="trend__stats">
-    <span class="trend__stat"><b>{formatCompact(rangeTotal)}</b><span>{aggMode ? "全端累计" : "本区间累计"}</span></span>
+    <span class="trend__stat"><b>{formatCompact(rangeTotal)}</b><span>{aggMode ? "全端累计" : "本机累计"}</span></span>
     <span class="trend__stat"><b>{streak} 天</b><span>连续活跃</span></span>
   </div>
 

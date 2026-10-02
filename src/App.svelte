@@ -1134,16 +1134,7 @@
     {/if}
     {:else if view === "trend"}
       {#if snapshots.length > 0}
-        <TrendPanel
-          providerIds={snapshots.map((s) => s.provider_id)}
-          colors={snapshots.reduce(
-            (m, s) => {
-              m[s.provider_id] = colorOf(s.provider_id);
-              return m;
-            },
-            {} as Record<string, string>,
-          )}
-        />
+        <TrendPanel />
       {:else}
         <div class="shell__empty"><p>暂无用量数据</p></div>
       {/if}

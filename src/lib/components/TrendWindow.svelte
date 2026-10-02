@@ -1,33 +1,29 @@
 <script lang="ts">
-  // 独立趋势窗口（C7）：可拖拽缩放、最大化。展示跨 provider 逐日堆叠柱状图，
-  // 柱宽固定（≥ 窗口放不下时横向滚动，放大窗口即可一次看更多 / 更粗），x 轴
-  // 刻度按区间稀疏，保证任何区间都清晰完整。窗口自读 get_usage + get_settings
-  // 解析 provider 与账户强调色，因此可独立运行、随主面板数据刷新而更新。
+  // 独立趋势窗口（C7）：可拖拽缩放、最大化。展示逐日堆叠柱状图，柱宽固定
+  // （≥ 窗口放不下时横向滚动，放大窗口即可一次看更多 / 更粗），x 轴刻度按
+  // 区间稀疏，保证任何区间都清晰完整。数据源与趋势页同源：统一账本的
+  // 分工具 token 日序列。
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { getUsage, getSettings } from "../api";
-  import type { UsageSnapshot } from "../types";
   import {
     buildTrendDays,
-    fetchProviderSeries,
+    fetchToolSeries,
     formatCompact,
-    providerColors,
     RANGES,
-    refreshProviderSeries,
     type RangeKey,
   } from "../trend-data";
+  import { deviceColor } from "../device-agg";
   import { hexToRgb } from "../types";
 
   let status: "loading" | "ready" | "empty" = $state("loading");
-  let providerIds: string[] = $state([]);
-  let colors: Record<string, string> = $state({});
+  let seriesIds: string[] = $state([]);
 
   let range: RangeKey = $state("30d");
   let rangeDef = $derived(RANGES.find((r) => r.key === range)!);
 
-  let seriesByProvider: Record<string, Record<string, number>> = $state({});
+  let seriesById: Record<string, Record<string, number>> = $state({});
   let days = $derived(
-    buildTrendDays(seriesByProvider, providerIds, rangeDef.days),
+    buildTrendDays(seriesById, seriesIds, rangeDef.days),
   );
   let maxTotal = $derived(Math.max(1, ...days.map((d) => d.total)));
   let rangeTotal = $derived(days.reduce((s, d) => s + d.total, 0));
@@ -41,45 +37,39 @@
   });
 
   onMount(async () => {
-    const [snaplist, settings] = await Promise.all([getUsage(), getSettings()]);
-    const accentById = (settings.accounts ?? []).reduce(
-      (m, a) => {
-        m[a.instance_id] = a.accent_color;
-        return m;
-      },
-      {} as Record<string, string>,
-    );
-    const ids = snaplist.map((s: UsageSnapshot) => s.provider_id);
-    if (ids.length === 0) {
+    try {
+      const built = await fetchToolSeries(rangeDef.days);
+      if (built.ids.length === 0) {
+        status = "empty";
+        return;
+      }
+      seriesIds = built.ids;
+      seriesById = built.series;
+      status = "ready";
+    } catch {
       status = "empty";
-      return;
     }
-    providerIds = ids;
-    colors = providerColors(snaplist, accentById);
-    status = "ready";
   });
 
   let refreshTrendTick = $state(0);
 
   $effect(() => {
     void refreshTrendTick; // 依赖刷新 tick：周期刷新后重建顶层对象触发重渲染
-    if (providerIds.length === 0) return;
-    void fetchProviderSeries(providerIds, rangeDef.days).then((r) => {
-      seriesByProvider = r;
+    if (seriesIds.length === 0 || status !== "ready") return;
+    void fetchToolSeries(rangeDef.days).then((r) => {
+      seriesById = r.series;
     });
   });
 
-  // 周期刷新"当天"用量（每 60s），仅当窗口有线图数据时启用。
+  // 周期刷新（每 60s），仅当窗口有线图数据时启用。
   $effect(() => {
-    if (providerIds.length === 0) return;
-    const id = setInterval(() => {
-      void refreshProviderSeries(providerIds, 2).then(() => refreshTrendTick++);
-    }, 60_000);
+    if (seriesIds.length === 0 || status !== "ready") return;
+    const id = setInterval(() => refreshTrendTick++, 60_000);
     return () => clearInterval(id);
   });
 
   function colorOf(id: string): string {
-    return colors[id] ?? "#8a8f98";
+    return deviceColor(id);
   }
   function segStyle(id: string): string {
     const rgb = hexToRgb(colorOf(id)) ?? "76,194,255";
@@ -170,7 +160,7 @@
     </div>
 
     <div class="tw__legend">
-      {#each providerIds as id (id)}
+      {#each seriesIds as id (id)}
         <span class="tw__key">
           <i class="tw__swatch" style={`background:${colorOf(id)}`}></i>
           <span>{id}</span>
