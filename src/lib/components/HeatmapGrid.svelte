@@ -1,9 +1,13 @@
 ﻿<script lang="ts">
-  import { getHeatmap } from "../api";
+  import { getHeatmap, getUsageHistory } from "../api";
   import { formatUsage, type HeatmapCell, type UsageUnit } from "../types";
 
   interface Props {
-    providerId: string;
+    /** provider 日账模式的数据键（volcengine/openai/xai 等真实服务端日账）。 */
+    providerId?: string;
+    /** 账本模式：'all' = 合并全部本机工具；工具 id = 仅该工具。
+     *  设置了 ledger 时优先于 providerId（统一账本口径）。 */
+    ledger?: "all" | string | null;
     /** Shown instead of the default empty hint (e.g. DeepSeek ramp-up note). */
     emptyHint?: string;
     /** Unit fallback before the first fetch resolves; fetched cells carry
@@ -14,7 +18,8 @@
   }
 
   let {
-    providerId,
+    providerId = "",
+    ledger = null,
     emptyHint,
     unit = "tokens" as UsageUnit,
     view = "compact",
@@ -37,12 +42,27 @@
   let fetchSeq = 0;
 
   $effect(() => {
-    const id = providerId;
     const days = view === "calendar" ? 200 : 31;
     const seq = ++fetchSeq;
     loaded = false;
     cells = [];
-    getHeatmap(id, days)
+    const fetcher = ledger
+      ? getUsageHistory(days).then(({ rows }) =>
+          rows
+            .filter(
+              (r) =>
+                r.kind === "tool" &&
+                r.model === "" &&
+                (ledger === "all" || r.source === ledger),
+            )
+            .map((r) => ({
+              date: r.date,
+              value: r.total,
+              unit: "tokens" as UsageUnit,
+            })),
+        )
+      : getHeatmap(providerId, days);
+    fetcher
       .then((rows) => {
         if (seq === fetchSeq) cells = rows;
       })

@@ -11,6 +11,8 @@
     onUsageUpdated,
     onProviderError,
     onSettingsChanged,
+    getUsageHistory,
+    onToolsUpdated,
     setWindowMode,
     saveSettings,
     syncPeekWindow,
@@ -119,7 +121,6 @@
   let burns = $state<Record<string, BurnInfo | null>>({});
   let actives = $state<Record<string, boolean>>({});
   let mode = $state<Mode>("dashboard");
-  let heatmapTabId = $state<string | null>(null);
   const FOCUS_FALLBACK_COLOR = "#8a8f98";
   const FOCUS_KEY = "tum.focus";
   const HEATMAP_VIEW_KEY = "tum.heatmapView";
@@ -330,9 +331,6 @@
     settings = await getSettings();
     lastRefreshAt = Date.now();
 
-    if (snapshots.length > 0 && !heatmapTabId) {
-      heatmapTabId = snapshots[0].provider_id;
-    }
 
     // Live updates.
     unlistenFns.push(
@@ -344,7 +342,6 @@
           .sort((a, b) => a.provider_id.localeCompare(b.provider_id));
         burns = { ...burns, [snap.provider_id]: update.burn };
         actives = { ...actives, [snap.provider_id]: update.active };
-        if (!heatmapTabId) heatmapTabId = snap.provider_id;
         errors = { ...errors, [snap.provider_id]: "" };
         lastRefreshAt = Date.now();
       }),
@@ -358,6 +355,24 @@
         lastRefreshAt = Date.now();
       }),
     );
+
+    // 日历区的分工具胶囊：从账本取有数据的工具清单。
+    const refreshHeatmapTools = async () => {
+      try {
+        const { rows } = await getUsageHistory(90);
+        heatmapTools = [
+          ...new Set(
+            rows
+              .filter((r) => r.kind === "tool" && r.model === "")
+              .map((r) => r.source),
+          ),
+        ];
+      } catch {
+        /* 保持旧值 */
+      }
+    };
+    void refreshHeatmapTools();
+    unlistenFns.push(await onToolsUpdated(() => void refreshHeatmapTools()));
 
     // Settings saved (from the Settings window): the backend has already
     // dropped disabled providers from its cache and stopped their pollers,
@@ -463,6 +478,15 @@
     focusedSnapshot ? isPayAsYouGo(focusedSnapshot) : false,
   );
 
+  // 日历区数据选择：`__tools__` = 全部本机工具合并（账本，tokens）；其余值 =
+  // 有真实服务端日账的 provider id（volcengine/openai/xai），走 provider 序列。
+  // 差分类 provider（MiniMax/DeepSeek/Kimi 的百分比/金额差分）退出历史视图。
+  const HEATMAP_TOOLS = "__tools__";
+  const PROVIDER_DAILY_KINDS = new Set(["volcengine", "openai", "xai"]);
+  let heatmapTabId = $state<string>(HEATMAP_TOOLS);
+  let heatmapTools = $state<string[]>([]); // 账本中有数据的工具 id（供分工具胶囊）
+  let heatmapToolSel = $state<string>(""); // tools 模式下的具体工具（空=合并全部）
+
   // The active snapshot whose heatmap is shown in the bottom panel.
   let activeSnapshot = $derived(
     focusedSnapshot ??
@@ -476,16 +500,6 @@
   let detailSnapshot = $derived(
     hoveredId ? (snapshots.find((s) => s.provider_id === hoveredId) ?? null) : null,
   );
-
-  // HeatmapGrid self-fetches per provider via get_heatmap, so every provider
-  // can own a heatmap tab regardless of snapshot-embedded cells.
-  $effect(() => {
-    if (snapshots.length === 0) return;
-    const stillExists = snapshots.some((s) => s.provider_id === heatmapTabId);
-    if (!stillExists) {
-      heatmapTabId = snapshots[0].provider_id;
-    }
-  });
 
   // Persist focus across restarts.
   $effect(() => {
@@ -1083,7 +1097,10 @@
               onHover={onCardHover}
               onSelect={() => {
                 focus = snap.provider_id;
-                heatmapTabId = snap.provider_id;
+                // 只有带真实服务端日账的 provider 有自己的日历；其余回到全部工具。
+                heatmapTabId = PROVIDER_DAILY_KINDS.has(snap.provider_id.split("-")[0])
+                  ? snap.provider_id
+                  : HEATMAP_TOOLS;
               }}
             />
           </div>
@@ -1095,17 +1112,21 @@
       <section class="shell__heatmap" data-tauri-drag-region={false}>
         <div class="heatmap__head">
           <span class="heatmap__title">日历热力图</span>
-          {#if activeSnapshot?.provider_id.startsWith("minimax")}
-            <span class="heatmap__src">· 来源：本机 MiniMax Code</span>
-          {/if}
-          {#if focus === "all"}
-            <PillsOrSelect
-              items={snapshots.map((s) => ({ id: s.provider_id, label: s.provider_display_name }))}
-              value={heatmapTabId}
-              onPick={(id) => (heatmapTabId = id)}
-              dotFor={(id) => colorOf(id)}
-            />
-          {/if}
+          <PillsOrSelect
+            items={[
+              { id: HEATMAP_TOOLS, label: "全部工具" },
+              ...heatmapTools.map((t) => ({ id: `tool:${t}`, label: t })),
+              ...snapshots
+                .filter((s) => PROVIDER_DAILY_KINDS.has(s.provider_id.split("-")[0]))
+                .map((s) => ({ id: s.provider_id, label: s.provider_display_name })),
+            ]}
+            value={heatmapTabId}
+            onPick={(id) => {
+              heatmapTabId = id;
+              heatmapToolSel = id.startsWith("tool:") ? id.slice(5) : "";
+            }}
+            dotFor={(id) => (id === HEATMAP_TOOLS ? "#4cc2ff" : heatmapToolSel || id.startsWith("tool:") ? "#5fd4a2" : colorOf(id))}
+          />
           <div class="heatmap__view" role="group" aria-label="热力图时间范围">
             <button
               class="heatmap__view-btn"
@@ -1121,15 +1142,14 @@
             >月历</button>
           </div>
         </div>
-        {#if activeSnapshot}
-          <HeatmapGrid
-            providerId={activeSnapshot.provider_id}
-            view={heatmapView}
-            emptyHint={activeSnapshot.provider_id === "deepseek"
-              ? "DeepSeek 依据余额下降累计消耗，启用后需积累数日才有数据"
-              : "该来源暂无热力图数据"}
-          />
-        {/if}
+        <HeatmapGrid
+          ledger={heatmapTabId === HEATMAP_TOOLS ? "all" : heatmapTabId.startsWith("tool:") ? heatmapTabId.slice(5) : null}
+          providerId={heatmapTabId.startsWith("tool:") ? "" : heatmapTabId}
+          view={heatmapView}
+          emptyHint={heatmapTabId === HEATMAP_TOOLS
+            ? "暂无本机工具用量——使用 Claude Code / ZCode 等工具后会自动记录"
+            : "该来源暂无热力图数据"}
+        />
       </section>
     {/if}
     {:else if view === "trend"}
@@ -1392,12 +1412,6 @@
     font-family: var(--tum-font-mono);
   }
 
-  .heatmap__src {
-    font-family: var(--tum-font-mono);
-    font-size: 9px;
-    color: var(--tum-accent, #4cc2ff);
-    letter-spacing: 0.3px;
-  }
 
   /* 热力图时间范围切换（31天滚动 / 月历），与 Provider tabs 同语言的
      胶囊分段控件。 */
