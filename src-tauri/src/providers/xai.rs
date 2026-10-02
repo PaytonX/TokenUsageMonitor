@@ -228,6 +228,24 @@ impl Provider for XaiProvider {
         // date -> USD) and persist each day once so history survives beyond
         // the API's rolling window.
         let cells = daily_cells(&usage.data, today);
+        let ledger: Vec<crate::storage::UsageDailyRow> = cells
+            .iter()
+            .map(|cell| crate::storage::UsageDailyRow {
+                source: self.self_id().to_string(),
+                kind: "provider".to_string(),
+                date: cell.date.to_string(),
+                model: String::new(),
+                input: 0.0,
+                cache_read: 0.0,
+                output: 0.0,
+                total: cell.value,
+                unit: UsageUnit::Usd,
+                cost: Some(cell.value),
+                currency: Some("USD".to_string()),
+                cost_estimated: false,
+            })
+            .collect();
+        let _ = self.storage.replace_usage_daily(&ledger);
         for cell in &cells {
             let _ = self.storage.record_daily_on(
                 self.self_id(),

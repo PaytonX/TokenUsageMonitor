@@ -168,6 +168,7 @@ impl Provider for OpenAIProvider {
         // Build heatmap cells (local calendar date -> USD) and persist them so
         // history is preserved even when the API only serves a rolling window.
         let mut cells: Vec<HeatmapCell> = Vec::new();
+        let mut ledger: Vec<crate::storage::UsageDailyRow> = Vec::new();
         for day in &usage.daily_costs {
             if let Some(date) = DateTime::from_timestamp(day.timestamp, 0)
                 .map(|dt| dt.with_timezone(&Local).date_naive())
@@ -179,6 +180,20 @@ impl Provider for OpenAIProvider {
                 let _ = self
                     .storage
                     .record_daily_on(self.self_id(), date, value, UsageUnit::Usd);
+                ledger.push(crate::storage::UsageDailyRow {
+                    source: self.self_id().to_string(),
+                    kind: "provider".to_string(),
+                    date: date.to_string(),
+                    model: String::new(),
+                    input: 0.0,
+                    cache_read: 0.0,
+                    output: 0.0,
+                    total: value,
+                    unit: UsageUnit::Usd,
+                    cost: Some(value),
+                    currency: Some("USD".to_string()),
+                    cost_estimated: false,
+                });
                 cells.push(HeatmapCell {
                     date,
                     value,
@@ -186,6 +201,7 @@ impl Provider for OpenAIProvider {
                 });
             }
         }
+        let _ = self.storage.replace_usage_daily(&ledger);
         cells.sort_by_key(|c| c.date);
 
         // This calendar month's spend -> the monthly window.

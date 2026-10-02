@@ -215,21 +215,53 @@ pub fn finalize_days(
 /// Shared reference type stored in AppState.
 pub type SharedLocalCache = Arc<LocalCache>;
 
-/// Persist the MiniMax Code token daily series into the app SQLite under the
-/// synthetic key `minimax-code`, so the MiniMax provider card's calendar
-/// heatmap reads it fast (DB) instead of re-scanning the big ~/.minimax db.
-pub fn persist_minimax(storage: &crate::storage::Storage, tools: &[LocalToolReport]) {
-    if let Some(tool) = tools.iter().find(|t| t.id == "minimax-code") {
+/// 把全部本机工具的逐日用量（含分模型）写入统一账本 `usage_daily`。
+/// 全量回放语义（逐行 REPLACE 幂等）：重扫两次结果不变，滚动窗口外的过期日
+/// 由 REPLACE 前的按源删除自然清掉。模型成本按日 total 占比分摊，使账本
+/// 重聚合后的成本合计与工具上报一致；`cost_estimated` 随模型整体口径传递。
+pub fn persist_all_tools(storage: &crate::storage::Storage, tools: &[LocalToolReport]) {
+    let mut rows: Vec<crate::storage::UsageDailyRow> = Vec::new();
+    for tool in tools {
         for d in &tool.daily {
-            if let Ok(date) = chrono::NaiveDate::parse_from_str(&d.date, "%Y-%m-%d") {
-                let _ = storage.record_daily_on(
-                    "minimax-code",
-                    date,
-                    d.total,
-                    crate::providers::UsageUnit::Tokens,
-                );
+            rows.push(crate::storage::UsageDailyRow {
+                source: tool.id.clone(),
+                kind: "tool".to_string(),
+                date: d.date.clone(),
+                model: String::new(),
+                input: d.input,
+                cache_read: d.cache_read,
+                output: d.output,
+                total: d.total,
+                unit: crate::providers::UsageUnit::Tokens,
+                cost: None,
+                currency: None,
+                cost_estimated: false,
+            });
+        }
+        for m in &tool.models {
+            // 分摊基数用模型自身的 total_tokens（与 cost 的统计窗口一致）。
+            let per_token = if m.total_tokens > 0.0 { m.cost / m.total_tokens } else { 0.0 };
+            let has_cost = m.cost > 0.0;
+            for d in &m.daily {
+                rows.push(crate::storage::UsageDailyRow {
+                    source: tool.id.clone(),
+                    kind: "tool".to_string(),
+                    date: d.date.clone(),
+                    model: m.model.clone(),
+                    input: d.input,
+                    cache_read: d.cache_read,
+                    output: d.output,
+                    total: d.total,
+                    unit: crate::providers::UsageUnit::Tokens,
+                    cost: has_cost.then(|| d.total * per_token),
+                    currency: (!m.currency.is_empty()).then_some(m.currency.clone()),
+                    cost_estimated: m.cost_estimated,
+                });
             }
         }
+    }
+    if let Err(e) = storage.replace_usage_daily(&rows) {
+        eprintln!("[local] persist_all_tools failed: {e}");
     }
 }
 
@@ -295,54 +327,112 @@ mod tests {
         }
     }
 
-    #[test]
-    fn persist_minimax_ignores_non_minimax_and_empty_input() {
-        let (db, storage) = temp_db("empty");
-        // 空工具列表：不写任何行。
-        persist_minimax(&storage, &[]);
-        assert!(storage.load_heatmap("minimax-code", 30).unwrap().is_empty());
+    fn tool_report(id: &str, daily: Vec<LocalDay>) -> LocalToolReport {
+        let total_tokens = daily.iter().map(|d| d.total).sum();
+        LocalToolReport {
+            id: id.into(),
+            name: id.into(),
+            daily,
+            total_tokens,
+            session_count: 0,
+            project_count: 0,
+            scanned_at: String::new(),
+            models: Vec::new(),
+        }
+    }
 
-        // 非 minimax 工具：即使有 daily，也不该写入 minimax-code 键。
-        let cherry = LocalToolReport {
-            id: "cherry-studio".into(),
-            daily: vec![day("2026-01-02", 999.0)],
-            ..Default::default()
-        };
-        persist_minimax(&storage, &[cherry]);
-        assert!(storage.load_heatmap("minimax-code", 30).unwrap().is_empty());
+    fn ledger_rows(storage: &Storage, source: &str) -> Vec<crate::storage::UsageDailyRow> {
+        storage
+            .load_usage_daily(None, 400)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.source == source)
+            .collect()
+    }
+
+    /// 空输入不写任何行。
+    #[test]
+    fn persist_all_tools_empty_input_writes_nothing() {
+        let (db, storage) = temp_db("agg-empty");
+        persist_all_tools(&storage, &[]);
+        assert!(storage.load_usage_daily(None, 400).unwrap().is_empty());
         let _ = std::fs::remove_file(&db);
     }
 
+    /// 全部工具入账本：来源总量行 + 分模型行，REPLACE 幂等（重扫两次值不变）。
     #[test]
-    fn persist_minimax_writes_minimax_code_days() {
-        let (db, storage) = temp_db("writes");
-        let minimax = LocalToolReport {
-            id: "minimax-code".into(),
-            daily: vec![day("2026-01-02", 100.0), day("2026-01-03", 250.0)],
-            ..Default::default()
-        };
-        let cherry = LocalToolReport {
-            id: "cherry-studio".into(),
-            daily: vec![day("2026-01-02", 999.0)],
-            ..Default::default()
-        };
-        persist_minimax(&storage, &[minimax, cherry]);
+    fn persist_all_tools_writes_every_tool_idempotently() {
+        let (db, storage) = temp_db("agg-write");
+        let mut minimax = tool_report(
+            "minimax-code",
+            vec![
+                LocalDay { date: "2026-01-02".into(), input: 60.0, cache_read: 30.0, output: 10.0, total: 100.0 },
+                LocalDay { date: "2026-01-03".into(), input: 150.0, cache_read: 75.0, output: 25.0, total: 250.0 },
+            ],
+        );
+        minimax.models.push(LocalModelUsage {
+            model: "MiniMax-M3".into(),
+            total_tokens: 350.0,
+            cost: 3.5,
+            currency: "USD".into(),
+            cost_estimated: true,
+            daily: vec![
+                LocalDay { date: "2026-01-02".into(), input: 60.0, cache_read: 30.0, output: 10.0, total: 100.0 },
+                LocalDay { date: "2026-01-03".into(), input: 150.0, cache_read: 75.0, output: 25.0, total: 250.0 },
+            ],
+        });
+        let cherry = tool_report("cherry-studio", vec![
+            LocalDay { date: "2026-01-02".into(), input: 999.0, cache_read: 0.0, output: 0.0, total: 999.0 },
+        ]);
 
-        let cells = storage.load_heatmap("minimax-code", 30).unwrap();
-        let by_date: HashMap<String, f64> = cells
-            .iter()
-            .map(|c| (c.date.to_string(), c.value))
+        persist_all_tools(&storage, &[minimax.clone(), cherry.clone()]);
+        let first = ledger_rows(&storage, "minimax-code");
+        // 总量行 2 + 模型行 2
+        assert_eq!(first.len(), 4);
+        assert_eq!(first.iter().filter(|r| r.model.is_empty()).count(), 2);
+
+        // 重扫幂等：行数与数值不变。
+        persist_all_tools(&storage, &[minimax, cherry]);
+        let second = ledger_rows(&storage, "minimax-code");
+        assert_eq!(first.len(), second.len());
+        assert_eq!(
+            first.iter().map(|r| (r.date.clone(), r.total)).collect::<Vec<_>>(),
+            second.iter().map(|r| (r.date.clone(), r.total)).collect::<Vec<_>>(),
+        );
+
+        // cherry 也入账本（旧 persist_minimax 不写非 minimax 工具）。
+        assert_eq!(ledger_rows(&storage, "cherry-studio").len(), 1);
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// 模型行的成本按日占比分摊：重聚合后与模型上报的成本合计一致。
+    #[test]
+    fn model_cost_is_distributed_proportionally() {
+        let (db, storage) = temp_db("agg-cost");
+        let mut m = tool_report("zcode", vec![
+            LocalDay { date: "2026-01-02".into(), input: 0.0, cache_read: 0.0, output: 0.0, total: 100.0 },
+            LocalDay { date: "2026-01-03".into(), input: 0.0, cache_read: 0.0, output: 0.0, total: 300.0 },
+        ]);
+        m.models.push(LocalModelUsage {
+            model: "GLM-5.3".into(),
+            total_tokens: 400.0,
+            cost: 4.0,
+            currency: "USD".into(),
+            cost_estimated: true,
+            daily: vec![
+                LocalDay { date: "2026-01-02".into(), input: 0.0, cache_read: 0.0, output: 0.0, total: 100.0 },
+                LocalDay { date: "2026-01-03".into(), input: 0.0, cache_read: 0.0, output: 0.0, total: 300.0 },
+            ],
+        });
+        persist_all_tools(&storage, &[m]);
+        let model_rows: Vec<_> = ledger_rows(&storage, "zcode")
+            .into_iter()
+            .filter(|r| r.model == "GLM-5.3")
             .collect();
-        assert_eq!(by_date.get("2026-01-02"), Some(&100.0));
-        assert_eq!(by_date.get("2026-01-03"), Some(&250.0));
-        // minimax-code 里不应混入 cherry 的 999。
-        assert_eq!(by_date.values().any(|v| *v == 999.0), false);
-
-        // 单元应标记为 tokens（供卡片热力图按 token 显示）。
-        assert!(cells.iter().all(|c| c.unit == crate::providers::UsageUnit::Tokens));
-
-        // cherry-studio 自身键保持为空（persist_minimax 不写它）。
-        assert!(storage.load_heatmap("cherry-studio", 30).unwrap().is_empty());
+        assert_eq!(model_rows.len(), 2);
+        let cost_sum: f64 = model_rows.iter().filter_map(|r| r.cost).sum();
+        assert!((cost_sum - 4.0).abs() < 1e-9, "cost must sum to reported total");
+        assert!(model_rows.iter().all(|r| r.cost_estimated));
         let _ = std::fs::remove_file(&db);
     }
 }

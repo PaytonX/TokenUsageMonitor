@@ -18,6 +18,24 @@ pub struct Storage {
     conn: Mutex<Connection>,
 }
 
+/// 统一日账本（usage_daily）的一行。`model` 为空串 = 来源总量行；
+/// 非空 = 该模型的分项行。
+#[derive(Debug, Clone)]
+pub struct UsageDailyRow {
+    pub source: String,
+    pub kind: String, // "tool" | "provider"
+    pub date: String, // YYYY-MM-DD 本地日
+    pub model: String,
+    pub input: f64,
+    pub cache_read: f64,
+    pub output: f64,
+    pub total: f64,
+    pub unit: UsageUnit,
+    pub cost: Option<f64>,
+    pub currency: Option<String>,
+    pub cost_estimated: bool,
+}
+
 impl Storage {
     /// Open (or create) the SQLite database at `path`. Schema is migrated on
     /// first open. Designed for `app_data_dir()/token_usage_monitor.db`.
@@ -84,6 +102,24 @@ impl Storage {
                 rate       REAL NOT NULL,               -- 每 1 USD 兑该币种的数值
                 updated_at TEXT NOT NULL                -- ISO8601 UTC 抓取时间
             );
+            CREATE TABLE IF NOT EXISTS usage_daily (
+                source       TEXT NOT NULL,             -- 来源键：工具 id（claude-code/zcode/minimax-code…）或 provider 键（volcengine…）
+                kind         TEXT NOT NULL,             -- 'tool' | 'provider'
+                date         TEXT NOT NULL,             -- YYYY-MM-DD 本地日
+                model        TEXT NOT NULL DEFAULT '',  -- '' = 来源总量行；非空 = 该模型的分项行
+                input        REAL NOT NULL DEFAULT 0,
+                cache_read   REAL NOT NULL DEFAULT 0,
+                output       REAL NOT NULL DEFAULT 0,
+                total        REAL NOT NULL DEFAULT 0,
+                unit         TEXT NOT NULL DEFAULT 'tokens',
+                cost         REAL,                      -- 分摊到该日的成本（cherry 实报 / openai·xai 服务端日账）
+                currency     TEXT,
+                cost_estimated INTEGER NOT NULL DEFAULT 0,
+                captured_at  TEXT NOT NULL,
+                PRIMARY KEY (source, date, model)
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_daily_lookup
+                ON usage_daily(kind, date DESC);
             ",
         )?;
         Ok(Self {
@@ -220,6 +256,136 @@ impl Storage {
         let mut cells: Vec<HeatmapCell> = rows.collect::<rusqlite::Result<_>>()?;
         cells.reverse(); // oldest first for left-to-right rendering
         Ok(cells)
+    }
+
+    // ---- 统一日账本（usage_daily）-----------------------------------------
+    //
+    // 三个历史视图（日历/趋势/模型）共用的唯一日用量账本。与 daily_snapshots
+    // 的区别：写入方只有**全量回放型**来源（本机工具重扫、volcengine/openai/xai
+    // 服务端日账回放），逐行 REPLACE 幂等；差分类 provider（窗口/余额差分）不
+    // 写此表，避免 MAX/SUM 语义在同表冲突。
+
+    /// 全量回放一批账本行：先删除批内涉及来源的旧行再插入。幂等，且天然清掉
+    /// 滚动窗口之外的过期日（工具扫描只保留 90 天）。
+    pub fn replace_usage_daily(&self, rows: &[UsageDailyRow]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let sources: Vec<String> = {
+            let mut s: Vec<String> = rows.iter().map(|r| r.source.clone()).collect();
+            s.sort();
+            s.dedup();
+            s
+        };
+        let tx = conn.transaction()?;
+        {
+            let mut del = tx.prepare("DELETE FROM usage_daily WHERE source = ?1")?;
+            for src in &sources {
+                del.execute(params![src])?;
+            }
+        }
+        {
+            let now = chrono::Utc::now().to_rfc3339();
+            let mut ins = tx.prepare(
+                "INSERT OR REPLACE INTO usage_daily
+                 (source, kind, date, model, input, cache_read, output, total, unit, cost, currency, cost_estimated, captured_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            )?;
+            for r in rows {
+                ins.execute(params![
+                    r.source,
+                    r.kind,
+                    r.date,
+                    r.model,
+                    r.input,
+                    r.cache_read,
+                    r.output,
+                    r.total,
+                    unit_db_code(r.unit),
+                    r.cost,
+                    r.currency,
+                    r.cost_estimated as i64,
+                    now,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 读取最近 `days` 天的账本行（升序）。`kind` 过滤：`None` = 全部。
+    pub fn load_usage_daily(
+        &self,
+        kind: Option<&str>,
+        days: u32,
+    ) -> Result<Vec<UsageDailyRow>> {
+        let cutoff = (chrono::Local::now().date_naive()
+            - chrono::Duration::days(days as i64))
+        .format("%Y-%m-%d")
+        .to_string();
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT source, kind, date, model, input, cache_read, output, total, unit, cost, currency, cost_estimated
+             FROM usage_daily
+             WHERE date >= ?1 AND (?2 IS NULL OR kind = ?2)
+             ORDER BY date, source, model",
+        )?;
+        let rows = stmt.query_map(params![cutoff, kind], |r| {
+            let unit_str: String = r.get(8)?;
+            Ok(UsageDailyRow {
+                source: r.get(0)?,
+                kind: r.get(1)?,
+                date: r.get(2)?,
+                model: r.get(3)?,
+                input: r.get(4)?,
+                cache_read: r.get(5)?,
+                output: r.get(6)?,
+                total: r.get(7)?,
+                unit: unit_from_db_str(&unit_str),
+                cost: r.get(9)?,
+                currency: r.get(10)?,
+                cost_estimated: r.get::<_, i64>(11)? != 0,
+            })
+        })?;
+        Ok(rows.flatten().collect())
+    }
+
+    /// 旧数据一次性迁移：把 `daily_snapshots` 里的 `minimax-code` 键（tokens）
+    /// 与 `hermes_daily` 台账导入统一账本。目标来源已有数据时跳过——迁移只发生
+    /// 一次，之后由正常回放路径维护。
+    pub fn migrate_legacy_usage_ledger(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let has = |src: &str| -> rusqlite::Result<i64> {
+            conn.query_row(
+                "SELECT COUNT(*) FROM usage_daily WHERE source = ?1",
+                [src],
+                |r| r.get::<_, i64>(0),
+            )
+        };
+
+        // minimax-code：daily_snapshots 里的 tokens 日值 → 账本总量行。
+        if has("minimax-code")? == 0 {
+            conn.execute(
+                "INSERT INTO usage_daily
+                 (source, kind, date, model, input, cache_read, output, total, unit, cost, currency, cost_estimated, captured_at)
+                 SELECT 'minimax-code', 'tool', date, '', 0, 0, 0, value, unit, NULL, NULL, 0, ?1
+                 FROM daily_snapshots WHERE provider_id = 'minimax-code'",
+                params![now],
+            )?;
+        }
+
+        // hermes：逐日分模型台账 → 账本分项行。
+        if has("hermes")? == 0 {
+            conn.execute(
+                "INSERT INTO usage_daily
+                 (source, kind, date, model, input, cache_read, output, total, unit, cost, currency, cost_estimated, captured_at)
+                 SELECT 'hermes', 'tool', date, model, input, cache_read, output,
+                        input + cache_read + output, 'tokens', cost, 'USD', cost_estimated, ?1
+                 FROM hermes_daily",
+                params![now],
+            )?;
+        }
+        Ok(())
     }
 
     /// Load the persisted local-scan cache. Returns `(fingerprint, payload)` when

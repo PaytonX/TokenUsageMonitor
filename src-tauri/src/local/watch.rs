@@ -33,7 +33,7 @@ pub fn spawn_tool_watcher(app: tauri::AppHandle, local: SharedLocalCache, storag
                 update_cache(&local, tool_id, report).await;
                 if tool_id == "minimax-code" {
                     if let Some(payload) = local.cached().await {
-                        local::persist_minimax(storage.as_ref(), &payload.tools);
+                        local::persist_all_tools(storage.as_ref(), &payload.tools);
                     }
                 }
                 let _ = app.emit("tools-updated", ());

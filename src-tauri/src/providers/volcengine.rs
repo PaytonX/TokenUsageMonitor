@@ -452,11 +452,29 @@ impl Provider for VolcengineProvider {
         // 日历热力图才能逐月累积出 >31 天的历史。嵌入快照的热力图改用
         // 本地合并视图（含刚写入的最新 31 天）。
         if let Some(cells) = &api_heatmap {
+            let mut ledger: Vec<crate::storage::UsageDailyRow> = Vec::new();
             for c in cells {
                 let _ = self
                     .storage
                     .record_daily_on(self.instance_id.as_str(), c.date, c.value, c.unit);
+                // 统一账本双写：服务端真实日账（kind=provider），供历史视图
+                // 以 tokens 口径展示。
+                ledger.push(crate::storage::UsageDailyRow {
+                    source: self.instance_id.clone(),
+                    kind: "provider".to_string(),
+                    date: c.date.to_string(),
+                    model: String::new(),
+                    input: 0.0,
+                    cache_read: 0.0,
+                    output: 0.0,
+                    total: c.value,
+                    unit: c.unit,
+                    cost: None,
+                    currency: None,
+                    cost_estimated: false,
+                });
             }
+            let _ = self.storage.replace_usage_daily(&ledger);
         }
         let heatmap: Option<Vec<HeatmapCell>> = self
             .storage

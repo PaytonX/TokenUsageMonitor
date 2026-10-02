@@ -327,11 +327,19 @@ mod tests {
 
     #[test]
     fn parses_the_documented_payload() {
-        let raw = r#"{"usage":{
-            "rolling":{"status":"ok","percent":12,"resetsAt":"2026-09-29T15:04:05.000Z"},
-            "weekly":{"status":"ok","percent":34,"resetsAt":"2026-10-05T00:00:00.000Z"},
-            "monthly":{"status":"rate-limited","percent":100,"resetsAt":"2026-10-20T12:00:00.000Z"}}}"#;
-        let parsed: UsageResponse = serde_json::from_str(raw).unwrap();
+        // resetsAt 接受 now-1d..now+400d 之间的值，固定日期会随时间腐坏——
+        // 动态生成"未来 1 小时 / 6 天 / 21 天"三个时间戳。
+        let iso = |secs: i64| {
+            (chrono::Utc::now() + chrono::Duration::seconds(secs))
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string()
+        };
+        let raw = format!(r#"{{"usage":{{
+            "rolling":{{"status":"ok","percent":12,"resetsAt":"{}"}},
+            "weekly":{{"status":"ok","percent":34,"resetsAt":"{}"}},
+            "monthly":{{"status":"rate-limited","percent":100,"resetsAt":"{}"}}}}}}"#,
+            iso(3600), iso(6 * 86400), iso(21 * 86400));
+        let parsed: UsageResponse = serde_json::from_str(&raw).unwrap();
         let u = parsed.usage.unwrap();
         let r = window(u.rolling.as_ref()).unwrap();
         assert_eq!(r.used, 12.0);
@@ -352,7 +360,7 @@ mod tests {
     fn rate_limited_status_pins_the_bar_to_full() {
         // Server said 37% but flagged rate-limited: trust the flag.
         let raw = r#"{"usage":{"monthly":{"status":"rate-limited","percent":37,"resetsAt":"2026-10-01T00:00:00.000Z"}}}"#;
-        let parsed: UsageResponse = serde_json::from_str(raw).unwrap();
+        let parsed: UsageResponse = serde_json::from_str(&raw).unwrap();
         let m = window(parsed.usage.unwrap().monthly.as_ref()).unwrap();
         assert_eq!(m.used, 100.0);
         assert!(m.over_quota);
@@ -361,7 +369,7 @@ mod tests {
     #[test]
     fn missing_windows_degrade_to_none_not_panic() {
         let raw = r#"{"usage":{"rolling":{"status":"ok","percent":5}}}"#;
-        let parsed: UsageResponse = serde_json::from_str(raw).unwrap();
+        let parsed: UsageResponse = serde_json::from_str(&raw).unwrap();
         let u = parsed.usage.unwrap();
         assert!(window(u.rolling.as_ref()).is_some());
         assert!(window(u.weekly.as_ref()).is_none());
@@ -372,7 +380,7 @@ mod tests {
     fn absurd_reset_timestamps_are_rejected() {
         // Epoch 0 / far-future resets are "unreported", not real windows.
         let raw = r#"{"usage":{"weekly":{"status":"ok","percent":1,"resetsAt":"1970-01-01T00:00:00.000Z"}}}"#;
-        let parsed: UsageResponse = serde_json::from_str(raw).unwrap();
+        let parsed: UsageResponse = serde_json::from_str(&raw).unwrap();
         let w = window(parsed.usage.unwrap().weekly.as_ref()).unwrap();
         assert!(w.reset_at.is_none());
     }
@@ -381,7 +389,7 @@ mod tests {
     fn percent_is_clamped_into_range() {
         let raw = r#"{"usage":{"daily":{"status":"ok","percent":9999}}}"#;
         // `daily` is not part of UsageBody — serde ignores unknown fields.
-        let parsed: UsageResponse = serde_json::from_str(raw).unwrap();
+        let parsed: UsageResponse = serde_json::from_str(&raw).unwrap();
         assert!(parsed.usage.unwrap().rolling.is_none());
 
         let raw2 = r#"{"usage":{"rolling":{"status":"ok","percent":9999}}}"#;

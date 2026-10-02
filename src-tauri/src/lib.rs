@@ -301,6 +301,12 @@ pub fn run() {
             // 扫描发生前就位：本地工具缓存在下方预热，watch 循环随后启动。
             settings_store.apply_tool_roots();
 
+            // 旧用量数据一次性导入统一账本（minimax-code 键 + hermes 台账）。
+            // 目标来源已有数据时跳过，幂等。
+            if let Err(e) = store.migrate_legacy_usage_ledger() {
+                eprintln!("[ledger] legacy usage migration failed: {e}");
+            }
+
             // 启动自愈：自启开启时按设置对账一次注册表项，失败不阻断启动。
             //
             // 这里必须无条件 enable()，不能只在 is_enabled() 为假时补写：
@@ -367,7 +373,7 @@ pub fn run() {
                         local::delta::record_tool_offsets(&store_for_warm, "codex");
                         let sessions: u64 = tools.iter().map(|t| t.session_count).sum();
                         // 一并把 MiniMax token 用量写入 DB，供卡片热力图快速读取。
-                        local::persist_minimax(&store_for_warm, &tools);
+                        local::persist_all_tools(&store_for_warm, &tools);
                         let payload = local::LocalToolsPayload {
                             tools,
                             sessions_parsed: sessions,
