@@ -1,18 +1,18 @@
-// 贴边把手（peek）小窗：7×58 玻璃条 + 2×22 握柄。
+// 贴边把手（peek）小窗：左/右边 7×58 玻璃条、上/下边 58×7 + 2×22 握柄。
 // 职责只有两件：hover 唤醒主胶囊、收到 peek-show 后复现自己。不持有业务数据。
 import { emit, listen } from "@tauri-apps/api/event";
 
-type Side = "left" | "right";
+type Side = "left" | "right" | "top" | "bottom";
 
 declare global {
   interface Window {
-    /** 由 Rust 建窗时的 initialization_script 注入（"left" | "right"）。 */
+    /** 由 Rust 建窗时的 initialization_script 注入。 */
     __PEEK_SIDE__?: Side;
   }
 }
 
 const HOVER_DEBOUNCE_MS = 60;
-const side: Side = window.__PEEK_SIDE__ === "left" ? "left" : "right";
+const side: Side = window.__PEEK_SIDE__ ?? "right";
 
 const host = document.getElementById("peek");
 if (host) {
@@ -25,39 +25,57 @@ if (host) {
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100%; overflow: hidden; background: transparent; }
     .peek {
-      width: 7px;
-      height: 58px;
+      /* ⚠️ 必须填满整个窗口，不能写死 7px / 58px。
+         Windows 会把窗口撑到最小尺寸（横向 ~136px），写死尺寸会让画出来的条
+         落在窗口的固定一端，贴左边时整条被推到屏幕外 —— 表现为「贴左边没有
+         小把手」。填满窗口后「把手可见条 = 屏幕边缘那 thickness px」由 Rust 的
+         几何唯一决定，CSS 不再需要知道窗口被撑成多大。 */
+      width: 100%;
+      height: 100%;
       display: flex;
       align-items: center;
-      justify-content: center;
       /* 与 --tum-glass 保持一致：透明窗里 backdrop-filter 采不到桌面，
          只用高不透明度深色保证对比度。 */
       background: rgba(22, 25, 31, 0.92);
-      border: 1px solid rgba(255, 255, 255, 0.16);
-      /* 复现时从屏幕边缘横向展开（scaleX 0.4 → 1），与胶囊滑出重叠进行。 */
-      transform: scaleX(1);
-      transform-origin: right center;
       transition:
         opacity 160ms cubic-bezier(0.33, 1, 0.68, 1),
         transform 160ms cubic-bezier(0.33, 1, 0.68, 1);
       cursor: default;
     }
-    .peek[data-side="right"] { border-radius: 4px 0 0 4px; border-right: none; transform-origin: right center; }
-    .peek[data-side="left"] { border-radius: 0 4px 4px 0; border-left: none; transform-origin: left center; }
-    .grip {
-      width: 2px;
-      height: 22px;
-      border-radius: 2px;
-      background: rgba(255, 255, 255, 0.55);
-      transform: scaleY(1);
-      transition: transform 110ms ease;
+    /* 对齐到「屏内可见的那一端」（见 dock.rs::peek_rect 的表）。
+       水平边：主轴是水平。竖直边：主轴变成垂直。 */
+    .peek[data-side="right"]  { flex-direction: row; justify-content: flex-start; transform-origin: left center; }
+    .peek[data-side="left"]   { flex-direction: row; justify-content: flex-end;   transform-origin: right center; }
+    .peek[data-side="bottom"] { flex-direction: column; align-items: flex-start; transform-origin: center top; }
+    .peek[data-side="top"]    { flex-direction: column; align-items: flex-end;   transform-origin: center bottom; }
+
+    /* 圆角落在靠屏内的那一端，贴边那侧保持直角。 */
+    .peek[data-side="right"]  { border-radius: 4px 0 0 4px; border-right: none; }
+    .peek[data-side="left"]   { border-radius: 0 4px 4px 0; border-left: none; }
+    .peek[data-side="bottom"] { border-radius: 4px 4px 0 0; border-bottom: none; }
+    .peek[data-side="top"]    { border-radius: 0 0 4px 4px; border-top: none; }
+
+    .grip { flex: none; background: rgba(255, 255, 255, 0.55); transition: transform 110ms ease; }
+    .peek[data-side="right"] .grip, .peek[data-side="left"] .grip {
+      width: 2px; height: 22px; border-radius: 2px;
     }
-    .peek:hover .grip { transform: scaleY(1.3); }
+    .peek[data-side="bottom"] .grip, .peek[data-side="top"] .grip {
+      width: 22px; height: 2px; border-radius: 2px;
+    }
+    .peek[data-side="right"]:hover .grip,
+    .peek[data-side="left"]:hover .grip { transform: scaleY(1.3); }
+    .peek[data-side="bottom"]:hover .grip,
+    .peek[data-side="top"]:hover .grip { transform: scaleX(1.3); }
+
     /* 只做视觉隐藏：绝不在这里改 pointer-events —— 在指针仍位于把手上时翻转它，
        会让浏览器改判 hover 目标并派发一次假的 pointerleave，于是主窗收到
        peek-leave、刚滑入的胶囊 320ms 后就被收回（表现为「弹出即收回」）。
        把手能否接收鼠标由 Rust 的 set_ignore_cursor_events 在窗口级托管。 */
-    .peek.is-hidden { opacity: 0; transform: scaleX(0.4); }
+    .peek.is-hidden { opacity: 0; }
+    .peek[data-side="right"].is-hidden,
+    .peek[data-side="left"].is-hidden { transform: scaleX(0.4); }
+    .peek[data-side="bottom"].is-hidden,
+    .peek[data-side="top"].is-hidden { transform: scaleY(0.4); }
     @media (prefers-reduced-motion: reduce) {
       .peek, .grip { transition-duration: 0.001ms; }
     }
@@ -92,7 +110,9 @@ if (host) {
   // 靠这里纠正 4px 圆角朝向（拖动期间把手处于 is-hidden，不会被看到）。
   void listen("peek-show", (event) => {
     const next = event.payload as Side | undefined;
-    if (next === "left" || next === "right") host.dataset.side = next;
+    if (next === "left" || next === "right" || next === "top" || next === "bottom") {
+      host.dataset.side = next;
+    }
     host.classList.remove("is-hidden");
   });
 }

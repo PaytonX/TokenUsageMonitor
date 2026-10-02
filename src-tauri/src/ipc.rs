@@ -3,7 +3,10 @@
 //! Naming convention: snake_case in Rust, frontend calls via `invoke('get_usage')`.
 
 use crate::build_account_provider;
-use crate::dock::{dock_rect, dock_side, peek_rect, PEEK_LEN, PEEK_THICK, PILL_ROW_H};
+use crate::dock::{
+    anchor_from_rect, anchor_rect, nearest_side, peek_rect, DockAnchor, DockSide,
+    PEEK_LEN, PEEK_THICK, PILL_ROW_H,
+};
 use crate::hub::HubDevice;
 use crate::local::LocalToolsPayload;
 use crate::providers::{
@@ -438,15 +441,44 @@ pub fn clamp_window_to_work_area(window: &WebviewWindow, margin_logical: f64) ->
     changed
 }
 
-/// 把窗口横向贴死到最近的左/右边缘，纵向夹在工作区内。compact 胶囊专用。
-pub fn dock_window(window: &WebviewWindow) -> bool {
-    let Ok(pos) = window.outer_position() else { return false; };
-    let Ok(size) = window.outer_size() else { return false; };
-    let Ok(Some(monitor)) = window.current_monitor() else { return false; };
+/// 胶囊距离屏幕边多少物理像素内算「已贴边」。与前端 PILL_DOCK_THRESHOLD_PX
+/// （40 逻辑 px）同量级；这里用逻辑值 × scale_factor 换算成物理像素。
+const DOCK_SNAP_MARGIN_PX: f64 = 40.0;
+
+/// 读出胶囊当前**已贴边**时的锚点；离四条边都超过阈值时返回 `None`（浮动）。
+///
+/// 语义说明（这是一次有意的行为变化，不是缺陷）：判据是「离边够近」，
+/// 而不是「前端此刻认为它是 docked」。`set_window_mode` 是 Rust 命令、
+/// 拿不到前端的 `pillDocked`，而 `pillDocked` 本身就是拖拽松手那一刻用
+/// 同一套阈值判出来的。后果是：一个恰好停在边缘 30px 处的浮动胶囊，
+/// 展开成主窗时会被吸附到那条边。我认为这符合直觉（用户把它放在那儿，
+/// 多半就是想靠边），但**要写在这里**，以免日后被当成 bug 重新「修」回去。
+pub fn current_anchor(window: &WebviewWindow) -> Option<DockAnchor> {
+    let pos = window.outer_position().ok()?;
+    let size = window.outer_size().ok()?;
+    let monitor = window.current_monitor().ok()??;
     let area = monitor.work_area();
-    let (nx, ny) = dock_rect(
-        f64::from(pos.x),
-        f64::from(pos.y),
+    let (ax, ay) = (f64::from(area.position.x), f64::from(area.position.y));
+    let (aw, ah) = (f64::from(area.size.width), f64::from(area.size.height));
+    let side = nearest_side(
+        f64::from(pos.x), f64::from(pos.y),
+        f64::from(size.width), f64::from(size.height),
+        ax, ay, aw, ah,
+        DOCK_SNAP_MARGIN_PX * f64::from(monitor.scale_factor()),
+        None,
+    )?;
+    Some(anchor_from_rect(f64::from(pos.x), f64::from(pos.y), ax, ay, side))
+}
+
+/// 把窗口落到锚点上。`anchor_rect` 保证贴边轴永远贴死且不出屏，
+/// 所以窗口尺寸怎么变都不会「掉出贴边态」。
+pub fn apply_anchor(window: &WebviewWindow, a: DockAnchor) -> bool {
+    let Ok(pos) = window.outer_position() else { return false };
+    let Ok(size) = window.outer_size() else { return false };
+    let Ok(Some(monitor)) = window.current_monitor() else { return false };
+    let area = monitor.work_area();
+    let (nx, ny) = anchor_rect(
+        a,
         f64::from(size.width),
         f64::from(size.height),
         f64::from(area.position.x),
@@ -454,57 +486,59 @@ pub fn dock_window(window: &WebviewWindow) -> bool {
         f64::from(area.size.width),
         f64::from(area.size.height),
     );
-    let changed = nx != f64::from(pos.x) || ny != f64::from(pos.y);
-    if changed {
-        let _ = window.set_position(PhysicalPosition::new(
-            nx.round() as i32,
-            ny.round() as i32,
-        ));
+    if nx == f64::from(pos.x) && ny == f64::from(pos.y) {
+        return false;
     }
-    changed
+    let _ = window.set_position(PhysicalPosition::new(nx.round() as i32, ny.round() as i32));
+    true
 }
 
-/// 贴边把手的物理位置 + 所在边（true = 右侧）。窗口无监视器时返回 None。
-fn peek_placement(window: &WebviewWindow) -> Option<(bool, PhysicalPosition<i32>)> {
-    let Ok(pos) = window.outer_position() else { return None; };
-    let Ok(size) = window.outer_size() else { return None; };
+/// 把手窗的物理位置。
+/// 位置**从锚点算**，不再读 dashboard 的当前位置——锚点是唯一真值，
+/// 胶囊在滑出动画里怎么动都不会带着把手抖。
+fn peek_placement(
+    window: &WebviewWindow,
+    side: DockSide,
+    along: i32,
+) -> Option<PhysicalPosition<i32>> {
     let Ok(Some(monitor)) = window.current_monitor() else { return None; };
     let area = monitor.work_area();
     let scale = f64::from(monitor.scale_factor());
-    let is_right = dock_side(
-        f64::from(pos.x),
-        f64::from(size.width),
-        f64::from(area.position.x),
-        f64::from(area.size.width),
-    );
-    let visible_w = PEEK_THICK * scale;
-    // 把手窗可能已被系统最小宽度撑大：按真实宽度定位，把多余部分推出屏幕。
-    let actual_w = window
+    let (vis_w, vis_h) = side.peek_size();
+    let thickness = vis_w * scale;
+    let length = vis_h * scale;
+    // 把手窗可能已被系统最小尺寸撑大：按真实尺寸定位，把垂直于贴边轴的
+    // 多余部分推出屏幕（否则那一整条透明区域会持续吞掉桌面上的鼠标事件）。
+    let actual = window
         .app_handle()
         .get_webview_window("peek")
         .and_then(|p| p.outer_size().ok())
-        .map(|s| f64::from(s.width))
-        .unwrap_or(visible_w)
-        .max(visible_w);
+        .map(|s| (f64::from(s.width), f64::from(s.height)));
+    let (aw, ah) = actual.unwrap_or((thickness, length));
+    let (aw, ah) = (aw.max(thickness), ah.max(length));
     let (px, py) = peek_rect(
-        f64::from(pos.y),
+        side,
+        f64::from(along),
         PILL_ROW_H * scale,
-        is_right,
-        visible_w,
-        actual_w,
+        thickness,
+        length,
+        aw,
+        ah,
         f64::from(area.position.x),
         f64::from(area.position.y),
         f64::from(area.size.width),
         f64::from(area.size.height),
-        PEEK_LEN * scale,
     );
-    Some((is_right, PhysicalPosition::new(px.round() as i32, py.round() as i32)))
+    Some(PhysicalPosition::new(px.round() as i32, py.round() as i32))
 }
 
 /// 让把手跟随 Dashboard 胶囊的纵向位置。把手尚未创建时为空操作。
+///
+/// 从锚点算而非读胶囊当前位置：胶囊在滑出动画里怎么动都不会带着把手抖。
 pub fn reposition_peek(window: &WebviewWindow) {
     let Some(peek) = window.app_handle().get_webview_window("peek") else { return; };
-    let Some((_, pos)) = peek_placement(window) else { return; };
+    let Some(anchor) = current_anchor(window) else { return };
+    let Some(pos) = peek_placement(window, anchor.side, anchor.along) else { return; };
     if peek.outer_position().map(|cur| cur == pos).unwrap_or(false) {
         return;
     }
@@ -595,20 +629,24 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
 /// `floating`（常态浮动）→ 销毁把手、主窗可交互、不移动主窗；
 /// `revealed`（胶囊已贴边滑入）→ 把手存在但不捕获、主窗捕获、不移动主窗；
 /// `docked`（胶囊收起贴边）→ 先贴死边缘，再让把手捕获鼠标、主窗穿透。
-/// 返回胶囊贴靠的水平边，供前端决定滑入方向。
+/// 返回胶囊贴靠的边，供前端决定滑入方向。
 #[tauri::command]
 pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, String> {
     let dash = app
         .get_webview_window("dashboard")
         .ok_or_else(|| "dashboard window not found".to_string())?;
-    let Some((is_right, pos)) = peek_placement(&dash) else {
+    // 边与沿边坐标**先算出来并落位**，再拿去建/放把手。旧实现先按胶囊当前位置
+    // 推断边、再 dock，于是把手拿到的边可能与最终贴定的边不一致。
+    let Some(anchor) = current_anchor(&dash) else {
         return Err("dashboard window has no monitor".to_string());
     };
+    let side = anchor.side;
+    let side_str = side.as_str();
 
     // 只在 compact 胶囊态才有把手；dashboard 态（可能是模式切换竞态）直接
     // 返回所在边，不重建刚被 set_window_mode 关掉的窗口。
     if !app.state::<AppState>().compact_mode.load(Ordering::SeqCst) {
-        return Ok(if is_right { "right" } else { "left" }.to_string());
+        return Ok(side_str.to_string());
     }
 
     match state.as_str() {
@@ -622,25 +660,23 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
             }
         }
         "revealed" | "docked" => {
-            // 贴边态：胶囊必须紧贴左/右边缘，7px 把手才能与之对齐。收起（docked）
-            // 由前端在拖拽结束时判定，这里才真正贴死；滑入（revealed）时窗口已贴边，
-            // 不再移动，避免每帧校正造成抖动。
+            // docked 才贴死；revealed 时窗口已贴边，不再移动，避免每帧校正抖动。
             if state == "docked" {
-                dock_window(&dash);
+                apply_anchor(&dash, anchor);
             }
 
             let peek = match app.get_webview_window("peek") {
                 Some(existing) => existing,
                 None => {
-                    // 把手页通过初始化脚本拿到所在边，决定 4px 圆角朝向。
-                    let side = if is_right { "\"right\"" } else { "\"left\"" };
+                    // 把手页通过初始化脚本拿到所在边，决定内容对齐与圆角朝向。
+                    let (pw, ph) = side.peek_size();
                     let built = WebviewWindowBuilder::new(
                         &app,
                         "peek",
                         tauri::WebviewUrl::App("peek.html".into()),
                     )
                     .title("TokenUsageMonitor · 贴边把手")
-                    .inner_size(PEEK_THICK, PEEK_LEN)
+                    .inner_size(pw, ph)
                     .resizable(false)
                     .decorations(false)
                     .transparent(true)
@@ -649,7 +685,7 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
                     .shadow(false)
                     .focused(false)
                     .visible(false)
-                    .initialization_script(format!("window.__PEEK_SIDE__ = {side};"))
+                    .initialization_script(format!("window.__PEEK_SIDE__ = {:?};", side_str))
                     .build()
                     .map_err(|e| e.to_string())?;
                     #[cfg(windows)]
@@ -658,11 +694,11 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
                 }
             };
 
-            let _ = peek.set_position(pos);
-            // 刚建出来时还不知道系统实际最小宽度：拿到真实尺寸后立刻校正一次，
-            // 保证多出来的宽度落在屏幕外（贴左边时尤其关键）。
-            if let Some((_, fixed)) = peek_placement(&dash) {
-                let _ = peek.set_position(fixed);
+            // 刚建出来时还不知道系统实际最小尺寸：拿到真实 outer_size 后由
+            // peek_placement 重算，把垂直于贴边轴的多余部分推出屏幕
+            // （贴左边/上边时尤其关键）。
+            if let Some(p) = peek_placement(&dash, side, anchor.along) {
+                let _ = peek.set_position(p);
             }
             let _ = peek.show();
             // 鼠标捕获：两个窗口必须一致切换。走 best-effort 但带兜底 —— 停靠态
@@ -681,7 +717,7 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
         other => return Err(format!("unknown peek state: {other}")),
     }
 
-    Ok(if is_right { "right" } else { "left" }.to_string())
+    Ok(side_str.to_string())
 }
 /// 前端在开始原生拖拽时置位、手势结束（或收到 pointerup 快路径）时清零。
 /// 与 Rust 侧的「窗口停止移动」检测配合判定拖拽结束。

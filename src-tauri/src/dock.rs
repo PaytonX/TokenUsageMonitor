@@ -197,26 +197,67 @@ pub fn dock_rect(
     (nx, y.clamp(area_y, max_y))
 }
 
-/// 把手的物理位置：贴死所在边缘，纵向中心对齐胶囊主行（`row_h` 为物理像素）。
+/// 把手窗的物理位置。
 ///
-/// ⚠️ 仅供 Task 1 的行为不变迁移使用，Task 3 起由四边版 `peek_rect` 取代。
+/// 约定（Task 4 的 CSS 必须严格照此对齐，否则缺陷 2 会以另一种形式复发）：
+/// **可见条永远贴在屏幕边缘，被系统最小尺寸撑出来的多余部分推到屏外。**
+/// 于是「把手可见条落在窗口的哪一端」是确定的：
+///
+/// | 贴边   | 可见条在窗口的 | `.peek` 内容对齐              |
+/// |--------|----------------|------------------------------|
+/// | Left   | 右端           | `justify-content: flex-end`  |
+/// | Right  | 左端           | `justify-content: flex-start`|
+/// | Top    | 下端           | `align-items: flex-end`      |
+/// | Bottom | 上端           | `align-items: flex-start`    |
+///
+/// 参数：
+/// - `along`：胶囊沿边轴的起点（相对 work_area 原点，与 DockAnchor::along 同义）
+/// - `pill_span`：胶囊在沿边轴上的尺寸
+/// - `thickness` / `length`：把手的可见厚度 / 可见长度（物理像素）
+/// - `actual_w` / `actual_h`：把手窗被系统最小尺寸撑大后的真实尺寸
 pub fn peek_rect(
-    dash_y: f64, row_h: f64, is_right: bool,
-    visible_w: f64, actual_w: f64,
-    area_x: f64, area_y: f64, area_w: f64, area_h: f64,
-    peek_h: f64,
+    side: DockSide,
+    along: f64,
+    pill_span: f64,
+    thickness: f64,
+    length: f64,
+    actual_w: f64,
+    actual_h: f64,
+    area_x: f64,
+    area_y: f64,
+    area_w: f64,
+    area_h: f64,
 ) -> (f64, f64) {
-    // 系统最小窗口宽度会把把手窗撑到 ~136px。可见的那 7px 必须贴住屏幕边，
-    // 多出来的部分一律推到屏幕外——否则贴左边时那一整条透明区域会持续吞掉
-    // 桌面上的鼠标事件（点什么都点不到）。
-    let x = if is_right {
-        area_x + area_w - visible_w
-    } else {
-        area_x - (actual_w - visible_w).max(0.0)
-    };
-    let y = dash_y + row_h / 2.0 - peek_h / 2.0;
-    let max_y = (area_y + area_h - peek_h).max(area_y);
-    (x, y.clamp(area_y, max_y))
+    match side {
+        DockSide::Left => {
+            let x = area_x + thickness - actual_w.max(thickness);
+            let y = (area_y + along + (pill_span - length) / 2.0
+                - (actual_h - length).max(0.0) / 2.0)
+                .clamp(area_y, (area_y + area_h - actual_h).max(area_y));
+            (x, y)
+        }
+        DockSide::Right => {
+            let x = area_x + area_w - thickness;
+            let y = (area_y + along + (pill_span - length) / 2.0
+                - (actual_h - length).max(0.0) / 2.0)
+                .clamp(area_y, (area_y + area_h - actual_h).max(area_y));
+            (x, y)
+        }
+        DockSide::Top => {
+            let y = area_y + thickness - actual_h.max(thickness);
+            let x = (area_x + along + (pill_span - length) / 2.0
+                - (actual_w - length).max(0.0) / 2.0)
+                .clamp(area_x, (area_x + area_w - actual_w).max(area_x));
+            (x, y)
+        }
+        DockSide::Bottom => {
+            let y = area_y + area_h - thickness;
+            let x = (area_x + along + (pill_span - length) / 2.0
+                - (actual_w - length).max(0.0) / 2.0)
+                .clamp(area_x, (area_x + area_w - actual_w).max(area_x));
+            (x, y)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -258,33 +299,6 @@ mod tests {
     fn dock_side_mirrors_for_a_negative_origin_monitor() {
         assert!(!dock_side(-1900.0, 168.0, -1920.0, 1920.0));
         assert!(dock_side(-60.0, 168.0, -1920.0, 1920.0));
-    }
-
-    #[test]
-    fn peek_rect_sits_flush_and_centres_on_the_pill_row() {
-        let args = (100.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
-        let (x, y) = peek_rect(args.0, args.1, true, 7.0, 7.0, args.2, args.3, args.4, args.5, args.6);
-        assert_eq!((x, y), (1913.0, 99.0));
-        let (lx, _) = peek_rect(args.0, args.1, false, 7.0, 7.0, args.2, args.3, args.4, args.5, args.6);
-        assert_eq!(lx, 0.0);
-    }
-
-    #[test]
-    fn peek_rect_pushes_the_extra_width_off_screen() {
-        // 系统最小窗口宽度把把手窗撑到 136px：可见的 7px 仍贴住屏幕边，
-        // 多出的 129px 必须落在屏幕外，否则会吞掉桌面上的鼠标事件。
-        let (lx, _) = peek_rect(100.0, 56.0, false, 7.0, 136.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
-        assert_eq!(lx, -129.0);
-        let (rx, _) = peek_rect(100.0, 56.0, true, 7.0, 136.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
-        assert_eq!(rx, 1913.0);
-    }
-
-    #[test]
-    fn peek_rect_clamps_to_the_work_area() {
-        let (_, top) = peek_rect(0.0, 56.0, true, 7.0, 7.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
-        assert_eq!(top, 0.0);
-        let (_, bottom) = peek_rect(1020.0, 56.0, true, 7.0, 7.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
-        assert_eq!(bottom, 982.0);
     }
 
     // ---- Task 2: 四边锚点 -------------------------------------------------
@@ -426,5 +440,94 @@ mod tests {
         assert_eq!(DockSide::Right.peek_size(), (7.0, 58.0));
         assert_eq!(DockSide::Top.peek_size(), (58.0, 7.0));
         assert_eq!(DockSide::Bottom.peek_size(), (58.0, 7.0));
+    }
+
+    // ---- Task 3: 四边把手 -------------------------------------------------
+
+    const THICK: f64 = 7.0;   // 可见厚度
+    const LEN: f64 = 58.0;    // 可见长度
+    const STRETCH_W: f64 = 136.0; // Windows 最小窗口宽度撑大后的真实宽度
+    const STRETCH_H: f64 = 39.0;  // 最小窗口高度（58 > 39，竖向不撑）
+
+    fn peek(side: DockSide, along: f64, aw: f64, ah: f64) -> (f64, f64) {
+        peek_rect(side, along, 56.0, THICK, LEN, aw, ah, AREA_X, AREA_Y, AREA_W, AREA_H)
+    }
+
+    #[test]
+    fn peek_right_puts_the_visible_strip_on_the_windows_left_end() {
+        // 窗 [1913, 2049]，只有左端 7px 在屏内 —— CSS 须左对齐内容。
+        let (x, y) = peek(DockSide::Right, 300.0, STRETCH_W, LEN);
+        assert_eq!(x, 1913.0);
+        assert_eq!(y, 299.0); // 300 + (56-58)/2
+    }
+
+    #[test]
+    fn peek_left_puts_the_visible_strip_on_the_windows_right_end() {
+        // 回归缺陷 2：窗 [-129, 7]，只有右端 7px 在屏内。
+        // 旧 CSS 把 7px 画在窗口左端 → 落到 [-129,-122]，屏外，看不见把手。
+        let (x, y) = peek(DockSide::Left, 300.0, STRETCH_W, LEN);
+        assert_eq!(x, -129.0);
+        assert_eq!(x + STRETCH_W, THICK); // 右缘正好是屏内可见条的右界
+        assert_eq!(y, 299.0);
+    }
+
+    #[test]
+    fn peek_top_pushes_the_stretched_height_off_screen() {
+        let (x, y) = peek(DockSide::Top, 600.0, LEN, STRETCH_H);
+        assert_eq!(y, THICK - STRETCH_H); // 负值，窗口下缘贴 ay+thickness
+        assert_eq!(y + STRETCH_H, THICK);
+        assert_eq!(x, 600.0 + (56.0 - LEN) / 2.0); // 沿边轴居中于胶囊
+    }
+
+    #[test]
+    fn peek_bottom_sits_flush_on_the_work_area_edge() {
+        let (x, y) = peek(DockSide::Bottom, 600.0, LEN, STRETCH_H);
+        assert_eq!(y, AREA_H - THICK);
+        assert_eq!(x, 600.0 + (56.0 - LEN) / 2.0);
+    }
+
+    #[test]
+    fn peek_never_falls_off_the_screen_along_the_edge() {
+        // 贴上边、沿边坐标贴近工作区左缘时，夹回屏内。
+        let (x, _) = peek(DockSide::Top, -900.0, LEN, STRETCH_H);
+        assert!(x >= 0.0);
+        let (_, y) = peek(DockSide::Left, -900.0, STRETCH_W, LEN);
+        assert!(y >= 0.0);
+    }
+
+    /// 四条边的可见条都必须**跨在屏幕边缘上**：屏内紧贴边的那 7px。
+    /// 可见条在窗口的哪一端随边翻转——这正是 Task 4 CSS 必须对齐的约定。
+    #[test]
+    fn peek_visible_strip_always_straddles_the_screen_edge_exactly() {
+        for side in [DockSide::Left, DockSide::Right, DockSide::Top, DockSide::Bottom] {
+            let (aw, ah) = if side.is_horizontal_edge() { (STRETCH_W, LEN) } else { (LEN, STRETCH_H) };
+            let (x, y) = peek(side, 400.0, aw, ah);
+            let strip = match side {
+                DockSide::Left => (x + aw - THICK, x + aw),
+                DockSide::Right => (x, x + THICK),
+                DockSide::Top => (y + ah - THICK, y + ah),
+                DockSide::Bottom => (y, y + THICK),
+            };
+            let edge = match side {
+                DockSide::Left => AREA_X,
+                DockSide::Right => AREA_X + AREA_W,
+                DockSide::Top => AREA_Y,
+                DockSide::Bottom => AREA_Y + AREA_H,
+            };
+            let expected = match side {
+                DockSide::Left | DockSide::Top => (edge, edge + THICK),
+                DockSide::Right | DockSide::Bottom => (edge - THICK, edge),
+            };
+            assert_eq!(strip, expected, "side={side:?}");
+        }
+    }
+
+    #[test]
+    fn peek_works_when_the_window_was_not_stretched_at_all() {
+        // 极小 DPI 或将来绕开最小宽度时，actual == 可见尺寸。
+        let (x, y) = peek(DockSide::Right, 300.0, THICK, LEN);
+        assert_eq!((x, y), (1913.0, 299.0));
+        let (x, y) = peek(DockSide::Left, 300.0, THICK, LEN);
+        assert_eq!((x, y), (0.0, 299.0));
     }
 }
