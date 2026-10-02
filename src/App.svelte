@@ -378,13 +378,33 @@
     // 因此按实际窗口宽度对齐模式，并重新同步把手与鼠标捕获。
     try {
       const win = getCurrentWindow();
-      const [size, scale] = await Promise.all([win.innerSize(), win.scaleFactor()]);
+      const [size, scale, pos, outer] = await Promise.all([
+        win.innerSize(),
+        win.scaleFactor(),
+        win.outerPosition(),
+        win.outerSize(),
+      ]);
       if (size.width / scale <= PILL_RESTORE_MAX_W) {
         mode = "compact";
-        // 启动恢复：Rust setup 只把窗口拉回屏内（未贴边），故为常态浮动且层可见。
-        pillDocked = false;
-        pillRevealed = true;
+        // 贴边状态是**持久**的：Rust setup 会按 config.toml 里的 dock 锚点把窗口
+        // 贴死回上次那条边。所以这里必须**问一次 Rust**当前落点贴没贴边，
+        // 不能再假定「未贴边」——那是 dock 持久化之前的老前提。
+        //
+        // 假定错了的后果很隐蔽：窗口停在贴边位置，但按 floating 同步会让 Rust
+        // **销毁把手**并把鼠标交回主窗，于是胶囊卡在屏幕边缘、没有把手可唤醒，
+        // 看起来就是「贴边了但把手不见了」的半吊子状态。
+        const side = await dockSideOf(pos.x, pos.y, outer.width, outer.height, null);
+        if (side) {
+          // 与退出前一致：胶囊滑出、把手在边缘接管鼠标。
+          pillDocked = true;
+          pillRevealed = false;
+          pillExpanded = false;
+        } else {
+          pillDocked = false;
+          pillRevealed = true;
+        }
         await syncPeek();
+        if (side) void emitPeekShow(side).catch(() => {});
       }
     } catch {
       // 取不到窗口尺寸：维持默认的 dashboard 模式。

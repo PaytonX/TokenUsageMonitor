@@ -4,7 +4,8 @@
 
 use crate::build_account_provider;
 use crate::dock::{
-    anchor_from_rect, anchor_rect, nearest_side, peek_rect, DockAnchor, DockSide, PILL_ROW_H,
+    anchor_from_rect, anchor_rect, nearest_side, peek_rect, pill_span_for, DockAnchor, DockSide,
+    PILL_ROW_H,
 };
 use crate::hub::HubDevice;
 use crate::local::LocalToolsPayload;
@@ -554,7 +555,9 @@ fn peek_placement(
     let (px, py) = peek_rect(
         side,
         f64::from(along),
-        PILL_ROW_H * scale,
+        // 沿边方向的胶囊尺寸随边翻转：左右边取高、上下边取宽。硬编码成
+        // PILL_ROW_H 会让贴上/下边时把手与胶囊横向错开 56px。
+        pill_span_for(side) * scale,
         thickness,
         length,
         aw,

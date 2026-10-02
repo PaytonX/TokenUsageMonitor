@@ -10,6 +10,21 @@ use serde::{Deserialize, Serialize};
 pub const PEEK_THICK: f64 = 7.0;
 pub const PEEK_LEN: f64 = 58.0;
 pub const PILL_ROW_H: f64 = 56.0;
+/// 胶囊收起态的宽（与 `set_window_mode` 的 168×56 保持一致）。
+///
+/// 沿边方向的胶囊尺寸**随边翻转**：左右边的沿边轴是竖直的 → 取高 56；
+/// 上下边的沿边轴是水平的 → 取宽 168。搞错这个会把把手与胶囊错开整整
+/// 56px（真机表现：贴上边时把手比胶囊偏左）。
+pub const PILL_W: f64 = 168.0;
+
+/// 胶囊在「沿边轴」上的尺寸。
+pub fn pill_span_for(side: DockSide) -> f64 {
+    if side.is_horizontal_edge() {
+        PILL_ROW_H
+    } else {
+        PILL_W
+    }
+}
 
 /// 胶囊应贴靠的边。原先只有水平两向（`dock_side` 返回 bool），
 /// 2026-10 扩为四边。
@@ -175,40 +190,23 @@ pub fn nearest_side(
     tied.first().copied()
 }
 
-/// 胶囊应贴靠的水平边。比较窗口中心与工作区中心；正中时归右侧（默认边）。
-///
-/// ⚠️ 仅供 Task 1 的行为不变迁移使用，Task 2 起由 `nearest_side` 取代。
-pub fn dock_side(x: f64, w: f64, area_x: f64, area_w: f64) -> bool {
-    x + w / 2.0 >= area_x + area_w / 2.0
-}
-
-/// 把窗口横向贴死到最近的水平边缘，纵向保留原位置但夹在工作区内。
-/// 把手画在屏幕边缘，胶囊必须紧贴边缘二者才能对齐；纵向是用户自由选择的位置。
-///
-/// ⚠️ 仅供 Task 1 的行为不变迁移使用，Task 2 起由 `anchor_rect` 取代。
-pub fn dock_rect(
-    x: f64, y: f64, w: f64, h: f64,
-    area_x: f64, area_y: f64, area_w: f64, area_h: f64,
-) -> (f64, f64) {
-    let left = area_x;
-    let right = (area_x + area_w - w).max(area_x);
-    let nx = if dock_side(x, w, area_x, area_w) { right } else { left };
-    let max_y = (area_y + area_h - h).max(area_y);
-    (nx, y.clamp(area_y, max_y))
-}
-
 /// 把手窗的物理位置。
 ///
 /// 约定（Task 4 的 CSS 必须严格照此对齐，否则缺陷 2 会以另一种形式复发）：
-/// **可见条永远贴在屏幕边缘，被系统最小尺寸撑出来的多余部分推到屏外。**
-/// 于是「把手可见条落在窗口的哪一端」是确定的：
+/// **可见条永远贴在屏幕边缘。** 两种实现，取决于系统允不允许把多余部分推出屏外：
 ///
-/// | 贴边   | 可见条在窗口的 | `.peek` 内容对齐              |
-/// |--------|----------------|------------------------------|
-/// | Left   | 右端           | `justify-content: flex-end`  |
-/// | Right  | 左端           | `justify-content: flex-start`|
-/// | Top    | 下端           | `align-items: flex-end`      |
-/// | Bottom | 上端           | `align-items: flex-start`    |
+/// | 贴边   | 窗口位置                | 可见条在窗口的 | `.peek` 尺寸/对齐          |
+/// |--------|-------------------------|----------------|----------------------------|
+/// | Left   | 右缘贴 `ax+thickness`    | 右端           | 填满 + `justify-content: flex-end`   |
+/// | Right  | 左缘贴 `ax+aw-thickness` | 左端           | 填满 + `justify-content: flex-start` |
+/// | Top    | 顶边贴 `ay`             | **上端**       | `height: thickness`（其余透明）      |
+/// | Bottom | 顶边贴 `ay+ah-thickness` | **上端**       | `height: thickness`（其余透明）      |
+///
+/// 左右两边系统允许负坐标，于是把多余宽度推出屏外、`.peek` 填满整个窗口即可。
+/// 上下边**不行**：Windows 会把越过上沿的 y 钳回 0（越下沿同理），窗口必然整块
+/// 压在屏幕内沿上——真机表现是「一大块黑砖」。所以上下边改为只画 thickness 高的
+/// 一条、其余透明。代价：那块透明区仍属 webview，会吞掉该区域的鼠标事件
+/// （贴上边时是一条约 136×32 的横向带，正好覆盖在胶囊自身范围内，可接受）。
 ///
 /// 参数：
 /// - `along`：胶囊沿边轴的起点（相对 work_area 原点，与 DockAnchor::along 同义）
@@ -244,13 +242,19 @@ pub fn peek_rect(
             (x, y)
         }
         DockSide::Top => {
-            let y = area_y + thickness - actual_h.max(thickness);
+            // 上下边**不能**沿用左右边「把多余部分推出屏外」的思路：Windows
+            // 不允许窗口越过显示器上沿，y 会被钳回 0，于是整块 39px 高的窗口
+            // 压在屏幕内沿上（真机表现：一大块黑砖）。改为把窗口顶边对齐工作区
+            // 边缘，让**窗口顶部那 thickness px** 就是把手条，其余由 CSS 留空。
+            let y = area_y;
             let x = (area_x + along + (pill_span - length) / 2.0
                 - (actual_w - length).max(0.0) / 2.0)
                 .clamp(area_x, (area_x + area_w - actual_w).max(area_x));
             (x, y)
         }
         DockSide::Bottom => {
+            // 同上：窗口顶边对齐「工作区底边 − thickness」，顶部 thickness px
+            // 即把手条。多出的高度挂在工作区之外（任务栏一侧），不挡屏幕内容。
             let y = area_y + area_h - thickness;
             let x = (area_x + along + (pill_span - length) / 2.0
                 - (actual_w - length).max(0.0) / 2.0)
@@ -268,38 +272,6 @@ mod tests {
     const AREA_Y: f64 = 0.0;
     const AREA_W: f64 = 1920.0;
     const AREA_H: f64 = 1040.0;
-
-    #[test]
-    fn dock_rect_flushes_to_the_left_edge() {
-        let (x, y) = dock_rect(10.0, 300.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
-        assert_eq!((x, y), (0.0, 300.0));
-    }
-
-    #[test]
-    fn dock_rect_flushes_to_the_right_edge() {
-        let (x, y) = dock_rect(1000.0, 300.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
-        assert_eq!((x, y), (1752.0, 300.0));
-    }
-
-    #[test]
-    fn dock_rect_exact_middle_docks_right() {
-        let (x, _) = dock_rect(876.0, 0.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
-        assert_eq!(x, 1752.0);
-    }
-
-    #[test]
-    fn dock_rect_keeps_vertical_but_clamps_inside() {
-        let (_, top) = dock_rect(0.0, -40.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
-        assert_eq!(top, 0.0);
-        let (_, bottom) = dock_rect(0.0, 1030.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
-        assert_eq!(bottom, 984.0);
-    }
-
-    #[test]
-    fn dock_side_mirrors_for_a_negative_origin_monitor() {
-        assert!(!dock_side(-1900.0, 168.0, -1920.0, 1920.0));
-        assert!(dock_side(-60.0, 168.0, -1920.0, 1920.0));
-    }
 
     // ---- Task 2: 四边锚点 -------------------------------------------------
 
@@ -472,18 +444,49 @@ mod tests {
     }
 
     #[test]
-    fn peek_top_pushes_the_stretched_height_off_screen() {
+    fn peek_top_anchors_the_window_top_to_the_work_area_edge() {
+        // 回归：早先算 y = ay + thickness - actual_h（= -32），想让 39px 高的
+        // 窗口把多余部分推出屏外。但 **Windows 不允许窗口越过上沿**，y 被钳回 0，
+        // 整块 39px 就压在屏幕内沿上——用户看到的「一大块黑砖」。
+        // 现在改为：窗口顶边贴工作区上沿，CSS 只画顶部 thickness px。
         let (x, y) = peek(DockSide::Top, 600.0, LEN, STRETCH_H);
-        assert_eq!(y, THICK - STRETCH_H); // 负值，窗口下缘贴 ay+thickness
-        assert_eq!(y + STRETCH_H, THICK);
+        assert_eq!(y, AREA_Y);
         assert_eq!(x, 600.0 + (56.0 - LEN) / 2.0); // 沿边轴居中于胶囊
     }
 
     #[test]
-    fn peek_bottom_sits_flush_on_the_work_area_edge() {
+    fn peek_bottom_anchors_the_window_top_just_above_the_work_area_edge() {
+        // 同上：窗口顶边贴「工作区底边 − thickness」，顶部 thickness px 即把手条，
+        // 多出的高度挂在工作区之外（任务栏一侧），不挡屏幕内容。
         let (x, y) = peek(DockSide::Bottom, 600.0, LEN, STRETCH_H);
         assert_eq!(y, AREA_H - THICK);
         assert_eq!(x, 600.0 + (56.0 - LEN) / 2.0);
+    }
+
+    #[test]
+    fn peek_top_and_bottom_put_the_bar_at_the_windows_top_edge() {
+        // 上下边的把手条都在窗口**顶部**（CSS 只画顶部 thickness px），
+        // 所以窗口 y 必须让「窗口顶 + thickness」正好落在工作区边缘内侧。
+        let (_, y_top) = peek(DockSide::Top, 400.0, LEN, STRETCH_H);
+        assert_eq!(y_top + THICK, AREA_Y + THICK); // 顶边：条紧贴上沿内侧
+        let (_, y_bot) = peek(DockSide::Bottom, 400.0, LEN, STRETCH_H);
+        assert_eq!(y_bot, AREA_H - THICK);          // 底边：条紧贴下沿内侧
+    }
+
+    /// 上下边的把手条必须**完全在屏内**（不能像左右边那样被钳位后整块压在边内）。
+    /// 这是「黑砖」缺陷的护栏：只要条的高度等于 thickness，砖就不会出现。
+    #[test]
+    fn peek_top_and_bottom_bar_is_only_thickness_tall_and_onscreen() {
+        for side in [DockSide::Top, DockSide::Bottom] {
+            let (x, y) = peek(side, 400.0, LEN, STRETCH_H);
+            assert!(x >= 0.0, "side={side:?} 把手横向出屏");
+            assert!(y >= AREA_Y, "side={side:?} 把手顶边越过工作区上沿");
+            let bar_bottom = y + THICK;
+            assert!(
+                bar_bottom <= AREA_Y + AREA_H,
+                "side={side:?} 把手条越过工作区下沿（会被系统钳位成一整块）"
+            );
+        }
     }
 
     #[test]
@@ -495,23 +498,23 @@ mod tests {
         assert!(y >= 0.0);
     }
 
-    /// 四条边的可见条都必须**跨在屏幕边缘上**：屏内紧贴边的那 7px。
-    /// 可见条在窗口的哪一端随边翻转——这正是 Task 4 CSS 必须对齐的约定。
+    /// 四条边的可见条都必须**紧贴屏幕边缘内侧**（不越界、不留缝）。
+    /// 可见条在窗口的哪一端随边翻转——这正是 Task 4 CSS 必须对齐的约定：
+    /// 左右边条在窗口的横向两端（多余宽度被推出屏外），上下边条在窗口**顶部**。
     #[test]
-    fn peek_visible_strip_always_straddles_the_screen_edge_exactly() {
+    fn peek_visible_strip_always_sits_flush_against_the_screen_edge() {
         for side in [DockSide::Left, DockSide::Right, DockSide::Top, DockSide::Bottom] {
             let (aw, ah) = if side.is_horizontal_edge() { (STRETCH_W, LEN) } else { (LEN, STRETCH_H) };
             let (x, y) = peek(side, 400.0, aw, ah);
             let strip = match side {
                 DockSide::Left => (x + aw - THICK, x + aw),
                 DockSide::Right => (x, x + THICK),
-                DockSide::Top => (y + ah - THICK, y + ah),
+                DockSide::Top => (y, y + THICK),
                 DockSide::Bottom => (y, y + THICK),
             };
             let edge = match side {
-                DockSide::Left => AREA_X,
+                DockSide::Left | DockSide::Top => AREA_X.max(AREA_Y),
                 DockSide::Right => AREA_X + AREA_W,
-                DockSide::Top => AREA_Y,
                 DockSide::Bottom => AREA_Y + AREA_H,
             };
             let expected = match side {
@@ -519,6 +522,44 @@ mod tests {
                 DockSide::Right | DockSide::Bottom => (edge - THICK, edge),
             };
             assert_eq!(strip, expected, "side={side:?}");
+        }
+    }
+
+    #[test]
+    fn pill_span_flips_with_the_edge() {
+        // 沿边轴：左右边是竖直的（取胶囊高 56），上下边是水平的（取胶囊宽 168）。
+        assert_eq!(pill_span_for(DockSide::Left), 56.0);
+        assert_eq!(pill_span_for(DockSide::Right), 56.0);
+        assert_eq!(pill_span_for(DockSide::Top), 168.0);
+        assert_eq!(pill_span_for(DockSide::Bottom), 168.0);
+    }
+
+    /// 回归：把手可见条的中心必须与胶囊中心重合。
+    /// 早先 `pill_span` 对四条边一律传 56（胶囊的**高**），于是贴上/下边时
+    /// 沿边轴是水平的、实际该用胶囊的**宽 168** —— 把手与胶囊横向错开 56px，
+    /// 悬停把手弹出的胶囊不在把手上方。
+    #[test]
+    fn peek_visible_strip_centre_lands_on_the_pill_centre() {
+        // 沿边轴：左右边是 Y，上下边是 X。只在**沿边轴**上比中心。
+        for side in [DockSide::Left, DockSide::Right, DockSide::Top, DockSide::Bottom] {
+            let (aw, ah) = if side.is_horizontal_edge() { (STRETCH_W, LEN) } else { (LEN, STRETCH_H) };
+            let along = 400.0;
+            let (x, y) = peek_rect(
+                side, along, pill_span_for(side), THICK, LEN, aw, ah,
+                AREA_X, AREA_Y, AREA_W, AREA_H,
+            );
+            let pill_c = along + pill_span_for(side) / 2.0;
+            let strip_c = if side.is_horizontal_edge() {
+                // 左右边：条是窗口的左端或右端，跨满整个窗口高度 → 中心在 Y。
+                y + ah / 2.0
+            } else {
+                // 上下边：条是窗口顶部的 thickness，跨满整个窗口宽度 → 中心在 X。
+                x + aw / 2.0
+            };
+            assert!(
+                (strip_c - pill_c).abs() < 0.5,
+                "side={side:?} 把手中心 {strip_c} != 胶囊中心 {pill_c}"
+            );
         }
     }
 

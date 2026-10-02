@@ -43,16 +43,20 @@ if (host) {
       cursor: default;
     }
     /* 对齐到「屏内可见的那一端」（见 dock.rs::peek_rect 的表）。
-       水平边：主轴是水平。竖直边：主轴变成垂直。 */
+       水平边：窗口宽度被系统最小值撑大，多余部分被推出屏外 → 填满窗口即可。
+       竖直边：系统**不允许**窗口越过显示器上下沿，y 必被钳回边界，整块 39px 高的
+       窗口会压在屏幕内沿上（真机表现：一大块黑砖）。所以竖直边只画 7px 的一条，
+       其余高度透明。 */
     .peek[data-side="right"]  { flex-direction: row; justify-content: flex-start; transform-origin: left center; }
     .peek[data-side="left"]   { flex-direction: row; justify-content: flex-end;   transform-origin: right center; }
-    .peek[data-side="bottom"] { flex-direction: column; align-items: flex-start; transform-origin: center top; }
-    .peek[data-side="top"]    { flex-direction: column; align-items: flex-end;   transform-origin: center bottom; }
+    .peek[data-side="bottom"],
+    .peek[data-side="top"]    { flex-direction: row; justify-content: center; align-items: flex-start;
+                                height: 7px; transform-origin: center top; }
 
     /* 圆角落在靠屏内的那一端，贴边那侧保持直角。 */
     .peek[data-side="right"]  { border-radius: 4px 0 0 4px; border-right: none; }
     .peek[data-side="left"]   { border-radius: 0 4px 4px 0; border-left: none; }
-    .peek[data-side="bottom"] { border-radius: 4px 4px 0 0; border-bottom: none; }
+    .peek[data-side="bottom"] { border-radius: 0 0 4px 4px; border-top: none; }
     .peek[data-side="top"]    { border-radius: 0 0 4px 4px; border-top: none; }
 
     .grip { flex: none; background: rgba(255, 255, 255, 0.55); transition: transform 110ms ease; }
@@ -75,7 +79,7 @@ if (host) {
     .peek[data-side="right"].is-hidden,
     .peek[data-side="left"].is-hidden { transform: scaleX(0.4); }
     .peek[data-side="bottom"].is-hidden,
-    .peek[data-side="top"].is-hidden { transform: scaleY(0.4); }
+    .peek[data-side="top"].is-hidden { transform: scaleX(0.4); }
     @media (prefers-reduced-motion: reduce) {
       .peek, .grip { transition-duration: 0.001ms; }
     }
@@ -83,8 +87,23 @@ if (host) {
   document.head.appendChild(style);
 
   let debounceTimer: number | null = null;
+  // 自愈兜底：Rust 建窗后会立刻 emit("peek-show")，但 webview 加载完
+  // peek.html + main.ts 并注册监听之前，事件会被**静默丢弃**——把手于是永远
+  // 停在 opacity:0，而胶囊已经滑出且主窗穿透，用户看到「贴边了却没有把手」，
+  // 既看不见也点不回来。启动恢复到贴边态时最容易命中：把手是刚建的。
+  //
+  // 判据用「有没有人宣布过要显形」而不是无脑超时自显：
+  // - 收到过 peek-show → 正常滑出时间线在跑，清掉兜底；
+  // - 指针已经进过把手 → 它正被 hover 隐藏着（胶囊正在外面），此时自显会让
+  //   把手在胶囊旁边凭空冒出来。
+  let announced = false;
+  let interacted = false;
+  const selfReveal = window.setTimeout(() => {
+    if (!announced && !interacted) host.classList.remove("is-hidden");
+  }, 600);
 
   host.addEventListener("pointerenter", () => {
+    interacted = true;
     if (debounceTimer !== null) window.clearTimeout(debounceTimer);
     debounceTimer = window.setTimeout(() => {
       debounceTimer = null;
@@ -109,6 +128,8 @@ if (host) {
   // `__PEEK_SIDE__` 只在建窗时注入过一次，用户把胶囊拖到屏幕另一侧后必须
   // 靠这里纠正 4px 圆角朝向（拖动期间把手处于 is-hidden，不会被看到）。
   void listen("peek-show", (event) => {
+    announced = true;
+    window.clearTimeout(selfReveal);
     const next = event.payload as Side | undefined;
     if (next === "left" || next === "right" || next === "top" || next === "bottom") {
       host.dataset.side = next;
