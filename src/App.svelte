@@ -2,7 +2,8 @@
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { fly } from "svelte/transition";
-  import { providerColor, providerForModel, providerLabel } from "./lib/model-provider";
+  import { providerColor, providerLabel } from "./lib/model-provider";
+  import { ledgerSeriesForKind } from "./lib/calendar-linkage";
   import { LogicalSize } from "@tauri-apps/api/dpi";
   import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
   import {
@@ -12,8 +13,6 @@
     onUsageUpdated,
     onProviderError,
     onSettingsChanged,
-    getUsageHistory,
-    onToolsUpdated,
     setWindowMode,
     saveSettings,
     syncPeekWindow,
@@ -124,17 +123,6 @@
   let mode = $state<Mode>("dashboard");
   const FOCUS_FALLBACK_COLOR = "#8a8f98";
   const FOCUS_KEY = "tum.focus";
-  const HEATMAP_VIEW_KEY = "tum.heatmapView";
-
-  // 热力图时间范围："compact" = 近 31 天 5×7 网格；"calendar" = GitHub 式
-  // 近 6 个月日历（自然月标注 + 累计/峰值/活跃统计）。默认日历——滚动
-  // 31 天窗口不直观，按自然月看当月与过去数月更符合直觉。
-  let heatmapView = $state<"compact" | "calendar">(
-    localStorage.getItem(HEATMAP_VIEW_KEY) === "compact" ? "compact" : "calendar",
-  );
-  $effect(() => {
-    localStorage.setItem(HEATMAP_VIEW_KEY, heatmapView);
-  });
 
   // Global focus: "all" (aggregate min) or one provider_id. Drives the
   // header ring, the chips row and the heatmap panel.
@@ -357,26 +345,6 @@
       }),
     );
 
-    // 日历区的 Provider 胶囊：从账本归因（模型名前缀 + 单 Provider 工具兜底）。
-    const refreshHeatmapProviders = async () => {
-      try {
-        const { rows } = await getUsageHistory(90);
-        const byProvider = new Map<string, number>();
-        for (const r of rows) {
-          if (r.kind !== "tool") continue;
-          const key = providerForModel(r.model, r.source);
-          byProvider.set(key, (byProvider.get(key) ?? 0) + r.total);
-        }
-        heatmapProviders = [...byProvider.entries()]
-          .map(([key, total]) => ({ key, label: providerLabel(key), total }))
-          .sort((a, b) => b.total - a.total);
-      } catch {
-        /* 保持旧值 */
-      }
-    };
-    void refreshHeatmapProviders();
-    unlistenFns.push(await onToolsUpdated(() => void refreshHeatmapProviders()));
-
     // Settings saved (from the Settings window): the backend has already
     // dropped disabled providers from its cache and stopped their pollers,
     // so re-pulling usage here removes their cards immediately.
@@ -481,27 +449,14 @@
     focusedSnapshot ? isPayAsYouGo(focusedSnapshot) : false,
   );
 
-  // 日历区数据选择：`__tools__` = 全部本机工具合并（账本，tokens）；其余值 =
-  // 有真实服务端日账的 provider id（volcengine/openai/xai），走 provider 序列。
-  // 差分类 provider（MiniMax/DeepSeek/Kimi 的百分比/金额差分）退出历史视图。
+  // 日历区状态拆成两个正交概念（P2）：
+  //  - calendarSource = **数据口径**：全部工具合并，还是某个账户的服务端日账。
+  //  - highlightKey    = **高亮焦点**：在口径不变的前提下高亮哪个 provider。
+  // 旧实现把两者塞进同一个下拉 id（既选口径又存焦点），点卡片既切口径又切
+  // 数据，导致「日历变了」无法归因；拆分后点卡片只改焦点，数字恒定。
   const HEATMAP_TOOLS = "__tools__";
-  const PROVIDER_DAILY_KINDS = new Set(["volcengine", "openai", "xai"]);
-  // 点击卡片时日历应聚焦的关联工具（该 provider 生态的本机用量通道）。
-  const CARD_TOOL_FOR_KIND: Record<string, string> = {
-    minimax: "minimax-code",
-    deepseek: "deepseek-harness",
-  };
-  let heatmapTabId = $state<string>(HEATMAP_TOOLS);
-  // 账本中有用量的 Provider（跨工具归因后），供日历的跨工具胶囊。
-  let heatmapProviders = $state<{ key: string; label: string; total: number }[]>([]);
-
-  // The active snapshot whose heatmap is shown in the bottom panel.
-  let activeSnapshot = $derived(
-    focusedSnapshot ??
-    snapshots.find((s) => s.provider_id === heatmapTabId) ??
-    snapshots[0] ??
-    null,
-  );
+  let calendarSource = $state<string>(HEATMAP_TOOLS);
+  let highlightKey = $state<string | null>(null);
 
   // Provider behind the floating detail overlay (hovered card). Rendered once
   // at window level so small cards (e.g. DeepSeek) can never clip its content.
@@ -1104,17 +1059,25 @@
               countdown={displayRemaining}
               onHover={onCardHover}
               onSelect={() => {
-                focus = snap.provider_id;
                 const kind = snap.provider_id.split("-")[0];
-                // 日历跟随卡片：MiniMax/DeepSeek → 跨工具归因的 Provider 序列
-                // （含 MiniMax Code / Harness 的兜底归因）；带服务端日账的
-                // provider → 账户日账；其余 → 全部工具。
-                if (CARD_TOOL_FOR_KIND[kind]) {
-                  heatmapTabId = `p:${CARD_TOOL_FOR_KIND[kind]}`;
-                } else if (PROVIDER_DAILY_KINDS.has(kind)) {
-                  heatmapTabId = snap.provider_id;
+                const series = ledgerSeriesForKind(kind, snap.provider_id);
+                // 无按日数据的 kind（差分类）：不猜、不静默改视图，交给
+                // DetailCard 说明。点击既不改焦点也不改口径。
+                if (!series) return;
+                // 再点一次已聚焦的卡片 = 取消高亮，让焦点可撤销。
+                if (focus === snap.provider_id && highlightKey !== null) {
+                  focus = "all";
+                  highlightKey = null;
+                  return;
+                }
+                focus = snap.provider_id;
+                if (series.mode === "cross-tool") {
+                  // 切回工具口径：账户日账单位不同，不能在高亮态下混算。
+                  calendarSource = HEATMAP_TOOLS;
+                  highlightKey = series.providerKey;
                 } else {
-                  heatmapTabId = HEATMAP_TOOLS;
+                  calendarSource = series.providerId;
+                  highlightKey = null;
                 }
               }}
             />
@@ -1130,49 +1093,46 @@
           <PillsOrSelect
             items={[
               { id: HEATMAP_TOOLS, label: "全部工具" },
-              ...heatmapProviders.map((p) => ({
-                id: `p:${p.key}`,
-                label: `${p.label} · 跨工具`,
-              })),
               ...snapshots
-                .filter((s) => PROVIDER_DAILY_KINDS.has(s.provider_id.split("-")[0]))
+                .filter((s) => ledgerSeriesForKind(s.provider_id.split("-")[0], s.provider_id)?.mode === "account-daily")
                 .map((s) => ({
                   id: s.provider_id,
                   label: `${s.provider_display_name} · 账户日账`,
                 })),
             ]}
-            value={heatmapTabId}
-            onPick={(id) => (heatmapTabId = id)}
-            dotFor={(id) => {
-              if (id === HEATMAP_TOOLS) return "#4cc2ff";
-              if (id.startsWith("p:")) return providerColor(id.slice(2));
-              return colorOf(id);
+            value={calendarSource}
+            onPick={(id) => {
+              calendarSource = id;
+              // 手动切口径时清掉高亮：高亮只在工具口径下有意义。
+              if (id !== HEATMAP_TOOLS) highlightKey = null;
             }}
+            dotFor={(id) =>
+              id === HEATMAP_TOOLS ? "#4cc2ff" : colorOf(id)
+            }
           />
-          <div class="heatmap__view" role="group" aria-label="热力图时间范围">
-            <button
-              class="heatmap__view-btn"
-              class:is-active={heatmapView === "compact"}
-              onclick={() => (heatmapView = "compact")}
-              title="最近 31 天滚动窗口"
-            >31天</button>
-            <button
-              class="heatmap__view-btn"
-              class:is-active={heatmapView === "calendar"}
-              onclick={() => (heatmapView = "calendar")}
-              title="按自然月查看近 6 个月用量"
-            >月历</button>
-          </div>
+          {#if highlightKey}
+            <span
+              class="heatmap__follow"
+              style={`--follow:${providerColor(highlightKey)}`}
+            >
+              高亮 {providerLabel(highlightKey)}
+              <button
+                type="button"
+                class="heatmap__follow-x"
+                aria-label="取消高亮"
+                onclick={() => {
+                  highlightKey = null;
+                  focus = "all";
+                }}
+              >×</button>
+            </span>
+          {/if}
         </div>
         <HeatmapGrid
-          ledger={heatmapTabId === HEATMAP_TOOLS
-            ? "all"
-            : heatmapTabId.startsWith("tool:") || heatmapTabId.startsWith("p:")
-              ? heatmapTabId
-              : null}
-          providerId={heatmapTabId.startsWith("tool:") ? "" : heatmapTabId}
-          view={heatmapView}
-          emptyHint={heatmapTabId === HEATMAP_TOOLS
+          ledger={calendarSource === HEATMAP_TOOLS ? "all" : null}
+          providerId={calendarSource === HEATMAP_TOOLS ? "" : calendarSource}
+          {highlightKey}
+          emptyHint={calendarSource === HEATMAP_TOOLS
             ? "暂无本机工具用量——使用 Claude Code / ZCode 等工具后会自动记录"
             : "该来源暂无热力图数据"}
         />
@@ -1438,38 +1398,6 @@
     font-family: var(--tum-font-mono);
   }
 
-
-  /* 热力图时间范围切换（31天滚动 / 月历），与 Provider tabs 同语言的
-     胶囊分段控件。 */
-  .heatmap__view {
-    display: flex;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--tum-border);
-    border-radius: var(--tum-radius-pill);
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .heatmap__view-btn {
-    border: none;
-    background: transparent;
-    color: var(--tum-text-muted);
-    font-size: 10px;
-    font-family: var(--tum-font);
-    padding: 2px 9px;
-    border-radius: var(--tum-radius-pill);
-    cursor: pointer;
-    transition: background 0.2s ease, color 0.2s ease;
-  }
-
-  .heatmap__view-btn:hover {
-    color: var(--tum-text-primary);
-  }
-
-  .heatmap__view-btn.is-active {
-    background: rgba(76, 194, 255, 0.18);
-    color: var(--tum-text-primary);
-  }
 
   .focus-row {
     display: flex;
@@ -1745,5 +1673,36 @@
      "refresh this account" stays clickable. */
   .detail-overlay :global(.detail__actions) {
     pointer-events: auto;
+  }
+
+  /* 日历高亮胶囊：只声明「现在高亮谁」，× 撤销。不驱动数据，只驱动呈现。 */
+  .heatmap__follow {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: var(--tum-font-size-xs);
+    font-weight: 600;
+    color: var(--follow);
+    background: color-mix(in srgb, var(--follow) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--follow) 45%, transparent);
+    border-radius: var(--tum-radius-pill);
+    padding: 2px 4px 2px 8px;
+  }
+  .heatmap__follow-x {
+    appearance: none;
+    border: 0;
+    background: rgba(0, 0, 0, 0.3);
+    color: inherit;
+    cursor: pointer;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    font-size: 10px;
+    line-height: 1;
+    display: grid;
+    place-items: center;
+  }
+  .heatmap__follow-x:hover {
+    background: rgba(0, 0, 0, 0.55);
   }
 </style>
