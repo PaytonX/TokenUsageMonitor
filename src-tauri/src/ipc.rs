@@ -3,6 +3,7 @@
 //! Naming convention: snake_case in Rust, frontend calls via `invoke('get_usage')`.
 
 use crate::build_account_provider;
+use crate::dock::{dock_rect, dock_side, peek_rect, PEEK_LEN, PEEK_THICK, PILL_ROW_H};
 use crate::hub::HubDevice;
 use crate::local::LocalToolsPayload;
 use crate::providers::{
@@ -410,50 +411,6 @@ fn clamp_rect(
     (x.clamp(area_x + margin, max_x), y.clamp(area_y + margin, max_y))
 }
 
-/// 把手窗与胶囊主行的逻辑尺寸（DIP）。主行固定取收起态的 56，这样明细
-/// 展开时把手不会跟着下移，收起后也无需重新对齐。
-const PEEK_W: f64 = 7.0;
-const PEEK_H: f64 = 58.0;
-const PILL_ROW_H: f64 = 56.0;
-
-/// 胶囊应贴靠的水平边。比较窗口中心与工作区中心；正中时归右侧（默认边）。
-fn dock_side(x: f64, w: f64, area_x: f64, area_w: f64) -> bool {
-    x + w / 2.0 >= area_x + area_w / 2.0
-}
-
-/// 把窗口横向贴死到最近的水平边缘，纵向保留原位置但夹在工作区内。
-/// 把手画在屏幕边缘，胶囊必须紧贴边缘二者才能对齐；纵向是用户自由选择的位置。
-fn dock_rect(
-    x: f64, y: f64, w: f64, h: f64,
-    area_x: f64, area_y: f64, area_w: f64, area_h: f64,
-) -> (f64, f64) {
-    let left = area_x;
-    let right = (area_x + area_w - w).max(area_x);
-    let nx = if dock_side(x, w, area_x, area_w) { right } else { left };
-    let max_y = (area_y + area_h - h).max(area_y);
-    (nx, y.clamp(area_y, max_y))
-}
-
-/// 把手的物理位置：贴死所在边缘，纵向中心对齐胶囊主行（`row_h` 为物理像素）。
-fn peek_rect(
-    dash_y: f64, row_h: f64, is_right: bool,
-    visible_w: f64, actual_w: f64,
-    area_x: f64, area_y: f64, area_w: f64, area_h: f64,
-    peek_h: f64,
-) -> (f64, f64) {
-    // 系统最小窗口宽度会把把手窗撑到 ~136px。可见的那 7px 必须贴住屏幕边，
-    // 多出来的部分一律推到屏幕外——否则贴左边时那一整条透明区域会持续吞掉
-    // 桌面上的鼠标事件（点什么都点不到）。
-    let x = if is_right {
-        area_x + area_w - visible_w
-    } else {
-        area_x - (actual_w - visible_w).max(0.0)
-    };
-    let y = dash_y + row_h / 2.0 - peek_h / 2.0;
-    let max_y = (area_y + area_h - peek_h).max(area_y);
-    (x, y.clamp(area_y, max_y))
-}
-
 pub fn clamp_window_to_work_area(window: &WebviewWindow, margin_logical: f64) -> bool {
     let Ok(pos) = window.outer_position() else { return false; };
     let Ok(size) = window.outer_size() else { return false; };
@@ -520,7 +477,7 @@ fn peek_placement(window: &WebviewWindow) -> Option<(bool, PhysicalPosition<i32>
         f64::from(area.position.x),
         f64::from(area.size.width),
     );
-    let visible_w = PEEK_W * scale;
+    let visible_w = PEEK_THICK * scale;
     // 把手窗可能已被系统最小宽度撑大：按真实宽度定位，把多余部分推出屏幕。
     let actual_w = window
         .app_handle()
@@ -539,7 +496,7 @@ fn peek_placement(window: &WebviewWindow) -> Option<(bool, PhysicalPosition<i32>
         f64::from(area.position.y),
         f64::from(area.size.width),
         f64::from(area.size.height),
-        PEEK_H * scale,
+        PEEK_LEN * scale,
     );
     Some((is_right, PhysicalPosition::new(px.round() as i32, py.round() as i32)))
 }
@@ -683,7 +640,7 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
                         tauri::WebviewUrl::App("peek.html".into()),
                     )
                     .title("TokenUsageMonitor · 贴边把手")
-                    .inner_size(PEEK_W, PEEK_H)
+                    .inner_size(PEEK_THICK, PEEK_LEN)
                     .resizable(false)
                     .decorations(false)
                     .transparent(true)
@@ -1618,74 +1575,5 @@ mod clamp_tests {
     fn pins_when_window_taller_than_work_area() {
         let (x, y) = clamp_rect(0.0, 500.0, 360.0, 1200.0, 0.0, 0.0, 1920.0, 1040.0, 8.0);
         assert_eq!((x, y), (8.0, 8.0));
-    }
-}
-
-#[cfg(test)]
-mod dock_tests {
-    use super::{dock_rect, dock_side, peek_rect};
-
-    const AREA_X: f64 = 0.0;
-    const AREA_Y: f64 = 0.0;
-    const AREA_W: f64 = 1920.0;
-    const AREA_H: f64 = 1040.0;
-
-    #[test]
-    fn dock_rect_flushes_to_the_left_edge() {
-        let (x, y) = dock_rect(10.0, 300.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
-        assert_eq!((x, y), (0.0, 300.0));
-    }
-
-    #[test]
-    fn dock_rect_flushes_to_the_right_edge() {
-        let (x, y) = dock_rect(1000.0, 300.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
-        assert_eq!((x, y), (1752.0, 300.0));
-    }
-
-    #[test]
-    fn dock_rect_exact_middle_docks_right() {
-        let (x, _) = dock_rect(876.0, 0.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
-        assert_eq!(x, 1752.0);
-    }
-
-    #[test]
-    fn dock_rect_keeps_vertical_but_clamps_inside() {
-        let (_, top) = dock_rect(0.0, -40.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
-        assert_eq!(top, 0.0);
-        let (_, bottom) = dock_rect(0.0, 1030.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
-        assert_eq!(bottom, 984.0);
-    }
-
-    #[test]
-    fn dock_side_mirrors_for_a_negative_origin_monitor() {
-        assert!(!dock_side(-1900.0, 168.0, -1920.0, 1920.0));
-        assert!(dock_side(-60.0, 168.0, -1920.0, 1920.0));
-    }
-
-    #[test]
-    fn peek_rect_sits_flush_and_centres_on_the_pill_row() {
-        let args = (100.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
-        let (x, y) = peek_rect(args.0, args.1, true, 7.0, 7.0, args.2, args.3, args.4, args.5, args.6);
-        assert_eq!((x, y), (1913.0, 99.0));
-        let (lx, _) = peek_rect(args.0, args.1, false, 7.0, 7.0, args.2, args.3, args.4, args.5, args.6);
-        assert_eq!(lx, 0.0);
-    }
-
-    #[test]
-    fn peek_rect_pushes_the_extra_width_off_screen() {
-        // 系统最小窗口宽度把把手窗撑到 136px：可见的 7px 仍贴住屏幕边，
-        // 多出的 129px 必须落在屏幕外，否则会吞掉桌面上的鼠标事件。
-        let (lx, _) = peek_rect(100.0, 56.0, false, 7.0, 136.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
-        assert_eq!(lx, -129.0);
-        let (rx, _) = peek_rect(100.0, 56.0, true, 7.0, 136.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
-        assert_eq!(rx, 1913.0);
-    }
-
-    #[test]
-    fn peek_rect_clamps_to_the_work_area() {
-        let (_, top) = peek_rect(0.0, 56.0, true, 7.0, 7.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
-        assert_eq!(top, 0.0);
-        let (_, bottom) = peek_rect(1020.0, 56.0, true, 7.0, 7.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
-        assert_eq!(bottom, 982.0);
     }
 }

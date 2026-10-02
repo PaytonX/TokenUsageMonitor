@@ -9,6 +9,7 @@
 //! - Tauri plugins + IPC command handlers
 //! - Periodic scheduler that emits `usage-updated` events
 
+pub mod dock;
 pub mod exchange;
 pub mod export;
 pub mod ipc;

@@ -1,0 +1,183 @@
+//! 窗口贴边几何。纯函数、无 IPC、无窗口句柄——所以能直接单测。
+//!
+//! 本模块的坐标一律是**物理像素**，且除 `DockAnchor::along` 外都相对
+//! `work_area` 原点。混用逻辑像素会让高 DPI 下贴边差几个像素。
+
+use serde::{Deserialize, Serialize};
+
+/// 把手窗与胶囊主行的逻辑尺寸（DIP）。主行固定取收起态的 56，这样明细
+/// 展开时把手不会跟着下移，收起后也无需重新对齐。
+pub const PEEK_THICK: f64 = 7.0;
+pub const PEEK_LEN: f64 = 58.0;
+pub const PILL_ROW_H: f64 = 56.0;
+
+/// 胶囊应贴靠的边。原先只有水平两向（`dock_side` 返回 bool），
+/// 2026-10 扩为四边。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DockSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl DockSide {
+    /// 贴边发生在 X 轴上（左右两边）。
+    pub fn is_horizontal_edge(self) -> bool {
+        matches!(self, DockSide::Left | DockSide::Right)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DockSide::Left => "left",
+            DockSide::Right => "right",
+            DockSide::Top => "top",
+            DockSide::Bottom => "bottom",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "left" => Some(DockSide::Left),
+            "right" => Some(DockSide::Right),
+            "top" => Some(DockSide::Top),
+            "bottom" => Some(DockSide::Bottom),
+            _ => None,
+        }
+    }
+
+    /// 把手窗的 (宽, 高) 逻辑尺寸。左右边是竖条，上下边是横条。
+    pub fn peek_size(self) -> (f64, f64) {
+        if self.is_horizontal_edge() {
+            (PEEK_THICK, PEEK_LEN)
+        } else {
+            (PEEK_LEN, PEEK_THICK)
+        }
+    }
+}
+
+/// 贴边锚点：贴在哪条边 + 沿边位置。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockAnchor {
+    pub side: DockSide,
+    /// 沿边方向的偏移（物理像素，**相对 work_area 左上角**）：
+    /// Left/Right → 窗口上缘的 y；Top/Bottom → 窗口左缘的 x。
+    ///
+    /// 用相对坐标而非绝对物理坐标：换显示器后同一个 `along` 依然有意义，
+    /// 不会落到已拔掉的屏幕区域里。
+    pub along: i32,
+}
+
+/// 胶囊应贴靠的水平边。比较窗口中心与工作区中心；正中时归右侧（默认边）。
+///
+/// ⚠️ 仅供 Task 1 的行为不变迁移使用，Task 2 起由 `nearest_side` 取代。
+pub fn dock_side(x: f64, w: f64, area_x: f64, area_w: f64) -> bool {
+    x + w / 2.0 >= area_x + area_w / 2.0
+}
+
+/// 把窗口横向贴死到最近的水平边缘，纵向保留原位置但夹在工作区内。
+/// 把手画在屏幕边缘，胶囊必须紧贴边缘二者才能对齐；纵向是用户自由选择的位置。
+///
+/// ⚠️ 仅供 Task 1 的行为不变迁移使用，Task 2 起由 `anchor_rect` 取代。
+pub fn dock_rect(
+    x: f64, y: f64, w: f64, h: f64,
+    area_x: f64, area_y: f64, area_w: f64, area_h: f64,
+) -> (f64, f64) {
+    let left = area_x;
+    let right = (area_x + area_w - w).max(area_x);
+    let nx = if dock_side(x, w, area_x, area_w) { right } else { left };
+    let max_y = (area_y + area_h - h).max(area_y);
+    (nx, y.clamp(area_y, max_y))
+}
+
+/// 把手的物理位置：贴死所在边缘，纵向中心对齐胶囊主行（`row_h` 为物理像素）。
+///
+/// ⚠️ 仅供 Task 1 的行为不变迁移使用，Task 3 起由四边版 `peek_rect` 取代。
+pub fn peek_rect(
+    dash_y: f64, row_h: f64, is_right: bool,
+    visible_w: f64, actual_w: f64,
+    area_x: f64, area_y: f64, area_w: f64, area_h: f64,
+    peek_h: f64,
+) -> (f64, f64) {
+    // 系统最小窗口宽度会把把手窗撑到 ~136px。可见的那 7px 必须贴住屏幕边，
+    // 多出来的部分一律推到屏幕外——否则贴左边时那一整条透明区域会持续吞掉
+    // 桌面上的鼠标事件（点什么都点不到）。
+    let x = if is_right {
+        area_x + area_w - visible_w
+    } else {
+        area_x - (actual_w - visible_w).max(0.0)
+    };
+    let y = dash_y + row_h / 2.0 - peek_h / 2.0;
+    let max_y = (area_y + area_h - peek_h).max(area_y);
+    (x, y.clamp(area_y, max_y))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const AREA_X: f64 = 0.0;
+    const AREA_Y: f64 = 0.0;
+    const AREA_W: f64 = 1920.0;
+    const AREA_H: f64 = 1040.0;
+
+    #[test]
+    fn dock_rect_flushes_to_the_left_edge() {
+        let (x, y) = dock_rect(10.0, 300.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!((x, y), (0.0, 300.0));
+    }
+
+    #[test]
+    fn dock_rect_flushes_to_the_right_edge() {
+        let (x, y) = dock_rect(1000.0, 300.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!((x, y), (1752.0, 300.0));
+    }
+
+    #[test]
+    fn dock_rect_exact_middle_docks_right() {
+        let (x, _) = dock_rect(876.0, 0.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!(x, 1752.0);
+    }
+
+    #[test]
+    fn dock_rect_keeps_vertical_but_clamps_inside() {
+        let (_, top) = dock_rect(0.0, -40.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!(top, 0.0);
+        let (_, bottom) = dock_rect(0.0, 1030.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
+        assert_eq!(bottom, 984.0);
+    }
+
+    #[test]
+    fn dock_side_mirrors_for_a_negative_origin_monitor() {
+        assert!(!dock_side(-1900.0, 168.0, -1920.0, 1920.0));
+        assert!(dock_side(-60.0, 168.0, -1920.0, 1920.0));
+    }
+
+    #[test]
+    fn peek_rect_sits_flush_and_centres_on_the_pill_row() {
+        let args = (100.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        let (x, y) = peek_rect(args.0, args.1, true, 7.0, 7.0, args.2, args.3, args.4, args.5, args.6);
+        assert_eq!((x, y), (1913.0, 99.0));
+        let (lx, _) = peek_rect(args.0, args.1, false, 7.0, 7.0, args.2, args.3, args.4, args.5, args.6);
+        assert_eq!(lx, 0.0);
+    }
+
+    #[test]
+    fn peek_rect_pushes_the_extra_width_off_screen() {
+        // 系统最小窗口宽度把把手窗撑到 136px：可见的 7px 仍贴住屏幕边，
+        // 多出的 129px 必须落在屏幕外，否则会吞掉桌面上的鼠标事件。
+        let (lx, _) = peek_rect(100.0, 56.0, false, 7.0, 136.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        assert_eq!(lx, -129.0);
+        let (rx, _) = peek_rect(100.0, 56.0, true, 7.0, 136.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        assert_eq!(rx, 1913.0);
+    }
+
+    #[test]
+    fn peek_rect_clamps_to_the_work_area() {
+        let (_, top) = peek_rect(0.0, 56.0, true, 7.0, 7.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        assert_eq!(top, 0.0);
+        let (_, bottom) = peek_rect(1020.0, 56.0, true, 7.0, 7.0, AREA_X, AREA_Y, AREA_W, AREA_H, 58.0);
+        assert_eq!(bottom, 982.0);
+    }
+}
