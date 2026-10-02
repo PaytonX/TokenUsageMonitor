@@ -126,20 +126,7 @@
   }
 </script>
 
-<div
-    class="trend"
-    data-tauri-drag-region={false}
-    role="button"
-    tabindex="0"
-    aria-label="打开趋势窗口"
-    onclick={() => void openTrendWindow()}
-    onkeydown={(e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        void openTrendWindow();
-      }
-    }}
-  >
+<div class="trend" data-tauri-drag-region={false}>
   <div class="trend__head">
     <span class="trend__title">{aggMode ? "全端趋势看板" : "趋势看板 · 本机工具"}</span>
     <div class="trend__head-right" role="group" aria-label="时间区间">
@@ -204,6 +191,9 @@
 </div>
 
 <style>
+  /* 打开独立窗口只走右上角的 ⤢ 按钮，不再整块可点。
+     整块 onclick 会与日历区的下拉/药丸冲突（点下拉冒泡到根 div 就弹窗），
+     而且 cursor: zoom-in 会让整块看起来都可点，实际只有一处能点。 */
   .trend {
     display: flex;
     flex-direction: column;
@@ -215,7 +205,6 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
-    cursor: zoom-in;
     position: relative;
   }
 

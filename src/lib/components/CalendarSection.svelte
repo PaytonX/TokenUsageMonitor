@@ -78,28 +78,45 @@
   }
 </script>
 
-<section class="cal-sec">
+<section
+  class="cal-sec"
+  onclick={(e) => e.stopPropagation()}
+  onpointerdown={(e) => e.stopPropagation()}
+  role="presentation"
+>
   <div class="cal-sec__head">
     <span class="cal-sec__title">日历热力图</span>
-    <div class="cal-sec__tools">
-      {#if accounts.length > 0}
-        <select
-          class="cal-sec__sel"
-          value={source}
-          aria-label="日历数据口径"
-          onchange={(e) => pickSource(e.currentTarget.value)}
-        >
-          <option value={TOOLS_SOURCE}>全部工具</option>
-          {#each accounts as a (a.id)}
-            <option value={a.id}>{a.label}</option>
-          {/each}
-        </select>
-      {/if}
-      <span class="cal-sec__range">近 6 个月</span>
-    </div>
+    <span class="cal-sec__range">近 6 个月</span>
   </div>
 
-  {#if series.length > 0}
+  <!--
+    口径（全部工具 / 各账户服务端日账）用药丸而不是下拉：选项天然只有 1~3 个
+    （有账户日账的 provider 就那几个），下拉是浪费；而且两个下拉并排会让人
+    分不清谁是谁——真机验收时就被问到「为什么有两个下拉窗口」。
+  -->
+  {#if accounts.length > 0}
+    <div class="cal-sec__pills cal-sec__pills--source">
+      <span class="cal-sec__pill-label">口径</span>
+      <button
+        type="button"
+        class="cal-sec__pill"
+        class:is-on={source === TOOLS_SOURCE}
+        onclick={() => pickSource(TOOLS_SOURCE)}
+      >全部工具</button>
+      {#each accounts as a (a.id)}
+        <button
+          type="button"
+          class="cal-sec__pill"
+          class:is-on={source === a.id}
+          onclick={() => pickSource(a.id)}
+        >{a.label}</button>
+      {/each}
+    </div>
+  {/if}
+
+  <!-- 高亮只在工具口径下有意义（账户日账与本机 token 不同量纲），
+       非工具口径时整行隐藏，而不是留一个灰掉的无效控件。 -->
+  {#if series.length > 0 && source === TOOLS_SOURCE}
     {#if useSelect}
       <div class="cal-sec__pills cal-sec__pills--select">
         <span class="cal-sec__pill-label">高亮</span>
@@ -185,12 +202,6 @@
     font-family: var(--tum-font-mono);
   }
 
-  .cal-sec__tools {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
   .cal-sec__sel {
     font-family: var(--tum-font);
     font-size: 10px;
@@ -260,6 +271,11 @@
   }
 
   /* Provider 过多时的降级形态：标签 + 下拉，单行不换行。 */
+  .cal-sec__pills--select,
+  .cal-sec__pills--source {
+    flex-wrap: wrap;
+  }
+
   .cal-sec__pills--select {
     flex-wrap: nowrap;
     align-items: center;

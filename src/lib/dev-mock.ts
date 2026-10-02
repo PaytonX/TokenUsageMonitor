@@ -141,12 +141,23 @@ function snapshot() {
     h5: number; h5q: number; wk: number; wkq: number;
     mo: number; moq: number; unit: "tokens" | "afp" | "cny" | "credits" | "usd";
   }
-  const mk = (id: string, name: string, tier: string | null, w: W) => ({
+  const mk = (id: string, name: string, tier: string | null, w: W, daily?: { used: number; quota: number }) => ({
     provider_id: id,
     provider_display_name: name,
     ...(tier ? { plan_tier: tier } : {}),
     timestamp: iso(0),
     windows: {
+      // daily 窗口：只有 AgentPlan 类（AFP 日额度）才有。CalendarSection 靠
+      // windows.daily 判定「该账户有服务端日账」，缺了它口径行就不出现——
+      // 桩数据必须与真机结构一致，否则预览会骗人。
+      ...(daily
+        ? {
+            daily: {
+              used: daily.used, quota: daily.quota, unit: "afp" as const,
+              reset_at: iso(20), over_quota: false, cost_source: "provider_reported" as const,
+            },
+          }
+        : {}),
       five_hour: {
         used: w.h5, quota: w.h5q, unit: w.unit, reset_at: iso(2),
         over_quota: false, cost_source: "provider_reported",
@@ -164,7 +175,7 @@ function snapshot() {
   return [
     mk("minimax", "MiniMax Token Plan", "Max", { h5: 3.4e7, h5q: 5e7, wk: 1.8e8, wkq: 2.5e8, mo: 6.2e8, moq: 8.6e8, unit: "tokens" }),
     mk("deepseek", "DeepSeek API", null, { h5: 1.1e7, h5q: 5e7, wk: 6.4e7, wkq: 2.5e8, mo: 2.1e8, moq: 8.6e8, unit: "tokens" }),
-    mk("volcengine", "Volcano Agent Plan", "Agent", { h5: 8.6e6, h5q: 1e7, wk: 5.2e7, wkq: 6e7, mo: 1.8e8, moq: 2e8, unit: "afp" }),
+    mk("volcengine", "Volcano Agent Plan", "Agent", { h5: 8.6e6, h5q: 1e7, wk: 5.2e7, wkq: 6e7, mo: 1.8e8, moq: 2e8, unit: "afp" }, { used: 88, quota: 200 }),
     // 差分类：只有额度百分比/金额，无按日账本 → DetailCard 应显示无按日数据说明。
     // CNY 用真实量级（几十~几百元），别用 token 量级否则会显示成 ¥2200000.00。
     mk("kimi", "Kimi", null, { h5: 22, h5q: 50, wk: 94, wkq: 250, mo: 310, moq: 860, unit: "cny" }),
@@ -270,7 +281,16 @@ function mockInvoke(cmd: string, args: any = {}): any {
     case "get_device_report": return MACHINE;
     case "get_exchange_rates": return RATES;
     case "refresh_exchange_rates": return RATES;
-    case "get_heatmap": return [];
+    // 账户日账视图：真机走 daily_snapshots（有数据），桩里直接由 provider 行派生，
+    // 否则切到「账户日账」口径会永远空态，预览与真机不一致。
+    case "get_heatmap": {
+      const id = args.providerId;
+      const days = Math.max(1, Math.min(args.days ?? 31, 400));
+      const cutoff = new Date(now - days * DAY).toISOString().slice(0, 10);
+      return DATA.rows
+        .filter((r) => r.kind === "provider" && r.source === id && r.date >= cutoff)
+        .map((r) => ({ date: r.date, value: r.total, unit: r.unit }));
+    }
 
     // 事件系统：listen 返回 id，unlisten 空实现。桩不发任何事件。
     case "plugin:event|listen": return nextEventId();
