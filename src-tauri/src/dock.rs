@@ -102,15 +102,16 @@ pub fn anchor_rect(
 }
 
 /// 从「已落位」的窗口几何反推锚点。落位后回填用，保证 anchor 与实际位置同源。
+///
+/// 签名只收真正用到的量：沿边坐标就是「窗口在该轴上的起点减去 work_area 原点」，
+/// 与窗口尺寸、工作区尺寸都无关。早先为了和 `anchor_rect` 保持参数对称而收了
+/// 9 个参数，其中 4 个从未被使用——只会换来永久的 `unused_variables` 警告，
+/// 还会误导读代码的人以为它们参与计算。
 pub fn anchor_from_rect(
     x: f64,
     y: f64,
-    w: f64,
-    h: f64,
     area_x: f64,
     area_y: f64,
-    area_w: f64,
-    area_h: f64,
     side: DockSide,
 ) -> DockAnchor {
     let along = if side.is_horizontal_edge() { y - area_y } else { x - area_x };
@@ -359,7 +360,7 @@ mod tests {
     fn anchor_from_rect_round_trips_through_anchor_rect() {
         for side in [DockSide::Left, DockSide::Right, DockSide::Top, DockSide::Bottom] {
             let (x, y) = anchor_rect(anchor(side, 321), 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
-            let a = anchor_from_rect(x, y, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H, side);
+            let a = anchor_from_rect(x, y, AREA_X, AREA_Y, side);
             assert_eq!(a.along, 321, "side={side:?}");
             let (x2, y2) = anchor_rect(a, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H);
             assert_eq!((x, y), (x2, y2), "side={side:?}");
@@ -369,7 +370,7 @@ mod tests {
     #[test]
     fn anchor_from_rect_stores_along_relative_to_the_work_area() {
         // work_area 原点不在 (0,0)（副屏在左侧）时，along 必须是相对值。
-        let a = anchor_from_rect(-1900.0, 300.0, 168.0, 56.0, -1920.0, 0.0, 1920.0, 1040.0, DockSide::Left);
+        let a = anchor_from_rect(-1900.0, 300.0, -1920.0, 0.0, DockSide::Left);
         assert_eq!(a, DockAnchor { side: DockSide::Left, along: 300 });
     }
 
