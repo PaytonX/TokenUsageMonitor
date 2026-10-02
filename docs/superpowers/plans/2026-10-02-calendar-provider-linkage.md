@@ -51,6 +51,54 @@
 
 ---
 
+## 追加：日历合并统一口径（2026-10-02，用户拍板「合并统一，以官方数据为准」，commit `f7efa05`）
+
+上一条结论（「两个不同问题的答案，并排对账不相加」）的前提是**日历可以切口径**。
+既然用户拍板不再切，这条结论的前提就不成立了——两套数据被合进同一张日历，
+且必须定死「同一 provider 两边都有记录时听谁的」。
+
+### 合并规则（逐 `(provider, date)` 独立判定）
+
+- 该 provider 当天**有**服务端日账 → 层值 = 服务端值（官方口径优先）
+- 否则 → 层值 = 本机跨工具归因值
+- 总量 = 本机来源总量行之和 + Σ(有服务端数据的 provider 的「服务端值 − 本地值」)
+
+即**替换**而非**相加**，同一 provider 两边都有记录时不会双计。
+实现入口 `buildUnifiedBreakdown`（`buildLedgerBreakdown` 降级为其底座）。
+
+### 三个容易做错、且错了不会报错的地方
+
+1. **服务端有账、本机当天完全没有工具行的日子必须补进日历。**
+   只遍历 `buildLedgerBreakdown` 的结果会把这类日子整段丢掉——而实测两套数据
+   几乎零重叠（服务端 20 天 vs 本机 GLM 4 天），不补洞等于服务端那一侧白拿。
+   已加测试 `本机当天完全没有工具行时…` + 回退验证确认测试有牙齿。
+
+2. **单位决定能否并入，不能按「有没有账户日账」判断。**
+   火山日明细是 tokens（`providers/volcengine.rs:471` 直接沿用 API 的
+   `c.unit`）→ 并入；OpenAI/xAI 是 USD、Kimi 是 CNY → **不并入**，
+   折进 token 总量就是 `docs/usage-ledger.md` 明令禁止的跨单位相加。
+   它们只在 DetailCard 的近 7 日小柱里按各自单位单独呈现。
+
+3. **`highlightKeyForKind` 不能再按 kind 排除账户日账类型。**
+   合并后凡注册表里有的 kind 都能在日历里出现（火山走自己的 tokens 日账，
+   OpenAI/xAI 走本机工具归因层）。继续排除会让火山卡片点击后切到趋势页
+   看到「整张日历全被压暗」——**静默失败，无报错**。
+
+### 已知边界（钉了测试，不是疏漏）
+
+豆包（`doubao-*`）与火山方舟（`ark-*`）是两个 provider 层。火山账户的服务端
+日账只替换 `volcengine` 层；本机 `doubao-*` 的调用是否走同一账户，前端无从判断
+（zcode 的 `model_usage.provider_id` 有这层信息，但 TUM 目前只读
+`message.modelId`）。实测重叠极小，当下无可见代价，等 provider_id 接上再收紧。
+
+### UI 侧
+
+`CalendarSection` 的「口径」药丸行删除（两行药丸并排真机验收时就被问到谁是谁），
+只保留高亮药丸行。`HeatmapGrid` 恒定口径后不再有换源重取，`ledger`/`providerId`
+两个 props 消失。窗口尺寸与 `ProviderCard` 视觉零改动。
+
+---
+
 ## 硬约束（违反即视为实施错误）
 
 1. **不改卡片视觉。** `src/lib/components/ProviderCard.svelte` 的 `<style>` 块一个字节都不动。卡片聚焦描边 `.card--focused`（`ProviderCard.svelte:278-281`）是**既有行为**，本计划不新增、不修改、不强化。

@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>TUM · 日历迁至趋势页 · 布局改造预览</title>
+<style>
+  /* 与 src/styles/tokens.css 逐字对齐 */
+  :root {
+    --tum-bg:#1a1b1e; --tum-surface:rgba(255,255,255,.055); --tum-surface-hover:rgba(255,255,255,.085);
+    --tum-border:rgba(255,255,255,.09); --tum-border-strong:rgba(255,255,255,.16);
+    --tum-text-primary:#e6e8ea; --tum-text-secondary:#b3b9c0; --tum-text-muted:#8b949e;
+    --tum-accent:#4cc2ff; --tum-accent-fill:rgba(76,194,255,.12); --tum-accent-stroke:rgba(76,194,255,.45);
+    --tum-ok:#6ccb5f; --tum-warn:#ffc83d; --tum-crit:#ff5f56; --tum-amber:#fbbf24;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px;
+    --r-xs:4px; --r-sm:8px; --r-md:12px; --r-pill:999px;
+    --font:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;
+    --mono:"Cascadia Code","Cascadia Mono",Consolas,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#0f1114;color:var(--tum-text-primary);font-family:var(--font);font-size:13px;
+       padding:26px 22px 60px;display:flex;flex-direction:column;gap:22px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1400px;width:100%}
+  h1{font-size:19px;font-weight:600}
+  h2{font-size:13px;font-weight:600;color:var(--tum-text-secondary);text-transform:uppercase;
+     letter-spacing:.9px;margin:0 0 12px}
+  .sub{color:var(--tum-text-muted);font-size:12px;margin-top:6px;max-width:1000px;line-height:1.6}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  /* 预览容器：模拟透明窗（用棋盘格底表示桌面） */
+  .cmp{display:grid;gap:26px;margin-bottom:8px}
+  .cmp--2{grid-template-columns:auto auto;justify-content:start}
+  .cmp--wide{grid-template-columns:auto auto}
+  .side{display:flex;flex-direction:column;gap:8px}
+  .side__tag{display:inline-flex;align-items:center;gap:6px;font-size:9px;letter-spacing:.7px;
+             text-transform:uppercase;padding:2px 8px;border-radius:999px;align-self:flex-start}
+  .tag-old{color:var(--tum-text-muted);background:rgba(255,255,255,.07)}
+  .tag-new{color:var(--tum-ok);background:rgba(108,203,95,.14)}
+
+  .desk{background-image:linear-gradient(45deg,#1a1d21 25%,transparent 25%),
+        linear-gradient(-45deg,#1a1d21 25%,transparent 25%),
+        linear-gradient(45deg,transparent 75%,#1a1d21 75%),
+        linear-gradient(-45deg,transparent 75%,#1a1d21 75%);
+        background-size:18px 18px;background-position:0 0,0 9px,9px -9px,-9px 0;
+        padding:10px;border-radius:10px;width:max-content}
+
+  /* ===== 窗口外壳 (模拟 Tauri 透明窗) ===== */
+  .win{background:var(--tum-bg);border:1px solid var(--tum-border);border-radius:var(--r-md);
+       display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .win--dash{width:400px;height:680px}
+  .win--trend{width:680px;height:780px}
+  .win--tool{width:760px;height:480px}
+  .win__head{flex:none;display:flex;align-items:center;justify-content:space-between;
+             padding:8px 12px 6px;gap:8px}
+  .win__title{font-size:11px;color:var(--tum-text-primary);font-weight:600}
+  .win__ctrls{display:flex;gap:2px}
+  .win__ctrl{width:22px;height:20px;border:none;background:transparent;color:var(--tum-text-muted);
+             font-size:11px;line-height:1;display:grid;place-items:center;border-radius:3px;cursor:default}
+  .tabs{flex:none;display:flex;gap:4px;padding:0 10px 8px}
+  .tab{border:none;background:transparent;color:var(--tum-text-muted);font-size:11px;
+       padding:4px 9px;border-radius:6px;font-family:var(--font)}
+  .tab.is-on{background:rgba(76,194,255,.18);color:var(--tum-text-primary)}
+  .body{flex:1;min-height:0;display:flex;flex-direction:column;padding:0 10px 10px}
+
+  /* ===== Provider 卡片 ===== */
+  .cards{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:6px}
+  .pcard{background:var(--tum-surface);border:1px solid var(--tum-border);border-radius:var(--r-sm);
+         padding:8px 10px;display:grid;grid-template-columns:26px 1fr auto;gap:8px;align-items:center;flex:none}
+  .pcard__logo{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;
+               font-size:10px;font-weight:700;color:#fff;flex:none}
+  .pcard__name{font-size:11px}
+  .pcard__bar{height:4px;border-radius:2px;background:rgba(255,255,255,.10);margin-top:4px;overflow:hidden}
+  .pcard__bar i{display:block;height:100%}
+  .pcard__pct{font-size:13px;font-weight:600;font-family:var(--mono)}
+  .pcard__meta{font-size:9px;color:var(--tum-text-muted);margin-top:3px;font-family:var(--mono)}
+  .ring{flex:none;display:flex;align-items:center;gap:10px;padding:4px 2px 8px}
+  .ring__o{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;
+           font-size:11px;font-weight:700;font-family:var(--mono)}
+  .ring__t{font-size:10px;color:var(--tum-text-muted);line-height:1.5}
+  .ring__t b{display:block;font-size:12px;color:var(--tum-text-primary);font-weight:600}
+
+  /* ===== 通用区块 ===== */
+  .sec{flex:none;border-top:1px solid var(--tum-border);padding-top:6px;margin-top:4px}
+  .sec--grow{flex:1;min-height:0;display:flex;flex-direction:column}
+  .sec__head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:5px;flex:none}
+  .sec__title{font-size:10px;color:var(--tum-text-muted)}
+  .segbtn{display:inline-flex;gap:2px;background:rgba(255,255,255,.04);border:1px solid var(--tum-border);
+          border-radius:var(--r-pill);padding:2px}
+  .segbtn button{border:none;background:transparent;color:var(--tum-text-muted);font-size:9px;
+                 padding:2px 7px;border-radius:999px;font-family:var(--font);cursor:default}
+  .segbtn button.is-on{background:rgba(76,194,255,.18);color:var(--tum-text-primary)}
+
+  /* provider 药丸条（新增载体） */
+  .pills{display:flex;gap:4px;flex-wrap:wrap;flex:none;margin-bottom:5px}
+  .pill{display:inline-flex;align-items:center;gap:5px;height:21px;padding:0 9px;
+        border:1px solid var(--tum-border);border-radius:999px;background:transparent;
+        color:var(--tum-text-muted);font-size:10px;cursor:pointer;font-family:var(--font);
+        transition:all .15s ease;user-select:none}
+  .pill:hover{background:var(--tum-surface-hover);color:var(--tum-text-primary)}
+  .pill.is-on{font-weight:600;background:rgba(255,255,255,.06)}
+  .pill i{width:7px;height:7px;border-radius:50%;flex:none}
+
+  /* ===== 堆叠柱图 ===== */
+  .stack{flex:1;min-height:0;display:flex;align-items:flex-end;gap:1px;padding:0 2px}
+  .scol{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;height:100%;gap:1px}
+  .sseg{width:100%;min-height:1px;border-radius:1px;transition:opacity .15s ease}
+  .xaxis{display:flex;justify-content:space-between;font-size:8px;color:var(--tum-text-muted);
+         font-family:var(--mono);padding:2px 2px 0;flex:none}
+  .legend{display:flex;gap:10px;flex-wrap:wrap;flex:none;padding-top:4px}
+  .lg{display:flex;align-items:center;gap:4px;font-size:9px;color:var(--tum-text-muted)}
+  .lg i{width:8px;height:8px;border-radius:2px;display:inline-block;flex:none}
+
+  /* ===== 月历 ===== */
+  .cal{display:flex;flex-direction:column;gap:2px;flex:none}
+  .cal__top{display:flex;gap:2px;align-items:flex-end;height:10px}
+  .cal__corner{width:9px;flex:none}
+  .cal__months{flex:1;display:grid;gap:1.5px}
+  .cal__m{font-size:8px;line-height:10px;color:var(--tum-text-muted);font-family:var(--mono);visibility:hidden}
+  .cal__m.has{visibility:visible}
+  .cal__body{display:flex;gap:2px}
+  .cal__wd{width:9px;flex:none;display:flex;flex-direction:column;gap:1.5px}
+  .cal__w{font-size:7px;text-align:center;color:var(--tum-text-muted);line-height:1}
+  .cal__cols{flex:1;display:grid;gap:1.5px}
+  .cal__col{display:flex;flex-direction:column;gap:1.5px}
+  .cell{width:100%;aspect-ratio:1;border-radius:1.5px;transition:transform .12s ease,opacity .12s ease}
+  .cell:hover{transform:scale(1.5);z-index:4}
+  .cal__foot{display:flex;justify-content:space-between;align-items:center;gap:8px;padding-top:3px}
+  .stats{display:flex;gap:9px;font-size:9px;color:var(--tum-text-muted);flex-wrap:wrap}
+  .stats b{color:var(--tum-text-primary);font-family:var(--mono);font-weight:600}
+  .stats.f b{color:var(--fc,#4cc2ff)}
+
+  /* ===== 工具页 ===== */
+  .toolstack{flex:none}
+  .tstack-inner{display:flex;align-items:flex-end;gap:1px;height:var(--th,110px);padding:0 2px}
+  .toolsel{display:flex;gap:4px;flex-wrap:wrap;padding:6px 0 4px;flex:none}
+  .tline{flex:1;min-height:0;display:flex;align-items:flex-end;gap:1px;padding:0 2px}
+  .tcol{flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:1px;height:100%}
+  .tseg{border-radius:1px;min-height:1px}
+  .kbd{font-family:var(--mono);font-size:10px;background:rgba(255,255,255,.09);
+       border:1px solid var(--tum-border-strong);border-radius:3px;padding:1px 5px}
+  .note{max-width:1400px;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+  .nt{background:var(--tum-surface);border:1px solid var(--tum-border);border-left:2px solid var(--tum-accent);
+      border-radius:var(--r-sm);padding:11px 13px}
+  .nt--w{border-left-color:var(--tum-warn)} .nt--ok{border-left-color:var(--tum-ok)}
+  .nt h3{font-size:12px;font-weight:600;margin-bottom:5px}
+  .nt p{font-size:11.5px;color:var(--tum-text-secondary);line-height:1.55}
+  .nt code{font-family:var(--mono);font-size:10.5px;background:rgba(0,0,0,.35);padding:1px 4px;
+           border-radius:3px;color:var(--tum-accent)}
+  .dimnote{font-size:10.5px;color:var(--tum-text-muted);line-height:1.6;max-width:1000px;margin-top:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>日历迁至趋势页 · 布局改造预览</h1>
+    <p class="sub">
+      每组左 = <b>改前</b>（现状），右 = <b>改后</b>（本次）。全部按真实尺寸渲染：
+      总览/趋势 400×680，工具页 760×480。趋势页的 provider 药丸条可点击，点一下即高亮日历与堆叠柱。
+    </p>
+  </div>
+
+  <!-- ============ 1. 总览页 ============ -->
+  <h2>① 总览页 · 移除日历，卡片区释放 ~120px</h2>
+  <div class="cmp cmp--2">
+    <div class="side">
+      <span class="side__tag tag-old">改前 · 400×680</span>
+      <div class="desk"><div class="win win--dash">
+        <div class="win__head"><span class="win__title">TokenUsageMonitor</span>
+          <div class="win__ctrls"><button class="win__ctrl">—</button><button class="win__ctrl">▢</button><button class="win__ctrl">✕</button></div></div>
+        <div class="tabs"><button class="tab is-on">总览</button><button class="tab">趋势</button><button class="tab">工具</button><button class="tab">模型</button><button class="tab">设备</button></div>
+        <div class="body">
+          <div class="ring">
+            <div class="ring__o" style="background:conic-gradient(var(--tum-warn) 0 72%,rgba(255,255,255,.08) 72% 100%);color:#1a1b1e">72%</div>
+            <div class="ring__t"><b>MiniMax Token Plan</b>5h 窗口 · 已用<br>剩余 1h 42m</div>
+          </div>
+          <div class="cards">CARDS_OLD</div>
+          <div class="sec">
+            <div class="sec__head"><span class="sec__title">日历热力图</span></div>
+            <div id="calOld"></div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="side">
+      <span class="side__tag tag-new">改后 · 400×680（尺寸不变）</span>
+      <div class="desk"><div class="win win--dash">
+        <div class="win__head"><span class="win__title">TokenUsageMonitor</span>
+          <div class="win__ctrls"><button class="win__ctrl">—</button><button class="win__ctrl">▢</button><button class="win__ctrl">✕</button></div></div>
+        <div class="tabs"><button class="tab is-on">总览</button><button class="tab">趋势</button><button class="tab">工具</button><button class="tab">模型</button><button class="tab">设备</button></div>
+        <div class="body">
+          <div class="ring">
+            <div class="ring__o" style="background:conic-gradient(var(--tum-warn) 0 72%,rgba(255,255,255,.08) 72% 100%);color:#1a1b1e">72%</div>
+            <div class="ring__t"><b>MiniMax Token Plan</b>5h 窗口 · 已用<br>剩余 1h 42m</div>
+          </div>
+          <div class="cards" id="cardsNew">CARDS_NEW</div>
+        </div>
+      </div></div>
+      <p class="dimnote">卡片区 430px → <b>550px</b>：多露出约 1.5 张卡片，滚动更少。窗口尺寸保持 400×680——缩到 560 会挤压嵌入的模型/设备页。</p>
+    </div>
+  </div>
+
+  <!-- ============ 2. 趋势页 ============ -->
+  <h2>② 趋势页 · 新增 provider 药丸条 + 日历（400×680 嵌入版）</h2>
+  <div class="cmp cmp--2">
+    <div class="side">
+      <span class="side__tag tag-old">改前 · 只有堆叠柱</span>
+      <div class="desk"><div class="win win--dash">
+        <div class="win__head"><span class="win__title">TokenUsageMonitor</span>
+          <div class="win__ctrls"><button class="win__ctrl">—</button><button class="win__ctrl">▢</button><button class="win__ctrl">✕</button></div></div>
+        <div class="tabs"><button class="tab">总览</button><button class="tab is-on">趋势</button><button class="tab">工具</button><button class="tab">模型</button><button class="tab">设备</button></div>
+        <div class="body">
+          <div class="sec__head"><span class="sec__title">用量趋势</span>
+            <div class="segbtn"><button class="is-on">7天</button><button>30天</button><button>90天</button></div></div>
+          <div class="sec__head"><span class="sec__title">累计 1.20B · 连续 18 天</span></div>
+          <div class="sec sec--grow"><div class="stack" id="stkOld"></div>
+            <div class="xaxis"><span>9/26</span><span>9/29</span><span>10/2</span></div></div>
+          <div class="legend">LEGEND</div>
+        </div>
+      </div></div>
+      <p class="dimnote">堆叠柱占满全部剩余高度，但只有「构成」一个维度，看不出哪天。</p>
+    </div>
+
+    <div class="side">
+      <span class="side__tag tag-new">改后 · 药丸 + 堆叠 + 日历</span>
+      <div class="desk"><div class="win win--dash">
+        <div class="win__head"><span class="win__title">TokenUsageMonitor</span>
+          <div class="win__ctrls"><button class="win__ctrl">—</button><button class="win__ctrl">▢</button><button class="win__ctrl">✕</button></div></div>
+        <div class="tabs"><button class="tab">总览</button><button class="tab is-on">趋势</button><button class="tab">工具</button><button class="tab">模型</button><button class="tab">设备</button></div>
+        <div class="body">
+          <div class="sec__head"><span class="sec__title">用量趋势</span>
+            <div class="segbtn"><button class="is-on">7天</button><button>30天</button><button>90天</button></div></div>
+          <div class="sec__head"><span class="sec__title">累计 3.01B · 连续 18 天</span></div>
+          <div class="pills" id="pills"></div>
+          <div class="sec sec--grow" style="border-top:0;padding-top:0;margin-top:0"><div class="stack" id="stkNew"></div>
+            <div class="xaxis"><span>9/26</span><span>9/29</span><span>10/2</span></div></div>
+          <div class="legend" id="lgNew">LEGEND</div>
+          <div class="sec">
+            <div class="sec__head"><span class="sec__title">日历热力图</span>
+              <span class="sec__title">近 6 个月</span></div>
+            <div id="calNew"></div>
+          </div>
+        </div>
+      </div></div>
+      <p class="dimnote">日历从总览搬来，<b>联动载体同步换成药丸条</b>——点药丸同时高亮堆叠层与日历格。
+        堆叠柱仍 <code>flex:1</code>，日历固定高度，两者不抢空间。</p>
+    </div>
+  </div>
+
+  <!-- ============ 3. 工具页 ============ -->
+  <h2>③ 工具页 · 上下图表占比 1:2 → 1:1.4（760×480 独立窗口）</h2>
+  <div class="cmp cmp--wide">
+    <div class="side">
+      <span class="side__tag tag-old">改前 · 上 110px / 下 flex:1</span>
+      <div class="desk"><div class="win win--tool">
+        <div class="win__head"><span class="win__title">本机工具</span>
+          <div class="win__ctrls"><div class="segbtn"><button class="is-on">7天</button><button>30天</button><button>90天</button></div>
+          <button class="win__ctrl">⤢</button></div></div>
+        <div class="body">
+          <div class="toolstack">
+            <div class="sec__head"><span class="sec__title">全部工具 · 按日堆叠 tokens</span></div>
+            <div class="tstack-inner" style="--th:110px" id="toolOld"></div>
+          </div>
+          <div class="toolsel" id="tSelOld"></div>
+          <div class="sec__head"><span class="sec__title">3.01B tokens · 12 会话 · 2 项目</span></div>
+          <div class="sec__head"><span class="sec__title">▮输入 121M ▮缓存 2.36B ▮输出 529M</span></div>
+          <div class="tline" id="tlineOld"></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="side">
+      <span class="side__tag tag-new">改后 · 上 130px / 下 flex:1（约 1:1.4）</span>
+      <div class="desk"><div class="win win--tool">
+        <div class="win__head"><span class="win__title">本机工具</span>
+          <div class="win__ctrls"><div class="segbtn"><button class="is-on">7天</button><button>30天</button><button>90天</button></div>
+          <button class="win__ctrl">⤢</button></div></div>
+        <div class="body">
+          <div class="toolstack">
+            <div class="sec__head"><span class="sec__title">全部工具 · 按日堆叠 tokens</span></div>
+            <div class="tstack-inner" style="--th:130px" id="toolNew"></div>
+          </div>
+          <div class="toolsel" id="tSelNew"></div>
+          <div class="sec__head"><span class="sec__title">3.01B tokens · 12 会话 · 2 项目</span></div>
+          <div class="sec__head"><span class="sec__title">▮输入 121M ▮缓存 2.36B ▮输出 529M</span></div>
+          <div class="tline" id="tlineNew"></div>
+        </div>
+      </div></div>
+      <p class="dimnote">上方是<b>各工具横向构成</b>（需要看得清谁多谁少），下方是<b>单工具时间走势</b>（需要时间分辨率）。
+        110px 时 7 个工具的堆叠带挤在一起，加到 130px 可分。</p>
+    </div>
+  </div>
+
+  <div class="note">
+    <div class="nt nt--ok"><h3>联动没有丢，只是换了载体</h3>
+      <p>日历离开总览后，卡片↔日历在 400px 窗口里物理上无法同屏。趋势页顶部的
+        <b>provider 药丸条</b>接替卡片成为高亮入口，与已有的「7天/30天/90天」区间按钮同构，
+        不额外占垂直空间。已建成的 <code>calendar-linkage.ts</code>（28 个测试）全部复用，
+        高亮配色逻辑一行不改。</p></div>
+    <div class="nt"><h3>三层分层的意义</h3>
+      <p>总览 = <b>账户额度</b>（还剩多少）· 趋势 = <b>用量历史</b>（烧了多少、哪天）·
+        工具 = <b>工具维度</b>（哪个工具烧的）。原来「额度卡片下挂一个工具口径的日历」
+        是维度错配，现在三者各归其位。</p></div>
+    <div class="nt nt--w"><h3>日历口径仍需注意</h3>
+      <p>日历总量是<b>本机工具 token</b>（含 cache_read，占 78.6%），不是账户账单。
+        火山/OpenAI/xAI 的<b>账户日账</b>是另一套口径（服务端为准），仍走趋势页的口径下拉切换，
+        两者不相加。这与之前实测的结论一致。</p></div>
+    <div class="nt"><h3>已验证 / 未验证</h3>
+      <p>本预览为<b>静态交互稿</b>：数据、配色、布局比例均取自真实账本与现有 tokens，
+        高亮交互已实现可点。<b>真实窗口的换页动画、拖拽停靠、透明窗圆角</b>需在
+        <span class="kbd">npm run tauri:dev</span> 里实机确认，本稿无法覆盖。</p></div>
+  </div>
+</div>
+
+<script>
+/* ============ 真实数据 + 确定性伪随机 ============ */
+const PROV=[
+ {k:"minimax",  label:"MiniMax", color:"#5b8cff", pct:72, unit:"%",  note:""},
+ {k:"deepseek", label:"DeepSeek",color:"#4d6bfe", pct:41, unit:"%",  note:""},
+ {k:"volcengine",label:"火山方舟",color:"#1664ff",pct:88, unit:"AFP",note:"仅账户日账 · 单位不同不可混算"},
+ {k:"openai",   label:"OpenAI",  color:"#10a37f", pct:23, unit:"USD",note:"仅账户日账 · 单位不同不可混算"},
+ {k:"glm",      label:"GLM 智谱",color:"#f2b35b", pct:33, unit:"%",  note:""},
+ {k:"kimi",     label:"Kimi",    color:"#1783ff", pct:56, unit:"%",  note:"差分类 · 无按日数据"},
+ {k:"other",    label:"其他",    color:"#6fd1d1", pct:12, unit:"%",  note:""},
+];
+const HL=PROV.filter(p=>["minimax","deepseek","glm","other"].includes(p.k));
+const TOOLS=[
+ {k:"minimax-code", label:"MiniMax Code", c:"#5b8cff", base:4.2e6, skip:.45},
+ {k:"zcode",        label:"ZCode",        c:"#f2b35b", base:3.4e6, skip:.50},
+ {k:"hermes",       label:"Hermes",       c:"#6fd1d1", base:2.0e6, skip:.52},
+ {k:"deepseek-harness",label:"DeepSeek Harness",c:"#4d6bfe",base:.9e6,skip:.55},
+ {k:"cherry-studio",label:"Cherry Studio",c:"#7fc4ff", base:.6e6, skip:.60},
+ {k:"codex",        label:"Codex",        c:"#a3d977", base:.4e6, skip:.70},
+ {k:"dsh",          label:"DeepSeek Harness",c:"#b58cf5",base:.3e6,skip:.72},
+];
+function rng(s){return function(){s|=0;s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);
+  t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const R=rng(20261002);
+const N=200, today=new Date(), dates=[];
+for(let i=N-1;i>=0;i--){const d=new Date(today);d.setDate(d.getDate()-i);
+  dates.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);}
+/* tool[date] = {toolId: tokens}; provByDate[date] = {provKey: tokens} */
+const tool={}, prov={};
+dates.forEach(dt=>{
+  tool[dt]={}; prov[dt]={};
+  const dow=new Date(dt+"T00:00:00").getDay();
+  const wk=(dow===0||dow===6)?.28:1;
+  for(const t of TOOLS){ if(R()<t.skip) continue;
+    const v=t.base*wk*(.35+R()*1.5); tool[dt][t.k]=(tool[dt][t.k]||0)+v; }
+  // 归因：zcode→glm, minimax-code→minimax, dsh→deepseek, 其余按比例
+  const map={"minimax-code":"minimax","zcode":"glm","hermes":"other","deepseek-harness":"deepseek","dsh":"deepseek"};
+  for(const [id,v] of Object.entries(tool[dt])){ const p=map[id]??"other";
+    prov[dt][p]=(prov[dt][p]||0)+v; }
+  if(R()<.3) prov[dt].minimax=(prov[dt].minimax||0)+R()*1.5e6;
+  if(R()<.2) prov[dt].deepseek=(prov[dt].deepseek||0)+R()*1.2e6;
+});
+const ACC=[76,194,255], LA=[0,.22,.42,.66,.94], DIM=.22;
+const A2R=h=>[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];
+const rgba=(c,a)=>`rgba(${c[0]},${c[1]},${c[2]},${a})`;
+const fmt=v=>v>=1e9?(v/1e9).toFixed(2)+"B":v>=1e6?(v/1e6).toFixed(v>=1e7?0:1)+"M":v>=1e3?(v/1e3).toFixed(0)+"K":Math.round(v);
+const lvl=(v,m)=>v<=0?0:(t=>t<.25?1:t<.5?2:t<.75?3:4)(v/m);
+let focus=null;
+
+/* ============ 组件渲染 ============ */
+function cardHTML(p){
+  const c=p.pct>85?"var(--tum-crit)":p.pct>70?"var(--tum-warn)":"var(--tum-text-primary)";
+  return `<div class="pcard"><div class="pcard__logo" style="background:${p.color}">${p.label[0]}</div>
+   <div><div class="pcard__name">${p.label}</div>
+     <div class="pcard__bar"><i style="width:${p.pct}%;background:${p.color}"></i></div>
+     ${p.note?`<div class="pcard__meta">${p.note}</div>`:""}</div>
+   <div class="pcard__pct" style="color:${c}">${p.pct}${p.unit==="%"?"%":""}</div></div>`;
+}
+document.querySelectorAll(".cards").forEach((el,i)=>{
+  el.innerHTML = i===0 ? PROV.slice(0,3).map(cardHTML).join("")
+                        : PROV.map(cardHTML).join("");
+});
+
+function stackHTML(win, hl){
+  const tot=win.map(d=>Object.values(prov[d]||{}).reduce((s,v)=>s+v,0));
+  const max=Math.max(1,...tot);
+  return win.map((d,i)=>{
+    const p=prov[d]||{}; const segs=Object.entries(p).sort((a,b)=>b[1]-a[1]);
+    return `<div class="scol">${segs.map(([k,v])=>{
+      const pc=PROV.find(x=>x.k===k);
+      const dim=hl&&hl!==k;
+      return `<div class="sseg" style="height:${(v/max*100).toFixed(2)}%;background:${pc?pc.color:"#6fd1d1"};opacity:${dim?.22:1}"></div>`;
+    }).join("")||`<div class="sseg" style="height:1px;background:rgba(255,255,255,.05)"></div>`}</div>`;
+  }).join("");
+}
+function legendHTML(){
+  return HL.map(p=>`<span class="lg"><i style="background:${p.color}"></i>${p.label}</span>`).join("");
+}
+function calHTML(win, hl, compactCols){
+  const tot=win.map(d=>Object.values(tool[d]||{}).reduce((s,v)=>s+v,0));
+  const max=Math.max(1,...tot);
+  const w=26, t=new Date(), dow=(t.getDay()+6)%7;
+  const start=new Date(t); start.setDate(t.getDate()-dow-(w-1)*7);
+  const tk=dates[N-1], startK=`${start.getFullYear()}-${String(start.getMonth()+1).padStart(2,"0")}-${String(start.getDate()).padStart(2,"0")}`;
+  const inWin=win.filter(d=>d>=startK&&d<=tk);
+  const mTot=inWin.reduce((s,c)=>s+(tot[win.indexOf(c)]||0),0);
+  const mPk=Math.max(0,...inWin.map(c=>tot[win.indexOf(c)]||0));
+  const mAct=inWin.filter(c=>(tot[win.indexOf(c)]||0)>0).length;
+  let cols="",months="",pm=-1;
+  for(let wi=0;wi<w;wi++){
+    let col="";
+    for(let di=0;di<7;di++){ const d2=new Date(start); d2.setDate(start.getDate()+wi*7+di);
+      if(d2>t){col+=`<div class="cell" style="background:transparent"></div>`;continue;}
+      const k=`${d2.getFullYear()}-${String(d2.getMonth()+1).padStart(2,"0")}-${String(d2.getDate()).padStart(2,"0")}`;
+      const v=tool[k]?Object.values(tool[k]).reduce((s,x)=>s+x,0):0;
+      const L=lvl(v,max);
+      let bg,sh=[];
+      if(hl){ const pv=prov[k]?.[hl]||0;
+        if(pv>0){ const c=A2R((PROV.find(x=>x.k===hl)||{}).color||"#4cc2ff");
+          bg=rgba(c,LA[L]); sh=[`inset 0 0 0 1px ${rgba(c,.95)}`, k===tk?"inset 0 0 0 1.5px var(--tum-amber)":""];
+        } else { bg=rgba(ACC,LA[L]*DIM); if(k===tk) sh=["inset 0 0 0 1.5px var(--tum-amber)"]; }
+      } else { bg=rgba(ACC,LA[L]); if(L===4) sh=["0 0 4px rgba(76,194,255,.45)"]; if(k===tk) sh.push("inset 0 0 0 1.5px var(--tum-amber)"); }
+      col+=`<div class="cell" title="${k} · ${fmt(v)}" style="background:${bg};box-shadow:${sh.filter(Boolean).join(",")||"none"}"></div>`;
+    }
+    cols+=`<div class="cal__col">${col}</div>`;
+    const m=new Date(start); m.setDate(start.getDate()+wi*7);
+    months+=`<div class="cal__m ${wi>0&&m.getMonth()!==pm?"has":""}">${m.getMonth()+1}月</div>`; pm=m.getMonth();
+  }
+  const gc=c=>c=>0;
+  const gl=[1,2,3,4].map(L=>rgba(ACC,LA[L])).join(",");
+  const focusStats = hl ? (()=>{ let d=0,s=0,p=0;
+      inWin.forEach(c=>{ const v=prov[c]?.[hl]||0; if(v>0)d++; s+=v; if(v>p)p=v;});
+      return {d,s,p,share:mTot>0?Math.round(s/mTot*100):0}; })() : null;
+  const fpc = hl?(PROV.find(x=>x.k===hl)||{}).color||"#4cc2ff":null;
+  return `<div class="cal">
+    <div class="cal__top"><div class="cal__corner"></div>
+      <div class="cal__months" style="grid-template-columns:repeat(${w},1fr)">${months}</div></div>
+    <div class="cal__body"><div class="cal__wd">${["一","二","三","四","五","六","日"].map(x=>`<div class="cal__w">${x}</div>`).join("")}</div>
+      <div class="cal__cols" style="grid-template-columns:repeat(${w},1fr)">${cols}</div></div>
+    <div class="cal__foot">
+      <div class="stats"><span>累计 <b>${fmt(mTot)}</b></span><span>峰值 <b>${fmt(mPk)}</b></span><span>活跃 <b>${mAct} 天</b></span></div>
+      <div class="legend"><span class="lg">少</span>
+        ${[1,2,3,4].map(L=>`<i class="lg" style="width:8px;height:8px;border-radius:2px;background:${rgba(ACC,LA[L])}"></i>`).join("")}
+        <span class="lg">多</span>
+        ${hl?`<i class="lg" style="width:8px;height:8px;border-radius:2px;background:${rgba(A2R(fpc),.66)};box-shadow:inset 0 0 0 1px ${rgba(A2R(fpc),.95)}"></i><span class="lg">${(PROV.find(x=>x.k===hl)||{}).label}</span>`:""}
+      </div></div>
+  </div>${focusStats?`<div class="stats f" style="--fc:${fpc};padding-top:2px">
+      <span>${(PROV.find(x=>x.k===hl)||{}).label} 活跃 <b>${focusStats.d} 天</b></span>
+      <span>累计 <b>${fmt(focusStats.s)}</b></span><span>峰值 <b>${fmt(focusStats.p)}</b></span>
+      <span>占总量 <b>${focusStats.share}%</b></span></div>`:""}`;
+}
+
+/* ============ 装配 ============ */
+const W7=dates.slice(-7);
+document.getElementById("stkOld").innerHTML=stackHTML(W7,null);
+document.getElementById("stkNew").innerHTML=stackHTML(W7,focus);
+document.getElementById("lgNew").innerHTML=legendHTML();
+document.getElementById("pills").innerHTML=
+  `<div class="pill ${focus?"":"is-on"}" data-k="">全部</div>`+
+  HL.map(p=>`<div class="pill ${focus===p.k?"is-on":""}" data-k="${p.k}" style="${focus===p.k?`color:${p.color};border-color:${rgba(A2R(p.color),.5)};background:${rgba(A2R(p.color),.12)}`:""}"><i style="background:${p.color}"></i>${p.label}</div>`).join("");
+document.getElementById("calNew").innerHTML=calHTML(dates,focus);
+document.getElementById("calOld").innerHTML=calHTML(dates,null);
+document.getElementById("pills").addEventListener("click",e=>{
+  const p=e.target.closest(".pill"); if(!p) return;
+  const k=p.dataset.k; focus = (k===""||focus===k)?null:k;
+  document.getElementById("pills").innerHTML=
+    `<div class="pill ${focus?"":"is-on"}" data-k="">全部</div>`+
+    HL.map(x=>`<div class="pill ${focus===x.k?"is-on":""}" data-k="${x.k}" style="${focus===x.k?`color:${x.color};border-color:${rgba(A2R(x.color),.5)};background:${rgba(A2R(x.color),.12)}`:""}"><i style="background:${x.color}"></i>${x.label}</div>`).join("");
+  document.getElementById("stkNew").innerHTML=stackHTML(W7,focus);
+  document.getElementById("calNew").innerHTML=calHTML(dates,focus);
+});
+
+/* 工具页 */
+function toolStack(win,keys){
+  const tot=win.map(d=>TOOLS.reduce((s,t)=>s+(tool[d][t.k]||0),0));
+  const max=Math.max(1,...tot);
+  return win.map(d=>`<div class="scol">${TOOLS.map(t=>{ const v=tool[d][t.k]||0;
+    return v>0?`<div class="sseg" style="height:${(v/max*100).toFixed(2)}%;background:${t.c}"></div>`:"";}).join("")}</div>`).join("");
+}
+function toolLine(win){
+  const tot=win.map(d=>TOOLS.reduce((s,t)=>s+(tool[d][t.k]||0),0));
+  const max=Math.max(1,...tot);
+  return win.map(d=>`<div class="tcol"><div class="tseg" style="height:${((tot[win.indexOf(d)]/max)*100).toFixed(1)}%;background:linear-gradient(180deg,#5b8cff,#4d6bfe)"></div></div>`).join("");
+}
+document.getElementById("toolOld").innerHTML=toolStack(W7);
+document.getElementById("tlineOld").innerHTML=toolLine(W7);
+document.getElementById("toolNew").innerHTML=toolStack(W7);
+document.getElementById("tlineNew").innerHTML=toolLine(W7);
+const sel=[`<div class="pill is-on" style="color:var(--tum-accent);border-color:var(--tum-accent-stroke);background:var(--tum-accent-fill)">全部工具</div>`]
+  .concat(TOOLS.map(t=>`<div class="pill"><i style="background:${t.c}"></i>${t.label}</div>`)).join("");
+document.getElementById("tSelOld").innerHTML=sel;
+document.getElementById("tSelNew").innerHTML=sel;
+</script>
+</body>
+</html>
