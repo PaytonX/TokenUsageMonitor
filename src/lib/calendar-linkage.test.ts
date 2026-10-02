@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildLedgerBreakdown,
+  buildUnifiedBreakdown,
   DIM_FACTOR,
   focusStats,
   hexToRgbTriplet,
@@ -8,6 +9,7 @@ import {
   ledgerSeriesForKind,
   LEVEL_ALPHA,
   paintCell,
+  providerKeyForKind,
 } from "./calendar-linkage";
 
 describe("ledgerSeriesForKind", () => {
@@ -70,11 +72,22 @@ describe("highlightKeyForKind", () => {
     expect(highlightKeyForKind("minimax_api")).toBe("minimax");
   });
 
-  it("账户日账 kind 不可高亮（单位不同，混算即错）", () => {
-    // 火山是 AFP、OpenAI 是 USD，与本机工具 token 不同量纲。
-    expect(highlightKeyForKind("volcengine")).toBeNull();
-    expect(highlightKeyForKind("openai")).toBeNull();
-    expect(highlightKeyForKind("xai")).toBeNull();
+  it("账户日账 kind 也可高亮——合并日历后它们都在日历里", () => {
+    // 回归：日历可切换口径的年代，volcengine/openai/xai 因"单位不同"被排除在
+    // 高亮之外。日历恒为合并口径后该前提消失——
+    //   volcengine：服务端日明细本身就是 tokens（providers/volcengine.rs:471
+    //               直接沿用 API 返回的 c.unit），已并入日历；
+    //   openai/xai：USD 日账不进 token 日历，但本机工具归因有它们的层
+    //               （gpt/o1/o3/o4 → openai，grok → xai）。
+    // 若仍返回 null，火山卡片点击后切到趋势页会看到"整张日历全被压暗"。
+    expect(highlightKeyForKind("volcengine")).toBe("volcengine");
+    expect(highlightKeyForKind("openai")).toBe("openai");
+    expect(highlightKeyForKind("xai")).toBe("xai");
+  });
+
+  it("未注册 kind 不可高亮（诚实：不猜）", () => {
+    expect(highlightKeyForKind("zzz")).toBeNull();
+    expect(highlightKeyForKind("some_unknown_thing")).toBeNull();
   });
 });
 
@@ -146,6 +159,173 @@ describe("buildLedgerBreakdown", () => {
     const d = buildLedgerBreakdown(rows).get("2026-10-05")!;
     expect(d.total).toBe(500);
     expect(d.byProvider).toEqual({ openai: 300 });
+  });
+});
+
+describe("providerKeyForKind", () => {
+  it("忽略 instance_id 后缀与子模式后缀", () => {
+    // 服务端行的 source 是 instance_id（providers/volcengine.rs:463 写
+    // self.instance_id），调用方先 split("-")[0] 再查表。
+    expect(providerKeyForKind("volcengine")).toBe("volcengine");
+    expect(providerKeyForKind("volcengine_api")).toBe("volcengine");
+    expect(providerKeyForKind("kimi_global")).toBe("kimi");
+  });
+
+  it("未注册 kind 返回 null", () => {
+    expect(providerKeyForKind("zzz")).toBeNull();
+  });
+});
+
+/** 构造一行服务端日账（kind='provider'），unit 决定它能否进 token 日历。 */
+const providerRow = (
+  source: string,
+  date: string,
+  total: number,
+  unit = "tokens",
+) => ({
+  ...row(source, date, "", total),
+  kind: "provider" as const,
+  unit,
+});
+
+describe("buildUnifiedBreakdown", () => {
+  it("服务端有当天数据时**替换**本地值，而不是相加（防双计）", () => {
+    // 本机 zcode 归因到火山 300，服务端说当天火山用了 500。真相是 500，
+    // 不是 800。若相加，日历总量会随"本机是否也扫到该调用"而漂移。
+    const rows = [
+      row("zcode", "2026-10-01", "", 300),
+      row("zcode", "2026-10-01", "ark-seed-1.6", 300), // → volcengine 层
+      providerRow("volcengine-9-0", "2026-10-01", 500),
+    ];
+    const d = buildUnifiedBreakdown(rows).get("2026-10-01")!;
+    expect(d.byProvider.volcengine).toBe(500);
+    expect(d.total).toBe(500); // 300 本地总量 − 300 本地归因 + 500 官方
+  });
+
+  it("豆包(doubao)与火山方舟(volcengine)是两个层，服务端日账不覆盖前者", () => {
+    // 边界钉死，不是实现疏漏：火山账户的服务端日账是**官方口径**，但前端
+    // 无从判断本机 doubao-* 的调用是否走同一账户——zcode 的 model_usage 里有
+    // provider_id（account:bigmodel-start-plan 之类），可 TUM 目前只读
+    // message.modelId，丢了这层信息。故服务端日账只替换 volcengine 层，
+    // doubao 层按本机归因原样保留。
+    // 代价当下不可见：实测两套数据几乎零重叠（服务端 20 天 vs 本机 GLM 4 天，
+    // 交集仅 2 天且服务端量极小），等 provider_id 那层接上再收紧。
+    const rows = [
+      row("zcode", "2026-10-08", "", 1000),
+      row("zcode", "2026-10-08", "ark-seed-1.6", 400),   // → volcengine
+      row("zcode", "2026-10-08", "doubao-seed-1.6", 600), // → doubao
+      providerRow("volcengine-9-0", "2026-10-08", 900),
+    ];
+    const d = buildUnifiedBreakdown(rows).get("2026-10-08")!;
+    expect(d.byProvider).toEqual({ volcengine: 900, doubao: 600 });
+    expect(d.total).toBe(1500); // 1000 − 400 + 900，doubao 未被替换
+  });
+
+  it("服务端有数据但本地无该 provider 时直接计入", () => {
+    const rows = [
+      row("minimax-code", "2026-10-02", "", 1000),
+      row("minimax-code", "2026-10-02", "MiniMax-M3", 1000),
+      providerRow("volcengine-9-0", "2026-10-02", 700),
+    ];
+    const d = buildUnifiedBreakdown(rows).get("2026-10-02")!;
+    expect(d.byProvider.volcengine).toBe(700);
+    expect(d.total).toBe(1700); // 1000 本机 + 700 官方（本地该层为 0）
+  });
+
+  it("服务端当天缺数据时保留本机归因（逐 provider 独立判定）", () => {
+    // 合并是 per-(provider, date) 的，不是整源一刀切：有官方就用官方，
+    // 没官方就还是本机的值。
+    const rows = [
+      row("zcode", "2026-10-03", "", 900),
+      row("zcode", "2026-10-03", "GLM-5.3", 600), // → glm 层
+      row("zcode", "2026-10-03", "ark-seed-1.6", 300), // → volcengine 层
+      // 服务端只覆盖 10-02，10-03 缺失
+      providerRow("volcengine-9-0", "2026-10-02", 500),
+    ];
+    const map = buildUnifiedBreakdown(rows);
+    const d3 = map.get("2026-10-03")!;
+    expect(d3.byProvider).toEqual({ glm: 600, volcengine: 300 });
+    expect(d3.total).toBe(900);
+  });
+
+  it("非 token 单位的服务端行不并入（跨单位相加是错的）", () => {
+    // OpenAI/xAI 的服务端日账是 USD、Kimi 是 CNY。它们不进 token 总量。
+    const rows = [
+      row("codex", "2026-10-04", "", 800),
+      row("codex", "2026-10-04", "gpt-5", 800),
+      providerRow("openai-1-0", "2026-10-04", 3.25, "usd"),
+      providerRow("xai-1-0", "2026-10-04", 1.5, "usd"),
+    ];
+    const d = buildUnifiedBreakdown(rows).get("2026-10-04")!;
+    expect(d.total).toBe(800);
+    expect(d.byProvider).toEqual({ openai: 800 }); // 本机归因层原样保留
+  });
+
+  it("本机当天完全没有工具行时，服务端数据也要把那天补进日历", () => {
+    // 回归：只遍历 buildLedgerBreakdown 的结果会把这类日子整段丢掉。
+    // 实测本机 GLM 有账 4 天、服务端 20 天，仅重叠 2 天——合并若不补洞，
+    // 服务端那一侧的数据等于白拿，日历仍是"本机视角"。
+    const rows = [providerRow("volcengine-9-0", "2026-09-01", 450)];
+    const map = buildUnifiedBreakdown(rows);
+    expect(map.size).toBe(1);
+    const d = map.get("2026-09-01")!;
+    expect(d.total).toBe(450);
+    expect(d.byProvider).toEqual({ volcengine: 450 });
+  });
+
+  it("服务端补出的日子与本机已有日子共存，不互相污染", () => {
+    const rows = [
+      row("minimax-code", "2026-09-10", "", 700),
+      row("minimax-code", "2026-09-10", "MiniMax-M3", 700),
+      providerRow("volcengine-9-0", "2026-09-11", 300), // 本机无此日
+    ];
+    const map = buildUnifiedBreakdown(rows);
+    expect(map.get("2026-09-10")).toEqual({
+      total: 700,
+      byProvider: { minimax: 700 },
+    });
+    expect(map.get("2026-09-11")).toEqual({
+      total: 300,
+      byProvider: { volcengine: 300 },
+    });
+  });
+
+  it("无服务端行时与 buildLedgerBreakdown 完全等价", () => {
+    const rows = [
+      row("minimax-code", "2026-10-05", "", 1000),
+      row("minimax-code", "2026-10-05", "MiniMax-M3", 700),
+      row("minimax-code", "2026-10-05", "deepseek-v4", 300),
+    ];
+    const u = buildUnifiedBreakdown(rows).get("2026-10-05")!;
+    const l = buildLedgerBreakdown(rows).get("2026-10-05")!;
+    expect(u).toEqual(l);
+  });
+
+  it("多个服务端 provider 各自独立替换", () => {
+    const rows = [
+      row("zcode", "2026-10-06", "", 1000),
+      row("zcode", "2026-10-06", "ark-seed-1.6", 400),   // volcengine
+      row("zcode", "2026-10-06", "GLM-5.3", 600),        // glm
+      providerRow("volcengine-9-0", "2026-10-06", 250),   // 官方更小
+      providerRow("volcengine-1-0", "2026-10-06", 100),   // 同 key 另一账户
+    ];
+    const d = buildUnifiedBreakdown(rows).get("2026-10-06")!;
+    // 同 provider 的多账户服务端行先合并再替换：250 + 100 = 350
+    expect(d.byProvider.volcengine).toBe(350);
+    expect(d.byProvider.glm).toBe(600);
+    expect(d.total).toBe(600 + 350); // 1000 − 400 本地 + 350 官方
+  });
+
+  it("重复调用同一份 rows 结果稳定（纯函数）", () => {
+    // 调用方可能对同一份 rows 反复算不同口径；若 buildUnifiedBreakdown 改到
+    // 共享结构上，第二次就会把官方值再叠一遍。
+    const rows = [
+      row("zcode", "2026-10-07", "", 300),
+      row("zcode", "2026-10-07", "ark-seed-1.6", 300),
+      providerRow("volcengine-9-0", "2026-10-07", 500),
+    ];
+    expect(buildUnifiedBreakdown(rows).get("2026-10-07")!.total).toBe(500);
+    expect(buildUnifiedBreakdown(rows).get("2026-10-07")!.total).toBe(500);
   });
 });
 

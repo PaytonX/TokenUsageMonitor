@@ -16,21 +16,17 @@
   } from "../trend-data";
   import TrendLineChart from "./TrendLineChart.svelte";
   import CalendarSection from "./CalendarSection.svelte";
-  import type { UsageSnapshot } from "../types";
 
   interface Props {
     /** 总量线 / 面积颜色（系统强调色）。 */
     accent?: string;
     /** 日历高亮焦点。父级（App）可绑定，从而让总览页卡片点击预置趋势页高亮。 */
     highlightKey?: string | null;
-    /** 账户清单，供日历区派生「账户日账」口径下拉。 */
-    snapshots?: UsageSnapshot[];
   }
 
   let {
     accent = "#4cc2ff",
     highlightKey = $bindable(null),
-    snapshots = [],
   }: Props = $props();
 
   let range: RangeKey = $state(
@@ -185,7 +181,6 @@
   <CalendarSection
     series={aggMode ? [] : activeIds}
     colors={activeColors}
-    {snapshots}
     bind:highlightKey
   />
 </div>

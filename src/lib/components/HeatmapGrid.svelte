@@ -1,8 +1,8 @@
 ﻿<script lang="ts">
-  import { getHeatmap, getUsageHistory } from "../api";
+  import { getUsageHistory } from "../api";
   import { formatUsage, type HeatmapCell, type UsageUnit } from "../types";
   import {
-    buildLedgerBreakdown,
+    buildUnifiedBreakdown,
     focusStats,
     hexToRgbTriplet,
     paintCell,
@@ -12,10 +12,6 @@
   import { providerColor, providerLabel } from "../model-provider";
 
   interface Props {
-    /** provider 日账模式的数据键（volcengine/openai/xai 等真实服务端日账）。 */
-    providerId?: string;
-    /** 账本模式：'all' = 合并全部本机工具。设置了 ledger 时优先于 providerId。 */
-    ledger?: "all" | string | null;
     /** P2 分层高亮：要高亮的 provider key；null = 不高亮（基线行为）。 */
     highlightKey?: string | null;
     /** Shown instead of the default empty hint. */
@@ -25,15 +21,27 @@
   }
 
   let {
-    providerId = "",
-    ledger = null,
     highlightKey = null,
     emptyHint,
     unit = "tokens" as UsageUnit,
   }: Props = $props();
 
-  const CAL_WEEKS = 26; // 近 6 个月的周列数（周一对齐）
-  const CAL_DAYS = 200; // 与 CAL_WEEKS 匹配的取数天数
+  // 日历恒为「本机工具 + 服务端日账」的合并口径（buildUnifiedBreakdown，
+  // 服务端优先）。不再有「全部工具 / 某账户日账」的模式开关——两套口径并排
+  // 切换既让人分不清，当前者实测又几乎零重叠（服务端 20 天 vs 本机 GLM 4 天，
+  // 交集仅 2 天且服务端量微不足道），合并不会双计。
+  //
+  // 取数天数与展示周数解耦：CAL_DAYS 覆盖取数窗口（含色阶分位所需的样本），
+  // CAL_WEEKS 决定画几列。后者还写死在下方样式块的 grid-template-columns
+  // （纯 CSS 读不到 JS 常量），改这里必须同步改那两处 repeat(26, …)。
+  //
+  // ⚠️ 本文件的 script 注释里**不得出现 Svelte 的块级标签**（style 块、script
+  // 块的尖括号形式），哪怕裹在反引号里也不行。Svelte 解析器不认 JS 注释，
+  // 会把它当成样式块起点，于是整份 script 被判为未闭合：症状是 vite build 能过，
+  // 只有 svelte-check 报 "script was left open"，且定位落在文件末尾那个真正的
+  // 闭合标签上，完全指不到出错的那一行。要提到标签就写 "style 块" 这种纯文字。
+  const CAL_DAYS = 200; // 近 6 个月的取数天数
+  const CAL_WEEKS = 26;
 
   type Day = {
     date: string;
@@ -47,24 +55,26 @@
   let loaded = $state(false);
   let fetchSeq = 0;
 
+  // 恒定口径 → 没有任何 props 依赖，effect 只在挂载时跑一次。
+  // 存量守卫仍在：unified 换源时 in-flight 的旧请求不得覆盖新结果。
   $effect(() => {
     const seq = ++fetchSeq;
     loaded = false;
     cells = [];
     breakdown = new Map();
-    const fetcher = ledger
-      ? getUsageHistory(CAL_DAYS).then(({ rows }) => {
-          // 一次性拆解：总量走来源总量行，provider 归因走分模型行。
-          const map = buildLedgerBreakdown(rows);
-          breakdown = map;
-          return [...map.entries()]
-            .sort((a, b) => a[0].localeCompare(b[0]))
-            .map(([date, d]) => ({ date, value: d.total, unit: "tokens" as UsageUnit }));
-        })
-      : getHeatmap(providerId, CAL_DAYS);
-    fetcher
+    getUsageHistory(CAL_DAYS)
+      .then(({ rows }) => {
+        // 一次性拆解：合并口径（服务端日账优先，逐 provider 判定），
+        // 总量与 provider 归因来自同一次遍历，不再二选一。
+        const map = buildUnifiedBreakdown(rows);
+        if (seq !== fetchSeq) return;
+        breakdown = map;
+        return [...map.entries()]
+          .sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([date, d]) => ({ date, value: d.total, unit: "tokens" as UsageUnit }));
+      })
       .then((rows) => {
-        if (seq === fetchSeq) cells = rows;
+        if (rows && seq === fetchSeq) cells = rows;
       })
       .catch(() => {
         if (seq === fetchSeq) cells = [];
@@ -137,8 +147,9 @@
     const total = windowCells.reduce((s, c) => s + c.value, 0);
     const peak = Math.max(0, ...windowCells.map((c) => c.value));
     const activeDays = windowCells.filter((c) => c.value > 0).length;
-    // windowTotal 必须是**本机工具 token 口径**的总量（cells 来自 d.total，
-    // 而 buildLedgerBreakdown 只收 kind==='tool' 行），否则 share 会跨单位失真。
+    // share 的分母必须是**同一 merge 口径**下的窗口总量（cells 来自
+    // d.total，而 breakdown 来自 buildUnifiedBreakdown，含服务端替换后的值）。
+    // 两者同源，所以 share 是纯 token 比值，不会跨单位失真。
     const stats = highlightKey
       ? focusStats(breakdown, windowDates, highlightKey, total)
       : null;

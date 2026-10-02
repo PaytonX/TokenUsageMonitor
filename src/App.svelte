@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { fly } from "svelte/transition";
-  import { ledgerSeriesForKind } from "./lib/calendar-linkage";
+  import { highlightKeyForKind, ledgerSeriesForKind } from "./lib/calendar-linkage";
   import { LogicalSize } from "@tauri-apps/api/dpi";
   import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
   import {
@@ -1067,8 +1067,11 @@
                 focus = snap.provider_id;
                 // 日历已迁至趋势页，卡片点击不再直接驱动它；但仍把高亮焦点
                 // 预置到趋势页，切过去即可看到该 provider 的逐日构成。
-                // 账户日账口径单位不同，不能在高亮态下混算，故清空。
-                highlightKey = series.mode === "cross-tool" ? series.providerKey : null;
+                // 日历恒为合并口径（服务端优先），**所有**注册 provider 都能
+                // 在日历里出现——火山走自己的 tokens 日账，OpenAI/xAI 走本机
+                // 工具归因（它们的 USD 日账不进 token 日历）。故判据是"有没有
+                // provider key"，不再是"有没有账户日账口径"。
+                highlightKey = highlightKeyForKind(kind);
               }}
             />
           </div>
@@ -1080,7 +1083,7 @@
       {#if snapshots.length > 0}
         <!-- 日历已迁入 TrendPanel（bind:highlightKey）：总览卡片点击预置的
              高亮焦点，切到趋势页即生效——卡片↔日历的跨页联动由此保留。 -->
-        <TrendPanel bind:highlightKey {snapshots} />
+        <TrendPanel bind:highlightKey />
       {:else}
         <div class="shell__empty"><p>暂无用量数据</p></div>
       {/if}

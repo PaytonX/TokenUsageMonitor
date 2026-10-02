@@ -17,7 +17,7 @@
     type WindowKey,
     type WindowUsage,
   } from "../types";
-  import { buildLedgerBreakdown, ledgerSeriesForKind } from "../calendar-linkage";
+  import { buildUnifiedBreakdown, ledgerSeriesForKind } from "../calendar-linkage";
   import ProviderLogo from "./ProviderLogo.svelte";
 
   interface Props {
@@ -110,7 +110,7 @@
   // 旧实现有两处问题：① 自带一份 LEDGER_TOOL_FOR_KIND，与 App 侧不一致
   // （App 有 deepseek，DetailCard 没有）—— 正是 calendar-linkage 要消灭的漂移；
   // ② 按 source === 工具 id 过滤，漏掉跨工具归因的行，与日历高亮的口径不同。
-  // 现直接复用 buildLedgerBreakdown，与日历/趋势页完全同一口径。
+  // 现直接复用 buildUnifiedBreakdown，与日历/趋势页完全同一口径。
   //
   // 「无按日数据」的判据是**账本里近 90 天是否真的出现过这个 provider**，
   // 而不是注册表里有没有它的 key：注册表回答的是"能不能归因到它"，可一个
@@ -158,8 +158,8 @@
             }));
           return;
         }
-        // 跨工具：与日历高亮同一拆解（分模型行按 provider 归因），口径一致。
-        const map = buildLedgerBreakdown(rows);
+        // 跨工具：与日历高亮同一拆解（合并口径，服务端优先），口径一致。
+        const map = buildUnifiedBreakdown(rows);
         const key = series.providerKey;
         const appears = [...map.values()].some((d) => (d.byProvider[key] ?? 0) > 0);
         if (!appears) {

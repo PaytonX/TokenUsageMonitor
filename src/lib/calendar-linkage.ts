@@ -40,7 +40,16 @@ const KIND_TO_PROVIDER_KEY: Record<string, string> = {
   spark: "spark",
 };
 
-/** 有真实服务端日账的 kind（双写进 usage_daily，kind='provider'）。 */
+/**
+ * 有**自己的**服务端日账的 kind（双写进 usage_daily，kind='provider'）。
+ *
+ * 合并日历后它的职责收窄：不再决定"能不能进日历"（那由行的 `unit` 决定，见
+ * buildUnifiedBreakdown），也不再决定"能不能高亮"（见 highlightKeyForKind），
+ * 只用来回答"该 kind 是否有一份按官方口径回放的日账可看"——DetailCard 的
+ * 近 7 日小柱据此走服务端分支（火山按 tokens、OpenAI/xAI 按 USD 各自呈现）。
+ * 注意它与**单位**不是一回事：volcengine 在此集合内且单位是 tokens；
+ * openai/xai 在此集合内但单位是 USD。
+ */
 const ACCOUNT_DAILY_KINDS = new Set(["volcengine", "openai", "xai"]);
 
 /**
@@ -62,14 +71,19 @@ export function ledgerSeriesForKind(kind: string, providerId: string): LedgerSer
 /**
  * provider kind → 日历高亮用的 provider key；不可高亮返回 null。
  *
- * 与 `ledgerSeriesForKind` 的区别：账户日账虽有按日数据，但单位与本机工具
- * token 不同量纲，混进同一张日历的总量会犯「跨单位相加」的错误（历史教训见
- * docs/usage-ledger.md）。故日历恒为工具 token 总量，只有跨工具 kind 可高亮。
+ * 与 {@link providerKeyForKind} 相同——这个别名保留是因为"高亮"是调用侧语义，
+ * 而 {@link ledgerSeriesForKind} 答的是另一个问题（该 kind 有没有**自己的**日账
+ * 可看）。合并日历时这两者一度分叉（这里曾对账户日账 kind 返回 null），
+ * 那是"日历可切换口径"时代的遗留：那时服务端日账与本机 token 不同量纲，
+ * 并排切换等于跨单位相加，故把账户日账 kind 排除在总量外。
+ * 日历恒为合并口径后不再成立：
+ *   - volcengine 的服务端日明细本身就是 tokens，已并入日历 → 应可高亮；
+ *   - openai/xai 的服务端日账是 USD，**不**并入日历（见 buildUnifiedBreakdown），
+ *     但它们在日历里仍有本机工具归因层（gpt/o1/o3/o4 → openai）→ 也应可高亮。
+ * 即：凡是注册表里有的 kind 都能在日历里出现，判据不再是"它有没有账户日账"。
  */
 export function highlightKeyForKind(kind: string): string | null {
-  const base = normalizeKind(kind);
-  if (ACCOUNT_DAILY_KINDS.has(base)) return null;
-  return KIND_TO_PROVIDER_KEY[base] ?? null;
+  return providerKeyForKind(kind);
 }
 
 /** 某一天的用量拆解。 */
@@ -136,6 +150,87 @@ export function buildLedgerBreakdown(
   return out;
 }
 
+/**
+ * provider kind → 账本里的 provider key，**不看**该 kind 是不是账户日账类型。
+ *
+ * 与 {@link highlightKeyForKind} 的区别：那个函数对 account-daily kind 返回
+ * null（它们不进工具 token 口径的总量）；这个是纯命名空间查询，合并日历时
+ * 需要用它把 kind='provider' 的服务端行挂到对应的 provider 层上。
+ */
+export function providerKeyForKind(kind: string): string | null {
+  return KIND_TO_PROVIDER_KEY[normalizeKind(kind)] ?? null;
+}
+
+/** 该账本行的单位是否计入 token 口径的总量。 */
+function isTokenUnit(unit: string): boolean {
+  return unit === "tokens" || unit === "";
+}
+
+/**
+ * 统一日账：**本机工具用量 + 服务端日账合并成一个日历，服务端为准**。
+ *
+ * 合并规则（每个 provider 独立判定）：
+ * - 该 provider 当天有服务端日账 → 层值 = 服务端值（官方口径优先，忽略本地归因）
+ * - 否则 → 层值 = 本机跨工具归因值
+ * 总量 = 本机来源总量行之和 + Σ(有服务端数据的 provider 的「服务端值 − 本地值」)
+ * 即**替换**而非**相加**，所以同一 provider 两边都有记录时不会双计。
+ *
+ * 单位为非 token 的服务端行（OpenAI/xAI 的 USD、Kimi 的 CNY）不并入——那是
+ * 另一个量纲，折进 token 总量就是「跨单位相加」（docs/usage-ledger.md 明令禁止）。
+ * 它们只在 DetailCard 的近 7 日小柱里按各自单位单独呈现，不影响日历的总量、
+ * 色阶与高亮。
+ */
+export function buildUnifiedBreakdown(
+  rows: UsageDailyRow[],
+): Map<string, DayBreakdown> {
+  const out = buildLedgerBreakdown(rows);
+  // 服务端行按 (providerKey, date) 归集
+  const server = new Map<string, Map<string, number>>();
+  for (const r of rows) {
+    if (r.kind !== "provider" || !isTokenUnit(r.unit)) continue;
+    const key = providerKeyForKind(r.source.split("-")[0]);
+    if (!key) continue;
+    const per = server.get(key) ?? new Map<string, number>();
+    per.set(r.date, (per.get(r.date) ?? 0) + r.total);
+    server.set(key, per);
+  }
+  if (server.size === 0) return out;
+
+  const slot = (date: string): DayBreakdown => {
+    let e = out.get(date);
+    if (!e) {
+      e = { total: 0, byProvider: {} };
+      out.set(date, e);
+    }
+    return e;
+  };
+
+  const merged = new Set<string>();
+  for (const [date, e] of out) {
+    for (const [key, per] of server) {
+      const official = per.get(date);
+      if (official === undefined || official <= 0) continue;
+      const local = e.byProvider[key] ?? 0;
+      e.byProvider[key] = official; // 官方口径优先
+      e.total += official - local; // 替换而非相加，避免双计
+      merged.add(`${key}\u0000${date}`);
+    }
+  }
+  // 再扫一遍服务端日期：那些**本机完全没有工具行**的日子在 out 里没有条目，
+  // 只遍历 out 会把它们整段丢掉——而那正是"合并"最该补上的日子（实测本机
+  // GLM 有账的 4 天与服务端 20 天只重叠 2 天）。逐格补，本机归因为 0，
+  // 故 total 直接等于官方值。已合并过的格由 merged 跳过，不重复加。
+  for (const [key, per] of server) {
+    for (const [date, official] of per) {
+      if (official <= 0 || merged.has(`${key}\u0000${date}`)) continue;
+      const e = slot(date);
+      e.byProvider[key] = official;
+      e.total += official;
+    }
+  }
+  return out;
+}
+
 /** 某 provider 在 `windowDates` 窗口内的口径统计。 */
 export function focusStats(
   byDate: Map<string, DayBreakdown>,
@@ -146,8 +241,7 @@ export function focusStats(
   let days = 0;
   let sum = 0;
   let peak = 0;
-  for (const d of windowDates) {
-    const v = byDate.get(d)?.byProvider[providerKey] ?? 0;
+  for (const d of windowDates) {    const v = byDate.get(d)?.byProvider[providerKey] ?? 0;
     if (v > 0) days += 1;
     sum += v;
     if (v > peak) peak = v;

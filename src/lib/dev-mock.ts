@@ -50,8 +50,20 @@ const TOOL_PROVIDER: Record<string, string> = {
   cherry: "other",
 };
 
-const PROVIDER_DAILY: Record<string, number> = {
-  volcengine: 5.1e7, // 服务端日账实测量级（token）
+/**
+ * 服务端日账：source → { 量级, 单位 }。
+ *
+ * 两个细节必须与真机一致，否则预览会骗人：
+ * 1. `source` 是 **instance_id**（`providers/volcengine.rs:463` 写的是
+ *    `self.instance_id`），不是裸 kind。前端要 split("-")[0] 还原；
+ * 2. `unit` 逐 provider 不同且**决定它能否进 token 日历**：火山日明细是
+ *    tokens（`unit: c.unit` 直接沿用 API 返回值），OpenAI/xAI 是 USD
+ *    （`UsageUnit::Usd`），Kimi 是 CNY。非 token 的行不进日历总量与色阶。
+ */
+const PROVIDER_DAILY: Record<string, { base: number; unit: string }> = {
+  "volcengine-9-0": { base: 5.1e7, unit: "tokens" }, // 服务端日账实测量级
+  "openai-1-0": { base: 3.2, unit: "usd" },        // USD：不进 token 日历
+  "xai-1-0": { base: 1.4, unit: "usd" },
 };
 
 function buildData() {
@@ -70,6 +82,9 @@ function buildData() {
   const MODEL_OF: Record<string, string> = {
     minimax: "MiniMax-M3.1-Flash-Preview",
     glm: "GLM-5.3-Flash",
+    // ark- 前缀 → model-provider.ts 归到 volcengine 层，与火山服务端日账
+    // 同层，合并时才会走"服务端替换本地"而不是两个独立层并存。
+    volcengine: "ark-seed-1.6",
     deepseek: "deepseek-v4-flash",
     other: "未标记模型",
   };
@@ -87,7 +102,11 @@ function buildData() {
       // (0.35 + rnd()*1.5)，分布太好看，反而掩盖了色阶线性分档会失效的问题。
       const v = t.base * weekend * (0.02 + Math.pow(rnd(), 3) * 3.5);
       bySource[t.id] = (bySource[t.id] ?? 0) + v;
-      const prov = TOOL_PROVIDER[t.id] ?? "other";
+      let prov = TOOL_PROVIDER[t.id] ?? "other";
+      // zcode 同时打 GLM 与火山方舟：实测本机 GLM 全部来自 zcode，而火山
+      // 服务端日账有 20 天、本机侧几乎为空——这里让两者部分重叠，才能在
+      // 预览里看出"服务端替换本机"与"服务端补出本机没有的日子"两种形态。
+      if (t.id === "zcode") prov = rnd() < 0.22 ? "volcengine" : "glm";
       const m = MODEL_OF[prov];
       (byModel[t.id] ??= {})[m] = ((byModel[t.id] ??= {})[m] ?? 0) + v;
     }
@@ -111,14 +130,20 @@ function buildData() {
     }
   }
 
+  // 服务端日账：只覆盖近 60 天，且**故意包含本机当天完全没有工具行**的日子。
+  // 合并逻辑若只遍历本机拆解的结果，这类日子会整段从日历里消失——桩必须能
+  // 把这个洞暴露出来，否则预览看到的是"补洞成功"而非"根本没这问题"。
   for (const d of days.slice(-60)) {
-    for (const [source, base] of Object.entries(PROVIDER_DAILY)) {
+    for (const [source, { base, unit }] of Object.entries(PROVIDER_DAILY)) {
       if (rnd() < 0.35) continue;
       const v = base * (0.3 + rnd() * 1.4);
       providerRows.push({
         source, kind: "provider", date: d, model: "",
         input: 0, cache_read: 0, output: 0,
-        total: v, unit: "tokens", cost: null, currency: null, cost_estimated: false,
+        total: v, unit,
+        cost: unit === "usd" ? v : null,
+        currency: unit === "usd" ? "USD" : null,
+        cost_estimated: false,
       });
     }
   }
