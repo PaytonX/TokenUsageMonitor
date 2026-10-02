@@ -1,3 +1,6 @@
+import { installDevMock } from "./lib/dev-mock";
+installDevMock();
+
 import { mount } from "svelte";
 import "./styles/tokens.css";
 import ToolWindow from "./lib/components/ToolWindow.svelte";

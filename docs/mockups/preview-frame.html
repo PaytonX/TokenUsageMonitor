@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>TUM · 真实组件预览（400×680 定尺）</title>
+<style>
+  body{margin:0;background:#0f1114;color:#8b949e;
+       font:13px "Segoe UI Variable","Segoe UI",system-ui,sans-serif;
+       display:flex;flex-direction:column;align-items:center;gap:14px;padding:20px}
+  h1{font-size:15px;color:#e6e8ea;margin:0;font-weight:600}
+  .hint{font-size:11.5px;max-width:620px;text-align:center;line-height:1.6}
+  kbd{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.16);
+      border-radius:3px;padding:1px 5px;font-family:Consolas,monospace;font-size:10px;color:#4cc2ff}
+  /* 桌面底纹：透明窗的实际观感 */
+  .stage{background-image:linear-gradient(45deg,#20242a 25%,transparent 25%),
+         linear-gradient(-45deg,#20242a 25%,transparent 25%),
+         linear-gradient(45deg,transparent 75%,#20242a 75%),
+         linear-gradient(-45deg,transparent 75%,#20242a 75%);
+         background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0;
+         padding:12px;border-radius:12px}
+  iframe{width:400px;height:680px;border:0;border-radius:12px;display:block;
+         background:#1a1b1e;box-shadow:0 12px 40px rgba(0,0,0,.6)}
+  .sizes{display:flex;gap:10px;align-items:center;font-size:11.5px}
+  .sizes iframe{box-shadow:0 12px 40px rgba(0,0,0,.6)}
+</style>
+</head>
+<body>
+  <h1>TokenUsageMonitor · 真实组件定尺预览</h1>
+  <p class="hint">
+    这里是<b>真实组件</b>（真 ProviderCard / ProgressRing / UsageBar / HeatmapGrid / TrendPanel），
+    只有 Tauri IPC 换成了固定假数据（<code>src/lib/dev-mock.ts</code>，仅 <code>npm run dev</code> 下生效）。
+    布局、间距、字号、圆角全部是真 CSS —— 改真代码后刷新这里即为真实效果。
+  </p>
+
+  <div class="sizes" id="sizes"></div>
+
+  <div class="stage">
+    <iframe id="f" src="/index.html" title="dashboard 400x680"></iframe>
+  </div>
+
+  <p class="hint">
+    主窗口在 <code>tauri.conf.json</code> 里是 <b>400×680 且不可缩放</b>，所以上面的定尺就是它的真实版式。
+    趋势 / 工具的<b>独立窗口</b>分别是 680×780 与 760×480，可把下面按钮切过去看。
+  </p>
+
+<script>
+  // 独立窗口的真实尺寸来自 ipc.rs（open_trend_window / open_tool_window）
+  const WINDOWS = [
+    { key:"dashboard", label:"主窗口 · 400×680",  src:"/index.html",      w:400, h:680 },
+    { key:"settings",  label:"设置 · 760×480",    src:"/settings.html",   w:760, h:480 },
+    { key:"trend",     label:"趋势独立窗 · 680×780", src:"/trend.html",    w:680, h:780 },
+    { key:"tools",     label:"工具独立窗 · 760×480", src:"/toolwindow.html", w:760, h:480 },
+  ];
+  const holder = document.getElementById("sizes");
+  const frame = document.getElementById("f");
+  const btns = [];
+
+  WINDOWS.forEach((w) => {
+    const b = document.createElement("button");
+    b.textContent = w.label;
+    b.style.cssText = "font:inherit;font-size:11.5px;cursor:pointer;padding:4px 10px;border-radius:6px;" +
+      "border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:#8b949e";
+    b.onclick = () => {
+      frame.dataset.k = w.key;
+      frame.style.width = w.w + "px";
+      frame.style.height = w.h + "px";
+      frame.src = w.src;
+      btns.forEach((x) => x());
+    };
+    btns.push(() => {
+      const on = frame.dataset.k === w.key;
+      b.style.background = on ? "rgba(76,194,255,.16)" : "rgba(255,255,255,.05)";
+      b.style.color = on ? "#4cc2ff" : "#8b949e";
+      b.style.borderColor = on ? "rgba(76,194,255,.5)" : "rgba(255,255,255,.14)";
+    });
+    holder.appendChild(b);
+    if (w.key === "dashboard") frame.dataset.k = w.key;
+  });
+  btns.forEach((f) => f());
+</script>
+</body>
+</html>
