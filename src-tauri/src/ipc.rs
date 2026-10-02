@@ -5,7 +5,6 @@
 use crate::build_account_provider;
 use crate::dock::{
     anchor_from_rect, anchor_rect, nearest_side, peek_rect, pill_span_for, DockAnchor, DockSide,
-    PILL_ROW_H,
 };
 use crate::hub::HubDevice;
 use crate::local::LocalToolsPayload;
