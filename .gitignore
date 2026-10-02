@@ -15,3 +15,11 @@ coverage/
 .superpowers/
 
 .worktrees/
+
+# ZCode CLI 本地工作状态（工具产物，非项目文件）
+.zcode/
+.zcodeignore
+
+# ZCode CLI local workspace state (tool artifacts, not project files)
+.zcode/
+.zcodeignore
