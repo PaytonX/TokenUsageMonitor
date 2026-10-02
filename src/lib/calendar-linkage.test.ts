@@ -202,23 +202,47 @@ describe("buildUnifiedBreakdown", () => {
     expect(d.total).toBe(500); // 300 本地总量 − 300 本地归因 + 500 官方
   });
 
-  it("豆包(doubao)与火山方舟(volcengine)是两个层，服务端日账不覆盖前者", () => {
-    // 边界钉死，不是实现疏漏：火山账户的服务端日账是**官方口径**，但前端
-    // 无从判断本机 doubao-* 的调用是否走同一账户——zcode 的 model_usage 里有
-    // provider_id（account:bigmodel-start-plan 之类），可 TUM 目前只读
-    // message.modelId，丢了这层信息。故服务端日账只替换 volcengine 层，
-    // doubao 层按本机归因原样保留。
-    // 代价当下不可见：实测两套数据几乎零重叠（服务端 20 天 vs 本机 GLM 4 天，
-    // 交集仅 2 天且服务端量极小），等 provider_id 那层接上再收紧。
+  it("豆包(doubao)被并入火山账户的服务端口径，不再单列", () => {
+    // 用户 2026-10-02 拍板：本机没有配过其它能提供 doubao 模型的 provider，
+    // 所以 doubao 层就是火山账户的一部分，官方日账自然覆盖它。
+    // 关键在"整账户替换"：ark- 与 doubao- 的本地值一起被官方值取代，
+    // 而不是各自替换、导致官方值之外还留着 doubao 那份 → 总量虚高。
     const rows = [
       row("zcode", "2026-10-08", "", 1000),
       row("zcode", "2026-10-08", "ark-seed-1.6", 400),   // → volcengine
-      row("zcode", "2026-10-08", "doubao-seed-1.6", 600), // → doubao
+      row("zcode", "2026-10-08", "doubao-seed-1.6", 600), // → doubao，同账户
       providerRow("volcengine-9-0", "2026-10-08", 900),
     ];
     const d = buildUnifiedBreakdown(rows).get("2026-10-08")!;
-    expect(d.byProvider).toEqual({ volcengine: 900, doubao: 600 });
-    expect(d.total).toBe(1500); // 1000 − 400 + 900，doubao 未被替换
+    expect(d.byProvider).toEqual({ volcengine: 900 }); // doubao 层被吸收掉
+    expect(d.total).toBe(900); // 1000 − (400 + 600) + 900
+  });
+
+  it("服务端无数据时 doubao 仍按本机归因单列（不硬吞）", () => {
+    // 吸收只在"官方有账"时发生。没有官方数据的那些天，doubao 自己的量不该丢。
+    const rows = [
+      row("zcode", "2026-10-09", "", 900),
+      row("zcode", "2026-10-09", "ark-seed-1.6", 300),   // → volcengine
+      row("zcode", "2026-10-09", "doubao-seed-1.6", 600), // → doubao
+      providerRow("volcengine-9-0", "2026-10-08", 500),    // 只覆盖前一天
+    ];
+    const d = buildUnifiedBreakdown(rows).get("2026-10-09")!;
+    expect(d.byProvider).toEqual({ volcengine: 300, doubao: 600 });
+    expect(d.total).toBe(900);
+  });
+
+  it("别名吸收只对有官方数据的账户生效，不牵连其它 provider", () => {
+    // glm 没有服务端日账，它不能因为"火山吸收 doubao"而被顺带改掉。
+    const rows = [
+      row("zcode", "2026-10-11", "", 1000),
+      row("zcode", "2026-10-11", "ark-seed-1.6", 400),
+      row("zcode", "2026-10-11", "doubao-seed-1.6", 300),
+      row("zcode", "2026-10-11", "GLM-5.3", 300),
+      providerRow("volcengine-9-0", "2026-10-11", 500),
+    ];
+    const d = buildUnifiedBreakdown(rows).get("2026-10-11")!;
+    expect(d.byProvider).toEqual({ volcengine: 500, glm: 300 });
+    expect(d.total).toBe(800);
   });
 
   it("服务端有数据但本地无该 provider 时直接计入", () => {

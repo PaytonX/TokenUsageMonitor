@@ -167,13 +167,34 @@ function isTokenUnit(unit: string): boolean {
 }
 
 /**
+ * 同一**账户**下的本机归因层 → 持有该账户服务端日账的规范层。
+ *
+ * `providerForModel` 按**模型名**分层，账户 API 按**账户**回账，两者粒度不同，
+ * 于是同一个账户的调用会被拆到两个层上。火山账户尤其明显：方舟的模型叫
+ * `ark-*`（→ volcengine 层），豆包的模型叫 `doubao-*`（→ doubao 层），可它们
+ * 都是火山账户下的调用。本机没有配过其它能提供 doubao 模型的 provider，
+ * 所以 doubao 层实际就是火山账户的一部分——官方日账自然覆盖它。
+ *
+ * 表里没列的层不合并：没有服务端日账的 provider（glm/kimi/minimax…）保持
+ * 本机归因原样。
+ */
+const ACCOUNT_ABSORBED_LAYERS: Record<string, string[]> = {
+  volcengine: ["doubao"],
+};
+
+/** 某个规范层要吃掉哪些本机归因层（含自身）。 */
+function absorbedLayers(canonical: string): string[] {
+  return [canonical, ...(ACCOUNT_ABSORBED_LAYERS[canonical] ?? [])];
+}
+
+/**
  * 统一日账：**本机工具用量 + 服务端日账合并成一个日历，服务端为准**。
  *
- * 合并规则（每个 provider 独立判定）：
- * - 该 provider 当天有服务端日账 → 层值 = 服务端值（官方口径优先，忽略本地归因）
+ * 合并规则（每个账户独立判定）：
+ * - 该账户当天有服务端日账 → 层值 = 服务端值（官方口径优先，本机归因被吸收）
  * - 否则 → 层值 = 本机跨工具归因值
- * 总量 = 本机来源总量行之和 + Σ(有服务端数据的 provider 的「服务端值 − 本地值」)
- * 即**替换**而非**相加**，所以同一 provider 两边都有记录时不会双计。
+ * 总量 = 本机来源总量行之和 + Σ(有服务端数据的账户的「服务端值 − 被吸收的本地值之和」)
+ * 即**替换**而非**相加**，所以同一账户两边都有记录时不会双计。
  *
  * 单位为非 token 的服务端行（OpenAI/xAI 的 USD、Kimi 的 CNY）不并入——那是
  * 另一个量纲，折进 token 总量就是「跨单位相加」（docs/usage-ledger.md 明令禁止）。
@@ -184,7 +205,8 @@ export function buildUnifiedBreakdown(
   rows: UsageDailyRow[],
 ): Map<string, DayBreakdown> {
   const out = buildLedgerBreakdown(rows);
-  // 服务端行按 (providerKey, date) 归集
+  // 服务端行按 (规范层, date) 归集。别名层不做反向映射：若将来豆包自己出了
+  // 服务端日账，那**是另一个账户**，不该并进火山。
   const server = new Map<string, Map<string, number>>();
   for (const r of rows) {
     if (r.kind !== "provider" || !isTokenUnit(r.unit)) continue;
@@ -210,7 +232,13 @@ export function buildUnifiedBreakdown(
     for (const [key, per] of server) {
       const official = per.get(date);
       if (official === undefined || official <= 0) continue;
-      const local = e.byProvider[key] ?? 0;
+      // 官方值替换**整个账户**的本地层之和（含被吸收的别名层），
+      // 逐层相减而不是逐层相加，这样 doubao 那部分不会被重复计入总量。
+      let local = 0;
+      for (const layer of absorbedLayers(key)) {
+        local += e.byProvider[layer] ?? 0;
+        delete e.byProvider[layer];
+      }
       e.byProvider[key] = official; // 官方口径优先
       e.total += official - local; // 替换而非相加，避免双计
       merged.add(`${key}\u0000${date}`);

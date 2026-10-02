@@ -755,7 +755,12 @@ pub async fn open_settings(app: AppHandle) -> Result<(), String> {
         tauri::WebviewUrl::App("settings.html".into()),
     )
     .title("TokenUsageMonitor · 设置")
-    .inner_size(680.0, 780.0)
+    // 680 宽时内容区实得 680−148(导航)−68(左右内边距)=464px，汇率覆盖的
+    // `minmax(180px, 1fr)` 只能排 2 列（6 个币种 = 3 行），通用页因此溢出约
+    // 230px、要滚动。拉到 820 让内容区到 604px、同一网格排 3 列（2 行），
+    // 纵向省下一行。高度维持 780：再加高会让窗口在 1080p 上过于占屏，
+    // 而溢出量已经降到可接受。
+    .inner_size(820.0, 780.0)
     .resizable(true)
     .min_inner_size(540.0, 600.0)
     .visible(false)
