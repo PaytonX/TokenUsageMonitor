@@ -163,8 +163,8 @@ pub async fn get_local_tools(
     };
     state.local.store(payload.clone()).await;
 
-    // 把本地 MiniMax token 用量持久化到 DB（键 minimax-code），供 MiniMax 账户
-    // 卡片日历热力图快速读取，无需每次重新扫描 ~/.minimax 的大 SQLite。
+    // 把全部本机工具的逐日用量写入统一账本 usage_daily（日历/趋势/模型三个
+    // 历史视图的唯一口径），全量回放幂等。
     crate::local::persist_all_tools(&state.storage, &tools);
 
     // Persist the result + source fingerprint for the second-level cache.
