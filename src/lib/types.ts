@@ -445,6 +445,9 @@ export type Credentials =
       kind: "access_key_secret";
       access_key: string;
       secret_key: string;
+      /** 可选：上游推理 API Key（火山方舟等）。AK/SK 只用于查用量的 HMAC 签名，
+       *  TokenRouter 代理转发需要真正的推理 Key；不填则该账户仅监控、不可路由。 */
+      api_key?: string;
     }
   | { kind: "local_token"; token: string };
 

@@ -385,6 +385,7 @@ impl Provider for VolcengineProvider {
             Credentials::AccessKeySecret {
                 access_key,
                 secret_key,
+                ..
             } => (access_key.clone(), secret_key.clone()),
             _ => {
                 return Err(ProviderError::Auth {

@@ -99,6 +99,7 @@ impl VolcengineApiProvider {
             Credentials::AccessKeySecret {
                 access_key,
                 secret_key,
+                ..
             } => (access_key, secret_key),
             _ => {
                 return Err(ProviderError::Auth {

@@ -52,6 +52,11 @@ pub enum Credentials {
     AccessKeySecret {
         access_key: String,
         secret_key: String,
+        /// **可选**：上游推理 API Key（火山方舟等）。AK/SK 只用于查询用量的
+        /// HMAC 签名，代理转发需要真正的推理 Key——没有它该账户就无法作为
+        /// TokenRouter 的线路。为空表示「仅监控、不可路由」。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
     },
     /// Token read from a local file on this machine (no keyring entry needed).
     LocalToken { token: String },

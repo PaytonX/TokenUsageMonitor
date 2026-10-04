@@ -69,6 +69,9 @@
     /** AccessKeySecret fields */
     accessKey: string;
     secretKey: string;
+    /** AccessKeySecret 账户的可选推理 API Key（仅 TokenRouter 路由用；
+     *  监控用量仍走 AK/SK 签名，留空即「仅监控、不可路由」）。 */
+    routeApiKey: string;
     /** LocalToken field (e.g. Codex ~/.codex/auth.json) */
     token: string;
     credsDirty: boolean;
@@ -185,6 +188,7 @@
       apiKey: "",
       accessKey: "",
       secretKey: "",
+      routeApiKey: "",
       token: "",
       credsDirty: false,
       testing: false,
@@ -254,10 +258,12 @@
       return { kind: "local_token", token: f.token.trim() };
     }
     if (isAccessKey(f.meta.provider_kind)) {
+      const routeKey = f.routeApiKey.trim();
       return {
         kind: "access_key_secret",
         access_key: f.accessKey.trim(),
         secret_key: f.secretKey.trim(),
+        ...(routeKey ? { api_key: routeKey } : {}),
       };
     }
     return { kind: "bearer_key", api_key: f.apiKey.trim() };
@@ -373,6 +379,7 @@
     f.apiKey = "";
     f.accessKey = "";
     f.secretKey = "";
+    f.routeApiKey = "";
     f.token = "";
     f.testResult = null;
     f.error = null;
@@ -1219,6 +1226,27 @@ async function handleMinimize() {
                           oninput={() => (selectedForm.credsDirty = true)}
                         />
                       </label>
+                      <div class="creds-optional">
+                        <div class="creds-optional__title">
+                          推理 API Key（可选 · 仅 TokenRouter 路由需要）
+                        </div>
+                        <p class="creds-optional__desc">
+                          上面这组 AK / SK 只用于<strong>查询配额</strong>（HMAC 签名），
+                          本身不是接口调用密钥。TokenRouter 转发请求时需要该服务的
+                          <strong>推理 API Key</strong>（如火山方舟 API Key）——
+                          不填不影响用量监控，但这个账户<strong>无法作为路由线路</strong>使用。
+                        </p>
+                        <label class="field">
+                          <span class="field__label">推理 API Key</span>
+                          <input
+                            class="field__input"
+                            type="password"
+                            placeholder="留空 = 仅监控，不参与路由"
+                            bind:value={selectedForm.routeApiKey}
+                            oninput={() => (selectedForm.credsDirty = true)}
+                          />
+                        </label>
+                      </div>
                     {:else if isLocalToken(selectedForm.meta.provider_kind)}
                       <label class="field">
                         <span class="field__label">本地登录凭证</span>
@@ -2182,6 +2210,29 @@ async function handleMinimize() {
     padding: 1px 8px;
     font-family: var(--tum-font-mono);
   }
+
+  /* AK/SK 账户的可选推理 Key 分组：弱化边框 + 说明文字，与上方必填凭据
+   * 明确区隔，避免用户以为填了就能路由。 */
+  .creds-optional {
+    margin-top: 4px;
+    padding: 11px 13px;
+    border: 1px dashed var(--tum-border, rgba(255, 255, 255, 0.14));
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .creds-optional__title {
+    font-size: 12.5px;
+    font-weight: 650;
+    color: var(--tum-text-secondary, #c9d1d9);
+    margin-bottom: 5px;
+  }
+  .creds-optional__desc {
+    margin: 0 0 10px;
+    font-size: 12px;
+    line-height: 1.65;
+    color: var(--tum-text-muted, #8b949e);
+  }
+  .creds-optional__desc strong { color: var(--tum-text-primary, #e6edf3); font-weight: 650; }
 
   .hint {
     font-size: var(--tum-font-size-sm);

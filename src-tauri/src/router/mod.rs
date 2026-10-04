@@ -82,6 +82,22 @@ pub fn ledger_source(account: &str) -> String {
     format!("router:{account}")
 }
 
+/// 从凭据里取**可用于代理转发**的上游推理 API Key。
+///
+/// - `BearerKey`：直接取（OpenAI / Anthropic 兼容类账户）。
+/// - `AccessKeySecret`：取可选的 `api_key`（火山 AgentPlan 等——AK/SK 只用于
+///   查询用量的 HMAC 签名，代理转发必须用真正的推理 Key；未填返回 None，
+///   该账户可监控但不可路由）。
+/// - `LocalToken`：本地登录态不做转发，返回 None。
+pub fn routing_api_key_of(creds: Option<&Credentials>) -> Option<String> {
+    let key = match creds? {
+        Credentials::BearerKey { api_key } => api_key.clone(),
+        Credentials::AccessKeySecret { api_key, .. } => api_key.clone()?,
+        Credentials::LocalToken { .. } => return None,
+    };
+    (!key.trim().is_empty() && key != "mock").then_some(key)
+}
+
 /// 约束的周期序：用于「最小（最短周期）窗口」选择。
 pub mod period {
     pub const FIVE_HOUR: u8 = 0;
@@ -409,24 +425,19 @@ pub async fn status_payload(core: &Arc<RouterCore>) -> RouterStatusPayload {
 }
 
 impl RouterCore {
-    /// 候选凭据是否可路由（BearerKey 且非空）。
+    /// 候选凭据是否可路由。
+    ///
+    /// 两种形态可用：`BearerKey`（OpenAI/Anthropic 兼容类账户），以及
+    /// `AccessKeySecret` **额外填写了推理 API Key** 的账户（火山 AgentPlan：
+    /// AK/SK 只用于查用量的 HMAC 签名，代理转发需要真正的推理 Key）。
+    /// 仅填了 AK/SK 而没有 API Key 的账户可正常监控，但不可路由。
     pub async fn is_usable(&self, cand: &config::CandidateConfig) -> bool {
-        self.credentials
-            .read()
-            .await
-            .get(&cand.account)
-            .map(|c| matches!(c, Credentials::BearerKey { api_key } if !api_key.trim().is_empty()))
-            .unwrap_or(false)
+        routing_api_key_of(self.credentials.read().await.get(&cand.account)).is_some()
     }
 
-    /// 取候选的上游 API key（已验证为非空 BearerKey）。
+    /// 取候选的上游推理 API Key（非空才返回）。
     pub async fn api_key_of(&self, account: &str) -> Option<String> {
-        match self.credentials.read().await.get(account) {
-            Some(Credentials::BearerKey { api_key }) if !api_key.trim().is_empty() => {
-                Some(api_key.clone())
-            }
-            _ => None,
-        }
+        routing_api_key_of(self.credentials.read().await.get(account))
     }
 
     /// 拉取上游的模型列表（`GET {base}/v1/models`），供设置页「模型名」
@@ -475,5 +486,82 @@ impl RouterCore {
         ids.sort();
         ids.dedup();
         Ok(ids)
+    }
+}
+
+#[cfg(test)]
+mod routing_key_tests {
+    use super::routing_api_key_of;
+    use crate::providers::Credentials;
+
+    /// 测试占位 key：运行时拼接生成，不指向任何真实服务，因此源码里不存在
+    /// 可用凭据字面量。
+    fn placeholder_key() -> String {
+        format!("test-{}-not-a-real-credential", "key")
+    }
+
+    #[test]
+    fn bearer_key_accounts_are_routable() {
+        let key = placeholder_key();
+        let c = Credentials::BearerKey { api_key: key.clone() };
+        assert_eq!(routing_api_key_of(Some(&c)), Some(key));
+    }
+
+    #[test]
+    fn access_key_secret_needs_the_optional_routing_key() {
+        // 火山 AgentPlan 典型形态：只填了 AK/SK → 可监控但不可路由。
+        let no_key = Credentials::AccessKeySecret {
+            access_key: "AK".into(),
+            secret_key: "SK".into(),
+            api_key: None,
+        };
+        assert_eq!(routing_api_key_of(Some(&no_key)), None);
+
+        // 额外填了推理 API Key → 可路由，用它转发（而非 AK/SK）。
+        let with_key = Credentials::AccessKeySecret {
+            access_key: "AK".into(),
+            secret_key: "SK".into(),
+            api_key: Some("ark-inference-key".into()),
+        };
+        assert_eq!(
+            routing_api_key_of(Some(&with_key)),
+            Some("ark-inference-key".to_string())
+        );
+    }
+
+    #[test]
+    fn blank_and_mock_keys_are_rejected() {
+        for key in ["", "   ", "mock"] {
+            let c = Credentials::BearerKey {
+                api_key: key.into(),
+            };
+            assert_eq!(routing_api_key_of(Some(&c)), None, "key {key:?}");
+        }
+        let blank_ak = Credentials::AccessKeySecret {
+            access_key: "AK".into(),
+            secret_key: "SK".into(),
+            api_key: Some("  ".into()),
+        };
+        assert_eq!(routing_api_key_of(Some(&blank_ak)), None);
+    }
+
+    #[test]
+    fn missing_credentials_and_local_token_are_not_routable() {
+        assert_eq!(routing_api_key_of(None), None);
+        let local = Credentials::LocalToken {
+            token: "local-login".into(),
+        };
+        assert_eq!(routing_api_key_of(Some(&local)), None);
+    }
+
+    #[test]
+    fn access_key_secret_without_api_key_still_deserializes_from_old_configs() {
+        // 旧 keyring 条目没有 api_key 字段 → serde 默认 None，不得解析失败。
+        let raw = r#"{"kind":"access_key_secret","access_key":"AK","secret_key":"SK"}"#;
+        let c: Credentials = serde_json::from_str(raw).expect("legacy creds must parse");
+        match &c {
+            Credentials::AccessKeySecret { api_key, .. } => assert!(api_key.is_none()),
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 }
