@@ -1,6 +1,7 @@
 # TokenRouter — 本地路由代理实施计划
 
-- 日期：2026-10-04
+- 日期：2026-10-04（v2 重构：单路由 + 四层判定，见文末「v2 重构」）
+- 原始日期：2026-10-04
 - 状态：已实施（自动化验收完成；真机验收步骤见文末，待用户执行）
 - 分支：`feat/token-router`
 - Spec：`docs/superpowers/specs/2026-10-04-token-router-design.md`（D1-D9 决策记录）
@@ -138,3 +139,53 @@ RouterCore(axum, 127.0.0.1:port) ─ 决策 ────┼─ 候选2 ...
 - `router:*` 伪来源在趋势/日历视图以原名显示（后续可做显示名映射）。
 - AccessKeySecret 凭据账户（火山 AFP）不可作候选（签名 scheme 不兼容透传）。
 - 4xx（参数错误）不切换直接透传，避免掩盖真实错误。
+
+
+---
+
+## v2 重构（2026-10-04，交互原型确认后）
+
+**触发**：真机使用反馈 + 三轮原型讨论。原 v1 存在三类问题：多路由/别名分派维护
+成本高、「最紧窗口剩余 %」在大窗紧小窗富余时误切、切换阈值与切回逻辑参数含义不直观。
+
+### 设计结论（决策 D5 / D10 重写）
+
+- **单路由**（D10）：`routes` 只看第一条；旧配置平滑迁移。
+- **四层判定**（D5）：
+  1. 主动预警（可设阈值，`proactive_threshold_percent`，**0 = 关闭**）——以**最小
+     （最短周期）在报窗口**的剩余 % 为准；手填日限/月上限视为对应周期窗口一并参与。
+  2. 硬墙兜底（恒开）——任一窗口/上限打到 100% → 立即不可用。
+  3. 被动观测（恒开）——限流/配额立即冷却换线；连接异常原地重试一次 + 跨请求
+     `conn_breaker_count` 熔断；参数类 4xx 透传。
+  4. 切回探视——资格判定（无窗口打满 + 最小窗口有余量）→ 下一个**真实请求**作探针
+     → 失败按 ×2 退避（`probe_start_secs`）→ 达 `probe_max_attempts` 等 `reset_at`
+     （拿不到则 15 分钟低频）；备用全不可用时退避中的主线路仍允许一试。
+
+### 界面重构（v3 原型，docs/mockups/2026-10-04-token-router-ui-v3.html）
+
+- 服务卡（总开关 + 接入地址一键复制 + 「服务设置」折叠）
+- **切走线仪表**：可拖动阈值 + 当前承载线路的最小窗口剩余指针 + 状态文字
+- **切回探视时间线**：第 N / 共 M 次 + 下次探视倒计时
+- **线路卡**：序号圆点 ①②③（连接线）、账户/模型（▼ 拉取）、上游地址（自动带出标记）、
+  额度上限折叠（日 tokens / 月金额）、↑↓✕、当前线路呼吸光晕
+- 动效：卡片/线路入场 stagger、折叠高度过渡、开关弹性滑块、指针平滑滑动、
+  `prefers-reduced-motion` 适配
+
+### 实施结果
+
+- 后端：`config.rs` / `decision.rs` / `mod.rs` / `server.rs` 全量重写
+  （decision.rs 新增 `assess` / `QuotaVerdict` / `ProbeState` / 熔断计数）。
+- 集成测试：14 个用例（新增主动预警提前绕行、月限窗口、探视排程、route.off 503）。
+- 验证：`cargo test` lib 283 + 集成 14 全绿；`svelte-check` 0 错；`vitest` 43 过；
+  `vite build` 成功；浏览器 harness 实尺寸截图核验（服务卡/仪表/探视时间线/线路卡）。
+- 提交：`b56c870`（后端）、`f703cb2`（前端）。
+
+### v1 → v2 配置迁移
+
+| v1 字段 | v2 |
+|---|---|
+| `failover_threshold_percent` | 废弃（serde 忽略）→ `proactive_threshold_percent`（同名语义但按最小窗口） |
+| `failback_threshold_percent` | 废弃 → 由探视退避取代 |
+| `error_cooldown_secs` | 保留 |
+| — | 新增 `conn_breaker_count` / `probe_start_secs` / `probe_max_attempts` |
+| `routes[]`（多条） | 只取第一条；`RouteConfig` 新增 `on`（路由链开关） |

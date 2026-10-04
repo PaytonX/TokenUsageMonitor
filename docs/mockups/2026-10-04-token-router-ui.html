@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TokenRouter · 路由界面重构 — 交互原型</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: rgba(255, 255, 255, 0.04);
+    --panel-2: rgba(255, 255, 255, 0.07);
+    --line: rgba(255, 255, 255, 0.09);
+    --line-2: rgba(255, 255, 255, 0.16);
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #4cc2ff;
+    --accent-fill: rgba(76, 194, 255, 0.12);
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --radius: 12px;
+    --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 28px 16px 80px;
+    background:
+      radial-gradient(1200px 500px at 20% -10%, rgba(76, 194, 255, 0.07), transparent 60%),
+      radial-gradient(900px 500px at 110% 20%, rgba(102, 126, 234, 0.06), transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font: 14px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .stage { max-width: 760px; margin: 0 auto; }
+
+  /* ---- 原型说明条 ---- */
+  .mock-note {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 10px 14px; margin-bottom: 18px;
+    border: 1px dashed var(--line-2); border-radius: var(--radius);
+    color: var(--muted); font-size: 12.5px;
+  }
+  .mock-note b { color: var(--text); font-weight: 600; }
+
+  /* ---- 通用控件 ---- */
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 10px; border-radius: 999px; font-size: 12px; white-space: nowrap;
+  }
+  .badge-ok    { background: rgba(52, 211, 153, 0.15); color: var(--ok); }
+  .badge-warn  { background: rgba(251, 191, 36, 0.15); color: var(--warn); }
+  .badge-cool  { background: rgba(251, 191, 36, 0.15); color: var(--warn); }
+  .badge-bad   { background: rgba(248, 113, 113, 0.18); color: var(--bad); }
+  .badge-proto { background: var(--panel-2); color: var(--muted); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 6px rgba(52, 211, 153, 0.7); }
+  .dot.warn { background: var(--warn); box-shadow: 0 0 6px rgba(251, 191, 36, 0.6); }
+
+  .btn {
+    border: 1px solid var(--line); background: var(--panel);
+    color: var(--text); border-radius: 8px; padding: 5px 12px;
+    font-size: 12.5px; cursor: pointer; transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--accent); background: var(--accent-fill); }
+  .btn.flashed { border-color: var(--ok); color: var(--ok); }
+  .btn.icon { padding: 4px 8px; font-size: 12px; }
+  .btn.danger { color: var(--bad); }
+  .btn.danger:hover { border-color: var(--bad); background: rgba(248, 113, 113, 0.12); }
+  .btn:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
+
+  input, select {
+    background: rgba(0, 0, 0, 0.25); border: 1px solid var(--line);
+    color: var(--text); border-radius: 8px; padding: 7px 10px;
+    font-size: 13px; width: 100%; outline: none; transition: border-color 0.15s;
+  }
+  input:focus, select:focus { border-color: var(--accent); }
+  input.mono, code { font-family: var(--mono); }
+  label { display: block; }
+  label > span.lb {
+    display: block; font-size: 11.5px; color: var(--muted); margin-bottom: 4px;
+  }
+
+  code.key {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    background: rgba(0, 0, 0, 0.3); border: 1px solid var(--line);
+    padding: 3px 9px; border-radius: 7px;
+  }
+  .url-chip {
+    font-family: var(--mono); font-size: 13px; color: var(--accent);
+    background: var(--accent-fill); border: 1px solid rgba(76, 194, 255, 0.35);
+    padding: 6px 12px; border-radius: 8px; cursor: pointer;
+  }
+  .url-chip:hover { border-color: var(--accent); }
+
+  /* ---- 开关 ---- */
+  .switch { position: relative; width: 44px; height: 24px; flex: none; cursor: pointer; }
+  .switch input { display: none; }
+  .switch .track {
+    position: absolute; inset: 0; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12); transition: background 0.2s;
+  }
+  .switch .thumb {
+    position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+    border-radius: 50%; background: #fff; transition: left 0.2s;
+  }
+  .switch input:checked + .track { background: var(--accent); }
+  .switch input:checked + .track .thumb { left: 23px; }
+
+  /* ---- 服务状态卡 ---- */
+  .service-card {
+    background: linear-gradient(180deg, rgba(76, 194, 255, 0.06), rgba(255, 255, 255, 0.03));
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px 18px; margin-bottom: 14px;
+  }
+  .service-main { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .service-title { font-size: 16px; font-weight: 650; display: flex; align-items: center; gap: 10px; }
+  .service-sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+  .url-row {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px;
+  }
+  .url-row .hint { color: var(--muted); font-size: 12px; }
+
+  .adv-grid {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px; margin-top: 14px; padding-top: 14px;
+    border-top: 1px solid var(--line);
+    align-items: end;
+  }
+  .adv-grid[hidden] { display: none; }
+  .adv-grid .lb { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .adv-hint { margin-top: 10px; color: var(--muted); font-size: 12px; }
+  .adv-hint code { color: var(--text); }
+  .link-btn {
+    background: none; border: none; color: var(--accent); cursor: pointer;
+    font-size: 12.5px; padding: 4px 2px;
+  }
+  .link-btn:hover { text-decoration: underline; }
+
+  /* ---- 路由卡 ---- */
+  .route-card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+    transition: border-color 0.2s;
+  }
+  .route-card.open { border-color: rgba(76, 194, 255, 0.4); }
+  .route-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 14px; align-items: center;
+    padding: 14px 16px; cursor: pointer; user-select: none;
+  }
+  .route-head:hover { background: rgba(255, 255, 255, 0.03); }
+  .route-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .route-name { font-size: 14.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chain-preview {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    color: var(--muted); font-size: 12.5px;
+  }
+  .chain-node {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(0, 0, 0, 0.25); border: 1px solid var(--line);
+    padding: 2px 9px; border-radius: 999px; font-family: var(--mono); font-size: 12px;
+  }
+  .chain-node .arrow { color: var(--muted); }
+  .chain-arrow { color: var(--line-2); font-size: 12px; }
+  .route-side { display: flex; align-items: center; gap: 10px; justify-self: end; }
+  .switch.sm { width: 36px; height: 20px; }
+  .switch.sm .thumb { width: 14px; height: 14px; }
+  .switch.sm input:checked + .track .thumb { left: 19px; }
+  .route-card.disabled .route-name,
+  .route-card.disabled .chain-preview,
+  .route-card.disabled .active-line { opacity: 0.45; }
+  .active-line { color: var(--muted); font-size: 12px; }
+  .chev { color: var(--muted); transition: transform 0.2s; font-size: 12px; }
+  .route-card.open .chev { transform: rotate(180deg); }
+
+  .route-body { padding: 4px 16px 16px; border-top: 1px solid var(--line); }
+  .route-card:not(.open) .route-body { display: none; }
+
+  .edit-row { display: flex; gap: 10px; align-items: end; margin: 14px 0 4px; }
+  .edit-row label { flex: 1; min-width: 0; }
+  .edit-row .w-protocol { flex: 0 0 150px; }
+  .edit-row .w-alias { flex: 0 0 200px; }
+  .edit-row .w-alias input { font-family: var(--mono); }
+
+  .access-row {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    background: rgba(0, 0, 0, 0.22); border: 1px solid var(--line);
+    border-radius: 10px; padding: 9px 12px; margin: 12px 0 4px;
+  }
+  .access-row .lb { color: var(--muted); font-size: 12px; flex: none; }
+  .access-row code.full {
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;
+  }
+
+  /* ---- 线路步骤条 ---- */
+  .steps-title {
+    display: flex; align-items: baseline; gap: 10px;
+    margin: 16px 0 10px; font-size: 13px; font-weight: 650;
+  }
+  .steps-title .sub { color: var(--muted); font-size: 12px; font-weight: 400; }
+  .steps { list-style: none; margin: 0; padding: 0; }
+  .step { display: flex; gap: 12px; }
+  .step-rail {
+    display: flex; flex-direction: column; align-items: center;
+    width: 30px; flex: none; padding-top: 12px;
+  }
+  .step-no {
+    width: 26px; height: 26px; border-radius: 50%; flex: none;
+    display: grid; place-items: center;
+    font-size: 12px; font-weight: 700;
+    background: var(--panel-2); border: 1px solid var(--line-2); color: var(--muted);
+  }
+  .step.main .step-no { background: var(--accent-fill); border-color: var(--accent); color: var(--accent); }
+  .rail-line { flex: 1; width: 2px; background: var(--line); margin: 6px 0; border-radius: 2px; }
+  .step:last-child .rail-line { display: none; }
+
+  .step-card {
+    flex: 1; min-width: 0; margin-bottom: 10px;
+    background: rgba(0, 0, 0, 0.2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 11px 13px;
+  }
+  .step.low { border-color: rgba(251, 191, 36, 0.35); }
+  .step-top { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .step-role { font-size: 12.5px; font-weight: 650; color: var(--muted); }
+  .step.main .step-role { color: var(--accent); }
+  .step-top .sp { flex: 1; }
+  .ops { display: flex; gap: 5px; }
+
+  .step-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 10px; }
+  .model-wrap { position: relative; display: flex; gap: 5px; }
+  .model-wrap .btn.icon { flex: none; }
+  .models-pop {
+    display: none; position: absolute; top: calc(100% + 4px); right: 0; z-index: 30;
+    width: 240px; max-height: 200px; overflow: auto;
+    background: #161b24; border: 1px solid var(--line-2); border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); padding: 6px;
+  }
+  .models-pop.show { display: block; }
+  .models-pop b {
+    display: block; font-size: 11px; color: var(--muted);
+    padding: 4px 8px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px;
+    font-weight: 500;
+  }
+  .models-pop a {
+    display: block; padding: 5px 9px; border-radius: 6px; cursor: pointer;
+    font-family: var(--mono); font-size: 12.5px;
+  }
+  .models-pop a:hover { background: var(--accent-fill); color: var(--accent); }
+
+  .step-sub { margin-top: 10px; }
+  .step-sub .url-line { display: flex; gap: 6px; align-items: center; }
+  .step-sub .url-line input { font-family: var(--mono); font-size: 12.5px; }
+  .auto-tag {
+    flex: none; font-size: 11px; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; white-space: nowrap;
+  }
+
+  details.step-adv { margin-top: 10px; }
+  details.step-adv > summary {
+    cursor: pointer; font-size: 12px; color: var(--muted); user-select: none;
+    list-style: none; display: inline-flex; align-items: center; gap: 5px;
+  }
+  details.step-adv > summary::before { content: "▸"; transition: transform 0.15s; }
+  details.step-adv[open] > summary::before { transform: rotate(90deg); }
+  details.step-adv > summary:hover { color: var(--text); }
+  details.step-adv > summary .sum { color: var(--text); font-weight: 550; }
+  .adv-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 9px; }
+
+  .step.add .step-card {
+    background: none; border-style: dashed; text-align: center;
+    padding: 10px; cursor: pointer; color: var(--muted);
+  }
+  .step.add .step-card:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-fill); }
+  .step.add { cursor: pointer; }
+
+  .route-foot {
+    display: flex; gap: 10px; align-items: center; justify-content: space-between;
+    margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+  .route-foot .hint { color: var(--muted); font-size: 12px; }
+
+  .add-route {
+    width: 100%; padding: 12px; cursor: pointer;
+    background: none; border: 1px dashed var(--line-2); border-radius: var(--radius);
+    color: var(--muted); font-size: 13.5px; transition: all 0.15s;
+  }
+  .add-route:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-fill); }
+
+  .foot-note { margin-top: 22px; color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="mock-note">
+    <b>交互原型</b>
+    <span>点击路由卡展开 / 收起 · ▼ 弹出模型列表 · 复制按钮可点 · 数据为演示值</span>
+  </div>
+
+  <!-- ═══════════ 服务状态卡 ═══════════ -->
+  <section class="service-card">
+    <div class="service-main">
+      <div>
+        <div class="service-title">
+          TokenRouter <span class="badge badge-ok"><i class="dot ok"></i>服务中</span>
+        </div>
+        <div class="service-sub">本机 API 代理：工具指向下面的地址，线路配额告急自动切换，长任务不中断</div>
+      </div>
+      <label class="switch" title="总开关：停用后所有路由的请求返回明确错误">
+        <input type="checkbox" checked><span class="track"><span class="thumb"></span></span>
+      </label>
+    </div>
+    <div class="url-row">
+      <span class="url-chip" onclick="copyText(this, 'http://127.0.0.1:43211', this.textContent)">http://127.0.0.1:43211</span>
+      <button class="btn" onclick="copyText(this, 'http://127.0.0.1:43211')">复制地址</button>
+      <span class="hint">填到工具的「API 地址」（带不带 /v1 均可）</span>
+      <span style="flex:1"></span>
+      <button class="link-btn" onclick="toggleAdv(this)">服务设置 ▾</button>
+    </div>
+    <div class="adv-grid" id="adv" hidden>
+      <label><span class="lb">主动切换阈值（最小窗口剩余 %）</span><input value="20" title="以最短周期在报窗口（如 2h/5h）的剩余 % 为准，低于即换下一条线路；手填日限/月上限视为对应周期的窗口一并参与。0 = 关闭主动预警，纯被动观测"></label>
+      <label><span class="lb">配额错误冷却（秒）</span><input value="300" title="限流/配额类错误（429/402）后该线路的冷却时长；上游返回 Retry-After 时优先采用"></label>
+      <label><span class="lb">连接异常熔断（连续 N 次）</span><input value="3" title="连接异常/5xx 连续失败达到 N 次才把线路标记短冷却；单次失败只影响当前请求，避免网络抖动误杀线路"></label>
+      <label><span class="lb">切回探测起始间隔（秒）</span><input value="60" title="主线路具备切回资格后，用真实请求探测；失败后按 ×2 指数退避（60s → 2min → 4min …）"></label>
+      <label><span class="lb">切回探测最大次数</span><input value="5" title="超过后停止主动探测，等待窗口重置时间（reset_at）；拿不到 reset_at 的线路退化为每 15 分钟低频探测"></label>
+    </div>
+    <div class="adv-hint" id="advHint" hidden>
+      <b>四层判定：</b><br>
+      ① <b>主动预警</b>（可设阈值，0 = 关闭）：以<b>最小（最短周期）在报窗口</b>的剩余 % 为准，低于阈值的新请求换下一条线路；手填日限 / 月上限视为对应周期的窗口一并参与——月总量剩 5% 但 5h 窗剩 98% 时不会误切。<br>
+      ② <b>硬墙兜底</b>（恒开）：任一窗口 / 上限打到 100% → 该线路立即不可用。<br>
+      ③ <b>被动观测</b>（恒开）：限流 / 配额错误立即换线路并冷却；连接异常原地重试一次、连续熔断才标记。永不基于推测切走。<br>
+      ④ <b>切回</b>：主线路「无窗口打满 + 最小窗口有余量」即具备资格 → 用真实请求探测，失败按 ×2 退避，达到最大次数后等 reset_at。备用线路全部不可用时，退避中的主线路仍允许一试。
+    </div>
+  </section>
+
+  <!-- ═══════════ 路由列表说明 ═══════════ -->
+  <div class="mock-note" style="margin-bottom:12px">
+    <b>路由分派规则</b>
+    <span>请求先按 API Key（token）找到路由组，再按<b>「对外模型名」</b>分派：工具端模型选 <code>auto</code> → MiniMax 链，选 <code>claude</code> → Claude 链（两条路由可共用同一个 Key）；匹配不到 → 该 Key 的第一条路由。停用某条只影响分派到它的请求；总开关关闭时全部停用。</span>
+  </div>
+
+  <!-- ═══════════ 路由卡 1（展开态）═══════════ -->
+  <section class="route-card open" id="route1">
+    <header class="route-head" onclick="toggleRoute(event, this)">
+      <div class="route-title">
+        <span class="route-name">MiniMax-Deepseek</span>
+        <span class="badge badge-proto">OpenAI 兼容</span>
+      </div>
+      <div class="route-side">
+        <label class="switch sm" onclick="event.stopPropagation()" title="停用后该路由的 token 请求返回明确错误（配置保留）">
+          <input type="checkbox" checked onchange="this.closest('.route-card').classList.toggle('disabled', !this.checked)"><span class="track"><span class="thumb"></span></span>
+        </label>
+        <span class="active-line">当前走 <b style="color:var(--text)">MiniMax-M2</b></span>
+        <span class="chev">▼</span>
+      </div>
+      <div class="chain-preview">
+        <span class="chain-node"><i class="dot ok"></i>MiniMax-M2</span>
+        <span class="chain-arrow">→</span>
+        <span class="chain-node"><i class="dot ok"></i>deepseek-chat</span>
+      </div>
+      <div class="route-side">
+        <code class="key" title="tr_route-mutil-dkk3-l_e81d0a376045b8f808ce1791873e0f7a">tr_…e0f7a</code>
+        <button class="btn icon" onclick="copyKey(event, this)">复制</button>
+      </div>
+    </header>
+
+    <div class="route-body" onclick="event.stopPropagation()">
+      <div class="edit-row">
+        <label><span class="lb">路由名称</span><input value="MiniMax-Deepseek"></label>
+        <label class="w-alias"><span class="lb">对外模型名（工具端选它 = 选这条链）</span>
+          <input class="mono" value="auto" title="同一 Key 下必须唯一；工具端模型目录里放这个名字即可选中本路由。匹配不到任何别名时走该 Key 的第一条路由">
+        </label>
+        <label class="w-protocol"><span class="lb">协议（线路上游需同协议）</span>
+          <select><option>OpenAI 兼容</option><option>Anthropic</option></select>
+        </label>
+      </div>
+
+      <div class="access-row">
+        <span class="lb">API Key</span>
+        <code class="full">tr_route-mutil-dkk3-l_e81d0a376045b8f808ce1791873e0f7a</code>
+        <button class="btn" onclick="copyText(this, 'tr_route-mutil-dkk3-l_e81d0a376045b8f808ce1791873e0f7a')">复制</button>
+      </div>
+
+      <div class="steps-title">线路 <span class="sub">按顺序尝试：① 不可用时自动换 ②，主线路恢复后自动切回</span></div>
+      <ol class="steps">
+        <!-- 主线路 -->
+        <li class="step main">
+          <div class="step-rail"><span class="step-no">①</span><span class="rail-line"></span></div>
+          <div class="step-card">
+            <div class="step-top">
+              <span class="step-role">主线路</span>
+              <span class="badge badge-ok" title="剩余按「最紧窗口」计算：该账户所有在报窗口与已设上限中最接近耗尽者"> <i class="dot ok"></i>可用 · 剩 54%</span>
+              <span class="sp"></span>
+              <span class="ops">
+                <button class="btn icon" disabled title="已是第一位">↑</button>
+                <button class="btn icon" title="下移">↓</button>
+                <button class="btn icon danger" title="删除线路">✕</button>
+              </span>
+            </div>
+            <div class="step-grid">
+              <label><span class="lb">账户</span>
+                <select><option>MiniMax Token Plan</option><option>DeepSeek API</option></select>
+              </label>
+              <label><span class="lb">模型（工具端可任填，实际由此决定）</span>
+                <span class="model-wrap">
+                  <input value="MiniMax-M2" placeholder="留空 = 透传">
+                  <button class="btn icon" onclick="toggleModels(event, this)">▼</button>
+                  <span class="models-pop">
+                    <b>从上游拉取 · 4 个模型</b>
+                    <a onclick="pickModel(this)">MiniMax-M2</a>
+                    <a onclick="pickModel(this)">MiniMax-Text-01</a>
+                    <a onclick="pickModel(this)">abab6.5s-chat</a>
+                    <a onclick="pickModel(this)">abab5.5-chat</a>
+                  </span>
+                </span>
+              </label>
+            </div>
+            <div class="step-sub">
+              <span class="lb" style="display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px">上游地址（选账户自动带出，可改为中转站）</span>
+              <div class="url-line">
+                <input class="mono" value="https://api.minimaxi.com">
+                <span class="auto-tag">自动带出</span>
+              </div>
+            </div>
+            <details class="step-adv">
+              <summary>额度上限（可选，达到即提前切换）· <span class="sum">日 1000万 tokens · 月未设</span></summary>
+              <div class="adv-fields">
+                <label><span class="lb">日上限（tokens / 自然日）</span><input value="10000000"></label>
+                <label><span class="lb">月上限（账户币种金额，按量付费用）</span><input placeholder="如 20 = ¥20/月" title="仅对有金额统计的账户生效（余额差分类：DeepSeek / Kimi 等）；订阅类账户无金额数据，设置不生效（无害）"></label>
+              </div>
+            </details>
+          </div>
+        </li>
+        <!-- 备1 -->
+        <li class="step">
+          <div class="step-rail"><span class="step-no">②</span><span class="rail-line"></span></div>
+          <div class="step-card">
+            <div class="step-top">
+              <span class="step-role">备用 1</span>
+              <span class="badge badge-ok"><i class="dot ok"></i>可用 · 剩 99%</span>
+              <span class="sp"></span>
+              <span class="ops">
+                <button class="btn icon" title="上移">↑</button>
+                <button class="btn icon" disabled title="已是最后一位">↓</button>
+                <button class="btn icon danger" title="删除线路">✕</button>
+              </span>
+            </div>
+            <div class="step-grid">
+              <label><span class="lb">账户</span>
+                <select><option>DeepSeek API</option><option>MiniMax Token Plan</option></select>
+              </label>
+              <label><span class="lb">模型</span>
+                <span class="model-wrap">
+                  <input value="deepseek-chat" placeholder="留空 = 透传">
+                  <button class="btn icon" onclick="toggleModels(event, this)">▼</button>
+                  <span class="models-pop">
+                    <b>从上游拉取 · 3 个模型</b>
+                    <a onclick="pickModel(this)">deepseek-chat</a>
+                    <a onclick="pickModel(this)">deepseek-reasoner</a>
+                    <a onclick="pickModel(this)">deepseek-coder</a>
+                  </span>
+                </span>
+              </label>
+            </div>
+            <div class="step-sub">
+              <span class="lb" style="display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px">上游地址</span>
+              <div class="url-line">
+                <input class="mono" value="https://api.deepseek.com">
+                <span class="auto-tag">自动带出</span>
+              </div>
+            </div>
+            <details class="step-adv">
+              <summary>额度上限（可选）· <span class="sum">未设</span></summary>
+              <div class="adv-fields">
+                <label><span class="lb">日上限（tokens / 自然日）</span><input placeholder="留空不启用"></label>
+                <label><span class="lb">月上限（账户币种金额）</span><input placeholder="如 20 = ¥20/月"></label>
+              </div>
+            </details>
+          </div>
+        </li>
+        <li class="step add" onclick="flashAdd(this)">
+          <div class="step-rail"><span class="step-no">＋</span></div>
+          <div class="step-card">添加备用线路 · 选账户后自动带出上游地址</div>
+        </li>
+      </ol>
+
+      <div class="route-foot">
+        <span class="hint">工具端模型名可任填（推荐 auto）——实际模型由线路决定；线路模型留空 = 透传工具端原名</span>
+        <button class="btn danger" onclick="alert('原型演示：删除需二次确认')">删除路由</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 路由卡 2（收起态）═══════════ -->
+  <section class="route-card" id="route2">
+    <header class="route-head" onclick="toggleRoute(event, this)">
+      <div class="route-title">
+        <span class="route-name">Claude Code 主力</span>
+        <span class="badge badge-proto">Anthropic</span>
+      </div>
+      <div class="route-side">
+        <label class="switch sm" onclick="event.stopPropagation()" title="停用后该路由的 token 请求返回明确错误（配置保留）">
+          <input type="checkbox" checked onchange="this.closest('.route-card').classList.toggle('disabled', !this.checked)"><span class="track"><span class="thumb"></span></span>
+        </label>
+        <span class="active-line">当前走 <b style="color:var(--text)">MiniMax-M2</b></span>
+        <span class="chev">▼</span>
+      </div>
+      <div class="chain-preview">
+        <span class="chain-node"><i class="dot warn"></i>claude-sonnet-4-5</span>
+        <span class="chain-arrow">→</span>
+        <span class="chain-node"><i class="dot ok"></i>MiniMax-M2</span>
+      </div>
+      <div class="route-side">
+        <code class="key" title="与路由 1 共用同一个 Key；请求按对外模型名（claude / auto）分派">tr_…e0f7a</code>
+        <button class="btn icon" onclick="copyKey(event, this)">复制</button>
+      </div>
+    </header>
+    <div class="route-body" onclick="event.stopPropagation()">
+      <div class="edit-row">
+        <label><span class="lb">路由名称</span><input value="Claude Code 主力"></label>
+        <label class="w-alias"><span class="lb">对外模型名（与上条路由共用 Key）</span>
+          <input class="mono" value="claude" title="同一 Key 下必须唯一；工具端选 claude 即走本路由的线路链">
+        </label>
+        <label class="w-protocol"><span class="lb">协议</span>
+          <select><option>Anthropic</option><option>OpenAI 兼容</option></select>
+        </label>
+      </div>
+      <div class="steps-title">线路 <span class="sub">演示：主线路低配额时自动走备用</span></div>
+      <ol class="steps">
+        <li class="step main low">
+          <div class="step-rail"><span class="step-no">①</span><span class="rail-line"></span></div>
+          <div class="step-card">
+            <div class="step-top">
+              <span class="step-role">主线路</span>
+              <span class="badge badge-warn"><i class="dot warn"></i>低配额 · 剩 12%</span>
+              <span class="sp"></span>
+              <span class="ops">
+                <button class="btn icon" disabled>↑</button>
+                <button class="btn icon">↓</button>
+                <button class="btn icon danger">✕</button>
+              </span>
+            </div>
+            <div class="step-grid">
+              <label><span class="lb">账户</span><select><option>Anthropic / Claude 订阅</option></select></label>
+              <label><span class="lb">模型</span>
+                <span class="model-wrap"><input value="claude-sonnet-4-5"><button class="btn icon" onclick="toggleModels(event, this)">▼</button></span>
+              </label>
+            </div>
+            <div class="step-sub">
+              <span class="lb" style="display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px">上游地址</span>
+              <div class="url-line"><input class="mono" value="https://api.anthropic.com"><span class="auto-tag">自动带出</span></div>
+            </div>
+            <details class="step-adv">
+              <summary>额度上限（可选）</summary>
+              <div class="adv-fields">
+                <label><span class="lb">日上限（tokens / 自然日）</span><input placeholder="留空不启用"></label>
+                <label><span class="lb">月上限（账户币种金额）</span><input placeholder="留空不启用"></label>
+              </div>
+            </details>
+          </div>
+        </li>
+      </ol>
+      <div class="route-foot">
+        <span class="hint">切回 = 资格判定（无窗口打满 + 最小窗口有余量）通过后用真实请求探测，指数退避</span>
+        <button class="btn danger">删除路由</button>
+      </div>
+    </div>
+  </section>
+
+  <button class="add-route">＋ 新建路由</button>
+
+  <div class="foot-note">本原型仅用于确认交互方向 · 视觉细节（间距/动效/配色）以实现版为准 · 关闭此页不影响任何数据</div>
+</div>
+
+<script>
+  function toggleRoute(ev, head) {
+    if (ev.target.closest("button") || ev.target.closest("a") || ev.target.closest("input") || ev.target.closest("select") || ev.target.closest("details")) return;
+    head.closest(".route-card").classList.toggle("open");
+  }
+  function toggleAdv(btn) {
+    const adv = document.getElementById("adv");
+    const hint = document.getElementById("advHint");
+    adv.hidden = !adv.hidden;
+    hint.hidden = !adv.hidden;
+    btn.textContent = adv.hidden ? "服务设置 ▾" : "收起服务设置 ▴";
+  }
+  function copyText(btn, text, label) {
+    try { navigator.clipboard && navigator.clipboard.writeText(text); } catch (e) {}
+    const old = btn.textContent;
+    btn.textContent = "已复制 ✓";
+    btn.classList.add("flashed");
+    setTimeout(() => { btn.textContent = old; btn.classList.remove("flashed"); }, 1200);
+  }
+  function copyKey(ev, btn) {
+    ev.stopPropagation();
+    copyText(btn, "tr_route-mutil-dkk3-l_e81d0a376045b8f808ce1791873e0f7a");
+  }
+  function toggleModels(ev, btn) {
+    ev.stopPropagation();
+    document.querySelectorAll(".models-pop.show").forEach(p => { if (p !== btn.parentElement.querySelector(".models-pop")) p.classList.remove("show"); });
+    btn.parentElement.querySelector(".models-pop").classList.toggle("show");
+  }
+  function pickModel(a) {
+    const wrap = a.closest(".model-wrap");
+    wrap.querySelector("input").value = a.textContent;
+    a.closest(".models-pop").classList.remove("show");
+  }
+  function flashAdd(li) {
+    const card = li.querySelector(".step-card");
+    const old = card.textContent;
+    card.textContent = "（原型演示：真实版会在此新增一条空白线路）";
+    setTimeout(() => { card.textContent = old; }, 1200);
+  }
+  document.addEventListener("click", (ev) => {
+    if (!ev.target.closest(".model-wrap")) {
+      document.querySelectorAll(".models-pop.show").forEach(p => p.classList.remove("show"));
+    }
+  });
+</script>
+</body>
+</html>

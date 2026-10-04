@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TokenRouter · 路由设置交互原型 v3（单路由）</title>
+<style>
+:root{
+  --bg:#080b11; --panel:#0e141e; --panel2:#121a26; --sunken:#0b1119;
+  --bd:#1e2937; --bd2:#2b3a4d;
+  --tx:#e2e8f2; --tx2:#94a3b8; --tx3:#64748b;
+  --ac:#4cc2ff; --ac-soft:#0f2136;
+  --ok:#22c55e; --ok-soft:#0d2418;
+  --warn:#f59e0b; --warn-soft:#2a1e08;
+  --err:#ef4444; --err-soft:#2b1113;
+  --r:10px; --r-lg:14px;
+  --sh:0 1px 3px rgba(0,0,0,.4),0 8px 28px rgba(0,0,0,.3);
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--bg);color:var(--tx);
+  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,"PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important}
+}
+html[data-theme="light"]{
+  --bg:#f4f6f8;--panel:#fff;--panel2:#fafbfc;--sunken:#f0f2f5;
+  --bd:#e2e6ec;--bd2:#cfd5de;--tx:#101828;--tx2:#475467;--tx3:#98a2b3;
+  --ac:#2f6bff;--ac-soft:#eaf0ff;--ok:#12b76a;--ok-soft:#e7f8f0;
+  --warn:#f79009;--warn-soft:#fef4e6;--err:#f04438;--err-soft:#fee4e2;
+  --sh:0 1px 3px rgba(16,24,40,.08),0 8px 24px rgba(16,24,40,.06);
+}
+button{font:inherit;color:inherit;cursor:pointer}
+input,select{font:inherit;color:inherit}
+code,.mono{font-family:var(--mono)}
+
+.topbar{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--bd);
+  background:var(--panel);position:sticky;top:0;z-index:60}
+.brand{font-weight:650;letter-spacing:-.01em;display:flex;align-items:baseline;gap:8px;white-space:nowrap}
+.brand em{font-style:normal;font-size:11px;font-weight:600;color:var(--tx3);border:1px solid var(--bd);
+  border-radius:999px;padding:1px 7px}
+.spacer{flex:1}
+.ghost{border:1px solid var(--bd);background:var(--panel2);padding:6px 11px;border-radius:8px;font-size:12.5px;
+  font-weight:550;color:var(--tx2);transition:.14s;white-space:nowrap}
+.ghost:hover{border-color:var(--bd2);color:var(--tx)}
+.ghost.pri{background:var(--ac);border-color:var(--ac);color:#fff}
+.ghost.pri:hover{filter:brightness(1.1)}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px;max-width:1420px;margin:0 auto;padding:18px}
+@media(max-width:1120px){.layout{grid-template-columns:minmax(0,1fr)}}
+
+.hint{display:flex;align-items:center;gap:8px;max-width:1000px;margin:0 auto 14px;padding:9px 14px;
+  border:1px dashed var(--bd2);border-radius:10px;font-size:12.5px;color:var(--tx2);background:var(--sunken)}
+.hint b{color:var(--tx);font-weight:650}
+
+.card{background:var(--panel);border:1px solid var(--bd);border-radius:var(--r-lg);margin-bottom:14px;
+  overflow:hidden;animation:cardIn .32s cubic-bezier(.21,.8,.35,1) both}
+@keyframes cardIn{from{opacity:0;transform:translateY(10px) scale(.99)}to{opacity:1;transform:none}}
+.card.off{opacity:.5}
+.card-hd{display:flex;align-items:center;gap:11px;padding:15px 17px}
+.card-hd h2{margin:0;font-size:15.5px;font-weight:660;letter-spacing:-.01em}
+.desc{padding:0 17px 12px;font-size:12.5px;color:var(--tx2);line-height:1.6}
+.addrrow{display:flex;align-items:center;gap:10px;padding:0 17px 14px;flex-wrap:wrap}
+.addr{font-family:var(--mono);font-size:13px;font-weight:600;background:var(--sunken);
+  border:1px solid var(--bd);border-radius:8px;padding:7px 11px;color:var(--tx)}
+.ahint{font-size:12px;color:var(--tx3)}
+.linkish{background:none;border:0;color:var(--ac);font-size:12.5px;font-weight:600;padding:4px}
+.linkish:hover{text-decoration:underline}
+
+.tg{width:42px;height:23px;border-radius:999px;border:1px solid var(--bd2);background:var(--sunken);
+  position:relative;flex:0 0 42px;transition:.18s;padding:0}
+.tg::after{content:"";position:absolute;top:2px;left:2px;width:17px;height:17px;border-radius:50%;
+  background:var(--tx3);transition:.18s cubic-bezier(.34,1.4,.5,1)}
+.tg[aria-checked="true"]{background:var(--ac);border-color:var(--ac)}
+.tg[aria-checked="true"]::after{left:21px;background:#fff}
+
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:2px 9px;
+  border-radius:999px;background:var(--sunken);color:var(--tx2);border:1px solid var(--bd);white-space:nowrap;
+  transition:background .3s,color .3s}
+.pill.ok{background:var(--ok-soft);color:var(--ok);border-color:transparent}
+.pill.warn{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.pill.err{background:var(--err-soft);color:var(--err);border-color:transparent}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 6px}
+@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 color-mix(in srgb,currentColor 55%,transparent)}
+  50%{opacity:.45;box-shadow:0 0 0 4px color-mix(in srgb,currentColor 0%,transparent)}}
+.live .dot{animation:pulse 1.7s ease-in-out infinite}
+
+.sect{border-top:1px solid var(--bd);padding:15px 17px;background:var(--panel2);animation:cardIn .28s ease both}
+.sect h3{margin:0 0 3px;font-size:13px;font-weight:660;display:flex;align-items:center;gap:8px}
+.sect .sub{font-size:11.5px;color:var(--tx3);font-weight:400}
+.howto{margin:12px 0 0;padding:10px 12px;border:1px dashed var(--bd2);border-radius:9px;
+  font-size:12px;color:var(--tx2);line-height:1.7}
+.howto b{color:var(--tx)}
+
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px;margin-top:12px}
+@media(max-width:760px){.grid2{grid-template-columns:1fr}}
+.fld{display:flex;flex-direction:column;gap:5px;min-width:0}
+.fld label{font-size:11.5px;font-weight:600;color:var(--tx2)}
+.fld label i{font-style:normal;color:var(--tx3);font-weight:400}
+.inp{width:100%;padding:9px 11px;border:1px solid var(--bd);border-radius:9px;background:var(--sunken);
+  font-size:13px;outline:none;transition:.14s}
+.inp:focus{border-color:var(--ac);box-shadow:0 0 0 3px color-mix(in srgb,var(--ac) 16%,transparent)}
+select.inp{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' stroke='%2394a3b8' stroke-width='1.6' fill='none' stroke-linecap='round'/></svg>");
+  background-repeat:no-repeat;background-position:right 11px center;padding-right:30px;cursor:pointer}
+
+.strip{display:flex;align-items:center;gap:8px;padding:0 17px 14px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:4px 10px;
+  border-radius:999px;background:var(--sunken);border:1px solid var(--bd);color:var(--tx2);
+  animation:chipIn .3s cubic-bezier(.34,1.35,.55,1) both}
+@keyframes chipIn{from{opacity:0;transform:translateX(-8px) scale(.92)}to{opacity:1;transform:none}}
+.chip.on{border-color:var(--ac);color:var(--ac);background:var(--ac-soft);
+  box-shadow:0 0 12px color-mix(in srgb,var(--ac) 22%,transparent)}
+.chip .dot{color:var(--ok)}
+.chip.low .dot{color:var(--warn)}
+.arrow{color:var(--tx3);font-size:12px}
+.keychip{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11.5px;
+  padding:4px 9px;border-radius:8px;background:var(--sunken);border:1px solid var(--bd);color:var(--tx2)}
+
+/* 线路卡：可折叠动画 + 入场 stagger + 激活呼吸光晕 */
+.collapse{display:grid;grid-template-rows:0fr;transition:grid-template-rows .32s cubic-bezier(.4,0,.2,1)}
+.collapse.open{grid-template-rows:1fr}
+.collapse>div{overflow:hidden}
+.ln{position:relative;margin:0 17px 12px;padding:13px 14px 14px 52px;border:1px solid var(--bd);
+  border-radius:var(--r);background:var(--panel);transition:border-color .25s,box-shadow .25s,opacity .25s;
+  animation:lnIn .34s cubic-bezier(.21,.8,.35,1) both}
+@keyframes lnIn{from{opacity:0;transform:translateX(-14px)}to{opacity:1;transform:none}}
+.ln.last{margin-bottom:17px}
+.ln::before{content:"";position:absolute;left:24px;top:-13px;bottom:50%;width:2px;background:var(--tx3);display:none;opacity:.7}
+.ln.linked::before{display:block}
+.ln .num{position:absolute;left:9px;top:13px;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;
+  font-size:13px;font-weight:700;background:var(--sunken);border:2px solid var(--bd2);color:var(--tx2);z-index:2;
+  transition:.25s}
+.ln.active{border-color:var(--ac);animation:activeGlow 2.6s ease-in-out infinite}
+@keyframes activeGlow{
+  0%,100%{box-shadow:0 0 0 3px color-mix(in srgb,var(--ac) 13%,transparent)}
+  50%{box-shadow:0 0 0 3px color-mix(in srgb,var(--ac) 26%,transparent)}
+}
+.ln.active .num{background:var(--ac);border-color:var(--ac);color:#fff}
+.ln.disabled{opacity:.45}
+.ln-hd{display:flex;align-items:center;gap:9px;margin-bottom:12px;flex-wrap:wrap}
+.ln-hd .ttl{font-size:13.5px;font-weight:660}
+.ln-acts{display:flex;gap:4px;margin-left:auto}
+.ib{width:27px;height:27px;border:1px solid var(--bd);background:var(--panel2);border-radius:7px;color:var(--tx3);
+  font-size:11px;display:grid;place-items:center;transition:.14s}
+.ib:hover{color:var(--tx);border-color:var(--bd2);transform:translateY(-1px)}
+.ib.del:hover{color:var(--err);border-color:var(--err)}
+.ib:disabled{opacity:.3;cursor:not-allowed}
+.ln-row{display:grid;grid-template-columns:1fr 1.25fr;gap:12px;margin-bottom:12px}
+@media(max-width:820px){.ln-row{grid-template-columns:1fr}}
+.mdl{display:flex;gap:7px}
+.mdl .inp{font-family:var(--mono);font-size:12.5px}
+.mbtn{flex:0 0 36px;border:1px solid var(--bd);background:var(--panel2);border-radius:9px;color:var(--tx2);
+  font-size:10px;display:grid;place-items:center;transition:.14s}
+.mbtn:hover{color:var(--ac);border-color:var(--ac)}
+.urlrow{display:flex;align-items:center;gap:9px}
+.urlrow .inp{font-family:var(--mono);font-size:12.5px}
+.tag{font-size:10.5px;font-weight:650;color:var(--tx3);background:var(--sunken);border:1px solid var(--bd);
+  padding:2px 7px;border-radius:6px;white-space:nowrap}
+.cap{border-top:1px dashed var(--bd);padding-top:10px}
+.cap summary{cursor:pointer;font-size:12px;color:var(--tx2);list-style:none;display:flex;align-items:center;gap:7px}
+.cap summary::-webkit-details-marker{display:none}
+.cap summary::before{content:"▸";color:var(--tx3);transition:.16s}
+.cap[open] summary::before{transform:rotate(90deg)}
+.cap summary b{color:var(--tx);font-weight:600}
+.capbody{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:11px}
+
+.balbar{width:76px;margin-left:2px}
+.balbar .b{height:5px;border-radius:999px;background:var(--sunken);overflow:hidden;border:1px solid var(--bd)}
+.balbar .b i{display:block;height:100%;border-radius:999px;transition:width .5s cubic-bezier(.4,0,.2,1),background .3s}
+
+.dd{position:absolute;z-index:80;min-width:260px;max-height:264px;overflow:auto;background:var(--panel2);
+  border:1px solid var(--bd2);border-radius:10px;box-shadow:var(--sh);padding:5px;display:none;
+  animation:ddIn .16s cubic-bezier(.21,.8,.35,1) both}
+@keyframes ddIn{from{opacity:0;transform:translateY(-6px) scale(.98)}to{opacity:1;transform:none}}
+.dd.on{display:block}
+.dd button{display:flex;width:100%;align-items:center;justify-content:space-between;gap:10px;background:none;
+  border:0;padding:8px 10px;border-radius:7px;font-size:12.5px;color:var(--tx2);text-align:left;font-family:var(--mono)}
+.dd button:hover{background:var(--sunken);color:var(--tx)}
+.dd button.sel{color:var(--ac);background:var(--ac-soft)}
+
+.gauge{position:relative;height:44px;margin:16px 2px 0;touch-action:none;cursor:pointer}
+.gauge .track{position:absolute;top:14px;left:0;right:0;height:10px;border-radius:999px;overflow:hidden;
+  display:flex;border:1px solid var(--bd)}
+.gauge .zone{height:100%;transition:width .3s cubic-bezier(.4,0,.2,1)}
+.gauge .z-low{background:var(--err);opacity:.55}
+.gauge .z-hi{background:var(--ok);opacity:.42}
+.gauge .line{position:absolute;top:8px;width:2px;height:22px;background:var(--err);transform:translateX(-1px);
+  transition:left .3s cubic-bezier(.4,0,.2,1)}
+.gauge .line span{position:absolute;top:-19px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:10.5px;
+  font-weight:700;color:var(--err);background:var(--panel2);padding:1px 6px;border-radius:5px;border:1px solid var(--bd)}
+.gauge .bal{position:absolute;top:10px;width:3px;height:18px;background:var(--ac);transform:translateX(-1.5px);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--ac) 24%,transparent);transition:left .6s cubic-bezier(.34,1.2,.4,1)}
+.handle{position:absolute;top:5px;width:28px;height:28px;margin-left:-14px;border-radius:50%;background:var(--panel2);
+  border:2px solid var(--err);cursor:grab;display:grid;place-items:center;box-shadow:0 2px 8px rgba(0,0,0,.4);z-index:3;
+  transition:left .3s cubic-bezier(.4,0,.2,1),transform .15s}
+.handle::after{content:"";width:2px;height:11px;background:var(--err);border-radius:2px;
+  box-shadow:-4px 0 0 var(--err),4px 0 0 var(--err)}
+.handle.act{cursor:grabbing;transform:scale(1.08)}
+.handle:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+.gscale{display:flex;justify-content:space-between;font-size:10.5px;color:var(--tx3);margin-top:3px}
+.gstate{margin-top:12px;padding:11px 13px;border-radius:9px;background:var(--sunken);border:1px solid var(--bd);
+  font-size:12.5px;color:var(--tx2);line-height:1.6;transition:.3s}
+.gstate b{color:var(--tx);font-weight:650}
+.gstate.warn{background:var(--err-soft);border-color:color-mix(in srgb,var(--err) 35%,transparent);color:var(--tx)}
+
+.probe{margin-top:12px;padding:12px 13px;border:1px solid var(--ac);border-radius:9px;background:var(--ac-soft);
+  animation:cardIn .3s ease both}
+.probe .t{font-size:12.5px;font-weight:640;color:var(--tx);margin-bottom:8px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.steps{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.stp{font-size:10.5px;font-weight:650;padding:3px 8px;border-radius:6px;background:var(--panel2);
+  border:1px solid var(--bd);color:var(--tx3)}
+.stp.done{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
+.stp.now{color:var(--ac);border-color:var(--ac);background:var(--panel2);animation:stepPop .3s cubic-bezier(.34,1.5,.5,1) both}
+@keyframes stepPop{from{transform:scale(.7)}to{transform:scale(1)}}
+
+.notes{display:flex;flex-direction:column;gap:14px;position:sticky;top:70px;align-self:start}
+.ncard{background:var(--panel);border:1px solid var(--bd);border-radius:var(--r-lg);padding:15px}
+.ncard h3{margin:0 0 11px;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--tx3)}
+.nlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px}
+.nlist li{display:flex;gap:9px;font-size:12.5px;line-height:1.55;color:var(--tx2)}
+.nlist li b{color:var(--tx);font-weight:640;display:block;margin-bottom:2px}
+.nlist .n{flex:0 0 17px;height:17px;border-radius:5px;font-size:10px;font-weight:700;display:grid;place-items:center;
+  margin-top:2px;background:var(--ac-soft);color:var(--ac)}
+.nlist li.keep .n{background:var(--ok-soft);color:var(--ok)}
+.nlist li.new .n{background:var(--warn-soft);color:var(--warn)}
+.demos{display:flex;flex-direction:column;gap:8px}
+.demos .ghost{width:100%;text-align:left}
+.demos .d{display:block;font-size:10.5px;color:var(--tx3);margin-top:2px;font-weight:400}
+
+#toast{position:fixed;right:20px;bottom:20px;z-index:200;display:flex;flex-direction:column;gap:8px;align-items:flex-end}
+.tst{background:var(--tx);color:var(--bg);padding:10px 14px;border-radius:9px;font-size:12.5px;font-weight:550;
+  box-shadow:var(--sh);animation:up .22s cubic-bezier(.21,.8,.35,1);max-width:380px;line-height:1.5}
+@keyframes up{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:none}}
+.fadein{animation:fi .2s ease}
+@keyframes fi{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">TokenRouter · 路由设置 <em>交互原型 v3 · 单路由</em></div>
+  <div class="spacer"></div>
+  <button class="ghost" id="themeBtn">浅色主题</button>
+  <button class="ghost pri" id="copyAll">复制接入说明</button>
+</div>
+
+<div class="layout">
+  <main>
+    <div class="hint">
+      <b>交互原型 v3</b> 单路由 · 点「服务设置 ▾」看参数与阈值仪表（可拖动）· ▼ 弹出模型列表 · 右侧可模拟切换/切回全流程
+    </div>
+    <div id="stage"></div>
+  </main>
+
+  <aside class="notes">
+    <div class="ncard">
+      <h3>四层判定（本版口径）</h3>
+      <ul class="nlist">
+        <li><span class="n">1</span><span><b>主动预警（可设，0=关）</b>以最小（最短周期）在报窗口的剩余 % 为准；月总量剩 5% 但 5h 窗剩 98% 时不会误切。</span></li>
+        <li><span class="n">2</span><span><b>硬墙兜底（恒开）</b>任一窗口 / 上限打到 100% → 该线路立即不可用。</span></li>
+        <li><span class="n">3</span><span><b>被动观测（恒开）</b>限流/配额错误立即换线路并冷却；连接异常原地重试、连续熔断才标记。</span></li>
+        <li><span class="n">4</span><span><b>切回（资格 + 探测）</b>无窗口打满 + 最小窗口有余量 → 真实请求探测，×2 退避，达上限等 reset_at。</span></li>
+      </ul>
+    </div>
+    <div class="ncard">
+      <h3>模拟演示</h3>
+      <div class="demos">
+        <button class="ghost" data-demo="drain">模拟主线路配额耗尽<span class="d">最小窗口剩余跌破切走线 → 自动切到备用 1</span></button>
+        <button class="ghost" data-demo="recover">模拟主线路恢复<span class="d">切回探视逐次通过 → 指针滑回主线路</span></button>
+        <button class="ghost" data-demo="reset">重置演示数据</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ================= 账户（选账户自动带出地址与模型） ================= */
+const ACCOUNTS={
+  'minimax-plan':{nm:'MiniMax Token Plan',url:'https://api.minimaxi.com',models:['MiniMax-M2','MiniMax-M2-highspeed','abab6.5s-chat']},
+  'deepseek'    :{nm:'DeepSeek API',     url:'https://api.deepseek.com',models:['deepseek-chat','deepseek-reasoner']},
+  'moonshot'    :{nm:'Moonshot API',     url:'https://api.moonshot.cn',models:['kimi-k2','moonshot-v1-128k']},
+  'openai'      :{nm:'OpenAI API',       url:'https://api.openai.com/v1',models:['gpt-5','gpt-4.1','gpt-4o-mini']},
+  'claude'      :{nm:'Anthropic / Claude',url:'https://api.anthropic.com',models:['claude-sonnet-4-5','claude-opus-4-1']},
+  'custom'      :{nm:'自定义中转站',      url:'',models:[]},
+};
+const CIRCLES=['①','②','③','④','⑤'];
+
+function initial(){
+  return {
+    theme:'dark', routerOn:true, addr:'http://127.0.0.1:43211', svcOpen:false,
+    svc:{ threshold:20, quotaTol:300, cbCount:3, probeStart:60, probeMax:5 },
+    route:{
+      name:'MiniMax-Deepseek', protocol:'OpenAI 兼容', on:true, collapsed:false,
+      key:'tr_route-mutil-dkk3-L_e81d0a376045b8f808ce1791873e0f7a',
+      active:0,
+      lines:[
+        {acct:'minimax-plan',model:'MiniMax-M2',   url:'https://api.minimaxi.com', bal:54, capD:'1000万', capM:'', warn:false},
+        {acct:'deepseek',    model:'deepseek-chat',url:'https://api.deepseek.com',bal:99, capD:'',      capM:'', warn:false},
+      ],
+    },
+    probe:null, _prevBal:null, _prevTh:null,
+  };
+}
+let S=initial();
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const balColor=v=>v<=S.svc.threshold?'var(--err)':v<=S.svc.threshold*2?'var(--warn)':'var(--ok)';
+
+function toast(m){const d=document.createElement('div');d.className='tst';d.innerHTML=m;
+  $('#toast').appendChild(d);setTimeout(()=>{d.style.opacity='0';d.style.transform='translateY(6px)';
+  d.style.transition='.25s';setTimeout(()=>d.remove(),260)},3200);}
+
+/* ================= 服务卡 ================= */
+function gaugeHTML(){
+  const t=S.svc.threshold, cur=S.route.lines[S.route.active], b=cur.bal;
+  return `<div class="gauge" data-gauge>
+    <div class="track">
+      <div class="zone z-low" style="width:${t}%"></div>
+      <div class="zone z-hi" style="width:${100-t}%"></div>
+    </div>
+    <div class="line" style="left:${t}%"><span>切走线 ${t}%</span></div>
+    <div class="bal" style="left:${b}%"></div>
+    <div class="handle" data-h="cut" style="left:${t}%" tabindex="0" role="slider"
+         aria-label="主动切换阈值（最小窗口剩余 %）" aria-valuenow="${t}" aria-valuemin="0" aria-valuemax="60"></div>
+  </div>
+  <div class="gscale"><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
+  <div class="gstate ${b<=t?'warn':''}">
+    当前承载流量的 <b>${ACCOUNTS[cur.acct].nm} · ${esc(cur.model)}</b>，最小在报窗口还剩 <b data-tick>${b}%</b>，
+    ${b<=t?`已低于切走线 <b>${t}%</b>，新流量已导向备用线路。`:`距离切走线还有 <b>${b-t}%</b> 的余量。`}
+    <br><span style="color:var(--tx3)">剩余按「最小（最短周期）在报窗口」计算；任一窗口打满立即视为不可用（硬墙兜底）。</span>
+  </div>`;
+}
+function probeHTML(){
+  const p=S.probe; if(!p) return '';
+  return `<div class="probe fadein">
+    <div class="t">切回探视中 · 第 ${p.step} / ${S.svc.probeMax} 次
+      <span class="pill ok"><i class="dot"></i>主线路资格判定通过，等待真实请求确认</span></div>
+    <div class="steps">
+      ${Array.from({length:S.svc.probeMax},(_,i)=>{
+        const n=i+1;
+        const done = n < p.step;
+        const now  = n===p.step;
+        const cls  = done?'done':(now?'now':'');
+        return `<span class="stp ${cls}">${done?'✓ '+n:n}</span>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+function viewRouter(){
+  const s=S.svc;
+  return `<section class="card ${S.routerOn?'':'off'}">
+    <div class="card-hd">
+      <h2>TokenRouter</h2>
+      <span class="pill ${S.routerOn?'ok live':''}"><i class="dot"></i>${S.routerOn?'服务中':'已停用'}</span>
+      <div class="spacer"></div>
+      <button class="tg" role="switch" aria-checked="${S.routerOn}" data-act="router" aria-label="TokenRouter 总开关"></button>
+    </div>
+    <div class="desc">本机 API 代理：工具指向下面的地址，线路配额告急自动切换，长任务不中断</div>
+    <div class="addrrow">
+      <span class="addr">${esc(S.addr)}</span>
+      <button class="ghost" data-act="copyAddr">复制地址</button>
+      <span class="ahint">填到工具的「API 地址」（带不带 /v1 均可）</span>
+      <div class="spacer"></div>
+      <button class="linkish" data-act="svc">${S.svcOpen?'收起服务设置 ▲':'服务设置 ▾'}</button>
+    </div>
+    ${S.svcOpen?`<div class="sect">
+      <h3>服务设置 <span class="sub">多数情况不用改</span></h3>
+      <div class="grid2">
+        <div class="fld"><label>主动切换阈值 <i>（最小窗口剩余 %，0 = 关闭主动预警）</i></label>
+          <input class="inp" data-svc="threshold" value="${s.threshold}" /></div>
+        <div class="fld"><label>配额错误冷却 <i>（秒，尊重上游 Retry-After）</i></label>
+          <input class="inp" data-svc="quotaTol" value="${s.quotaTol}" /></div>
+        <div class="fld"><label>连接异常熔断 <i>（连续 N 次）</i></label>
+          <input class="inp" data-svc="cbCount" value="${s.cbCount}" /></div>
+        <div class="fld"><label>切回探视起始间隔 <i>（秒，×2 退避）</i></label>
+          <input class="inp" data-svc="probeStart" value="${s.probeStart}" /></div>
+        <div class="fld"><label>切回探视最大次数 <i>（超过后等窗口重置）</i></label>
+          <input class="inp" data-svc="probeMax" value="${s.probeMax}" /></div>
+      </div>
+      ${gaugeHTML()}
+      ${probeHTML()}
+    </div>`:''}
+  </section>`;
+}
+
+/* ================= 路由链卡 ================= */
+function lineHTML(L,i){
+  const a=ACCOUNTS[L.acct], on=i===S.route.active, low=L.bal<=S.svc.threshold;
+  return `<div class="ln ${on?'active':''} ${i>0?'linked':''}" style="animation-delay:${i*70}ms">
+    <span class="num">${CIRCLES[i]}</span>
+    <div class="ln-hd">
+      <span class="ttl">${i===0?'主线路':'备用 '+i}</span>
+      <span class="pill ${on?'ok live':(low?'warn':'')}"><i class="dot"></i>${low?'低余量':'可用'} · 剩 ${L.bal}%</span>
+      <div class="balbar"><div class="b"><i style="width:${L.bal}%;background:${balColor(L.bal)}"></i></div></div>
+      <div class="ln-acts">
+        <button class="ib" title="上移" data-mv="up" data-i="${i}" ${i===0?'disabled':''}>↑</button>
+        <button class="ib" title="下移" data-mv="down" data-i="${i}" ${i===S.route.lines.length-1?'disabled':''}>↓</button>
+        <button class="ib del" title="移除该线路" data-mv="del" data-i="${i}">✕</button>
+      </div>
+    </div>
+    <div class="ln-row">
+      <div class="fld"><label>账户</label>
+        <select class="inp" data-a="acct" data-i="${i}">
+          ${Object.entries(ACCOUNTS).map(([k,v])=>`<option value="${k}" ${k===L.acct?'selected':''}>${v.nm}</option>`).join('')}
+        </select></div>
+      <div class="fld"><label>模型 <i>（工具端可任填，实际由此决定；留空 = 透传）</i></label>
+        <div class="mdl">
+          <input class="inp" data-a="model" data-i="${i}" value="${esc(L.model)}" />
+          <button class="mbtn" data-act="models" data-i="${i}" title="从上游拉取模型列表">▼</button>
+        </div></div>
+    </div>
+    <div class="fld"><label>上游地址 <i>（选账户自动带出，可改为中转站）</i></label>
+      <div class="urlrow">
+        <input class="inp" data-a="url" data-i="${i}" value="${esc(L.url)}" />
+        ${L.url===a.url?'<span class="tag">自动带出</span>':''}
+      </div></div>
+    <details class="cap">
+      <summary>额度上限（可选，达到即提前切换）· ${L.capD||L.capM
+        ? `日 <b>${L.capD||'未设'}</b>${L.capD?' tokens':''} · 月 <b>${L.capM||'未设'}</b>${L.capM?' 金额':''}`
+        : '未设置'}</summary>
+      <div class="capbody">
+        <div class="fld"><label>日上限 <i>（tokens / 自然日，路由自记账）</i></label>
+          <input class="inp" data-a="capD" data-i="${i}" value="${esc(L.capD)}" placeholder="未设" /></div>
+        <div class="fld"><label>月上限 <i>（账户币种金额，仅余额差分类账户生效）</i></label>
+          <input class="inp" data-a="capM" data-i="${i}" value="${esc(L.capM)}" placeholder="如 20 = ¥20/月" /></div>
+      </div>
+    </details>
+  </div>`;
+}
+function viewRoute(){
+  const r=S.route, cur=r.lines[r.active];
+  return `<section class="card ${r.on?'':'off'}">
+    <div class="card-hd">
+      <h2>${esc(r.name)}</h2>
+      <span class="pill">${esc(r.protocol)}</span>
+      <div class="spacer"></div>
+      <button class="tg" role="switch" aria-checked="${r.on}" data-act="route" aria-label="路由链开关"></button>
+      <button class="linkish" data-act="collapse">当前走 ${esc(cur.model)} ${r.collapsed?'▼':'▲'}</button>
+    </div>
+    <div class="collapse ${r.collapsed?'':'open'}"><div>
+    <div class="strip">
+      ${r.lines.map((L,i)=>`<span class="chip ${i===r.active?'on':''} ${L.bal<=S.svc.threshold?'low':''}">
+        <i class="dot"></i>${esc(L.model)}</span>${i<r.lines.length-1?'<span class="arrow">→</span>':''}`).join('')}
+      <div class="spacer"></div>
+      <span class="keychip" title="${esc(r.key)}">${esc(r.key.slice(0,7))}…${esc(r.key.slice(-6))}</span>
+      <button class="ghost" data-act="copyKey">复制</button>
+    </div>
+    <div class="sect">
+      <div class="grid2">
+        <div class="fld"><label>路由名称</label>
+          <input class="inp" data-a="rname" value="${esc(r.name)}" /></div>
+        <div class="fld"><label>协议 <i>（线路上游需同协议）</i></label>
+          <select class="inp" data-a="proto">
+            ${['OpenAI 兼容','Anthropic'].map(p=>`<option ${p===r.protocol?'selected':''}>${p}</option>`).join('')}
+          </select></div>
+      </div>
+      <div class="fld" style="margin-top:12px"><label>API Key <i>（保存时自动生成；工具端以此作 API 密钥）</i></label>
+        <div class="urlrow">
+          <input class="inp mono" value="${esc(r.key)}" readonly style="color:var(--tx2)" />
+          <button class="ghost" data-act="copyKey">复制</button></div></div>
+    </div>
+    <div class="sect" style="padding-top:13px">
+      <h3>链路 <span class="sub">按顺序尝试：① 不可用时自动换 ②，主线路恢复后探视切回</span></h3>
+      ${r.lines.map((L,i)=>lineHTML(L,i)).join('')}
+      <button class="ghost" data-act="addLine" style="margin:0 17px 17px">＋ 添加备用线路</button>
+    </div>
+    </div></div>
+  </section>`;
+}
+
+function render(){
+  document.documentElement.dataset.theme=S.theme;
+  $('#themeBtn').textContent=S.theme==='dark'?'浅色主题':'深色主题';
+  // 记录仪表旧位置，让指针/切走线以过渡动画滑到新值（而不是重建后瞬移）
+  const oldBal=document.querySelector('.gauge .bal')?.style.left;
+  const oldTh=document.querySelector('.gauge .handle')?.style.left;
+  const openCaps=[...document.querySelectorAll('details.cap[open]')].map(d=>d.dataset.i);
+  $('#stage').innerHTML=viewRouter()+viewRoute();
+  if(oldBal!==undefined){const b=document.querySelector('.gauge .bal');b.style.left=oldBal;
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{b.style.left=S.route.lines[S.route.active].bal+'%';}));}
+  if(oldTh!==undefined){const h=document.querySelector('.gauge .handle');h.style.left=oldTh;
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{h.style.left=S.svc.threshold+'%';}));}
+  document.querySelectorAll('details.cap').forEach(d=>{ if(openCaps.includes(d.dataset.i)) d.open=true; });
+  closeDD();
+}
+
+/* ================= 模型下拉 ================= */
+let ddFor=null;
+function closeDD(){document.querySelectorAll('.dd').forEach(d=>d.classList.remove('on'));ddFor=null;}
+function openDD(btn){
+  closeDD();
+  const i=+btn.dataset.i, L=S.route.lines[i], a=ACCOUNTS[L.acct];
+  const dd=document.createElement('div');
+  dd.className='dd';
+  dd.innerHTML=(a.models.length?a.models:['（该账户无预设模型）'])
+    .map(m=>`<button data-pick="${esc(m)}" class="${m===L.model?'sel':''}">${esc(m)}${m===L.model?' ✓':''}</button>`).join('');
+  document.body.appendChild(dd);
+  const r=btn.getBoundingClientRect();
+  dd.style.left=Math.min(r.left, window.innerWidth-280)+'px';
+  dd.style.top=(r.bottom+6)+'px';
+  dd.classList.add('on'); ddFor=i;
+  dd.onclick=e=>{const b=e.target.closest('[data-pick]');if(!b)return;
+    S.route.lines[i].model=b.dataset.pick; render(); toast('模型已设为 '+b.dataset.pick);};
+}
+
+/* ================= gauge 拖拽 ================= */
+let drag=null;
+const gval=(g,x)=>{const r=g.getBoundingClientRect();
+  return Math.max(0,Math.min(60,Math.round((x-r.left)/r.width*60/100)));};
+document.addEventListener('pointerdown',e=>{
+  const h=e.target.closest('.handle'); if(!h) return;
+  drag=h.closest('[data-gauge]'); h.classList.add('act'); h.setPointerCapture(e.pointerId); e.preventDefault();
+});
+document.addEventListener('pointermove',e=>{
+  if(!drag) return;
+  S.svc.threshold=gval(drag,e.clientX);
+  render();
+  document.querySelector('[data-h="cut"]')?.classList.add('act');
+});
+document.addEventListener('pointerup',()=>{drag=null;});
+document.addEventListener('keydown',e=>{
+  const h=e.target.closest?.('.handle'); if(!h) return;
+  if(e.key!=='ArrowLeft'&&e.key!=='ArrowRight') return;
+  e.preventDefault();
+  S.svc.threshold=Math.max(0,Math.min(60,S.svc.threshold+(e.key==='ArrowRight'?1:-1)));
+  render(); document.querySelector('[data-h="cut"]')?.focus();
+});
+
+/* ================= events ================= */
+$('#themeBtn').onclick=()=>{S.theme=S.theme==='light'?'dark':'light';render();};
+$('#copyAll').onclick=()=>toast('已复制接入说明：'+S.addr+' ＋ API Key');
+
+$('#stage').addEventListener('input',e=>{
+  const t=e.target;
+  if(t.dataset.svc){ S.svc[t.dataset.svc]=Math.max(0,+t.value||0); render(); return; }
+  const i=t.dataset.i, a=t.dataset.a;
+  if(i!==undefined&&a){
+    if(a==='acct'){ const acc=ACCOUNTS[t.value];
+      S.route.lines[i].acct=t.value; S.route.lines[i].url=acc.url; S.route.lines[i].model=acc.models[0]||''; }
+    else S.route.lines[i][a]=t.value;
+    if(a!=='capD'&&a!=='capM') render();
+    return;
+  }
+  if(a==='rname'){ S.route.name=t.value;
+    const h=document.querySelector('.card-hd h2'); if(h) h.textContent=t.value; return; }
+});
+$('#stage').addEventListener('change',e=>{
+  const t=e.target;
+  if(t.dataset.a==='proto'){S.route.protocol=t.value;render();}
+});
+$('#stage').addEventListener('click',e=>{
+  const mv=e.target.closest('[data-mv]');
+  if(mv){ return moveLine(mv); }
+  const a=e.target.closest('[data-act]'); if(!a) return;
+  const act=a.dataset.act;
+  if(act==='router'){S.routerOn=!S.routerOn;render();toast(S.routerOn?'TokenRouter 已启动':'已停用：所有工具请求将收到明确错误');}
+  if(act==='svc'){S.svcOpen=!S.svcOpen;render();}
+  if(act==='route'){S.route.on=!S.route.on;render();toast(S.route.on?'路由链已启用':'路由链已停用（配置保留）');}
+  if(act==='collapse'){S.route.collapsed=!S.route.collapsed;render();}
+  if(act==='copyAddr'){navigator.clipboard?.writeText(S.addr);toast('已复制 '+S.addr+' —— 填到工具的「API 地址」');}
+  if(act==='copyKey'){navigator.clipboard?.writeText(S.route.key);toast('已复制 API Key');}
+  if(act==='models'){ ddFor===+a.dataset.i&&document.querySelector('.dd.on')?closeDD():openDD(a); }
+  if(act==='addLine'){
+    S.route.lines.push({acct:'moonshot',model:'kimi-k2',url:'https://api.moonshot.cn',bal:100,capD:'',capM:''});
+    render(); toast('已添加备用线路，可用 ↑↓ 调整顺序');
+  }
+});
+document.addEventListener('click',e=>{ if(!e.target.closest('.dd')&&!e.target.closest('.mbtn')) closeDD(); });
+
+function moveLine(btn){
+  const i=+btn.dataset.i, dir=btn.dataset.mv, L=S.route.lines;
+  if(dir==='del'){
+    if(L.length<=1){toast('至少保留一条线路');return;}
+    L.splice(i,1);
+    if(S.route.active>=L.length)S.route.active=L.length-1;
+    render(); toast('已移除该线路'); return;
+  }
+  const j=dir==='up'?i-1:i+1;
+  if(j<0||j>=L.length) return;
+  [L[i],L[j]]=[L[j],L[i]];
+  if(S.route.active===i)S.route.active=j; else if(S.route.active===j)S.route.active=i;
+  render();
+}
+
+/* ================= 演示 ================= */
+document.querySelector('.demos').addEventListener('click',e=>{
+  const b=e.target.closest('[data-demo]'); if(!b) return;
+  const d=b.dataset.demo, R=S.route;
+  if(d==='reset'){S=initial();render();toast('已重置');return;}
+  if(d==='drain'){
+    R.active=0; S.probe=null; S.svcOpen=true;
+    R.lines[0].bal=Math.max(2,S.svc.threshold-6);
+    R.active=1;
+    render();
+    toast(`主线路最小窗口剩余 ${R.lines[0].bal}% < 切走线 ${S.svc.threshold}% → 新流量已导向 ${ACCOUNTS[R.lines[1].acct].nm}`);
+    return;
+  }
+  if(d==='recover'){
+    if(R.active===0){toast('当前已经在主线路上了');return;}
+    R.lines[0].bal=72;              // 主线路恢复
+    S.probe={step:1,done:false};
+    render();
+    toast('主线路资格判定通过（无窗口打满 + 最小窗口有余量），开始第 1 次切回探视');
+    setTimeout(()=>{S.probe={step:2,done:false};render();
+      toast('第 1 次探视通过，间隔 ×2 后继续');},1400);
+    setTimeout(()=>{S.probe={step:3,done:true};render();
+      toast('探视通过 → 切回主线路');},2900);
+    setTimeout(()=>{S.probe=null;R.active=0;render();
+      toast('已切回主线路 '+R.lines[0].model);},4300);
+  }
+});
+
+if(location.hash==='#light')S.theme='light';
+if(location.hash==='#open')S.svcOpen=true;
+if(location.hash==='#drained'){S.svcOpen=true;S.route.active=1;S.route.lines[0].bal=14;}
+if(location.hash==='#probe'){S.svcOpen=true;S.route.active=1;S.route.lines[0].bal=72;S.probe={step:2,done:false};}
+render();
+window.S=S;
+</script>
+</body>
+</html>

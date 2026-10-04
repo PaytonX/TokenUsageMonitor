@@ -23,10 +23,11 @@ ETA、窗口重置检测），但只"看"不用。TokenRouter 把这份数据变
 | D2 | 协议面 | Anthropic `/v1/messages` + OpenAI `/v1/chat/completions`（含 SSE），同协议转发；跨协议翻译后补 | 翻译错译风险大；路由链上候选必须同协议 |
 | D3 | 路由识别 | 多条命名路由，每条一个本地 token（`tr_<routeId>_<hex>`，存 config.toml）；工具以该 token 作 API key；仅绑定 127.0.0.1 | Claude Code 只能改 BASE_URL+TOKEN，无法加路径前缀；按 token 识别对工具零侵入 |
 | D4 | 代理实现 | axum + reqwest(stream)；独立无总超时的上游 Client | hub.rs 阻塞实现承载不了 SSE；共享 http client 有 15s 总超时，不能复用 |
-| D5 | 切换触发 | 主动（剩余% < 阈值）+ 被动（429/402/401/403/5xx 分级冷却）；仅在未向客户端发出字节前换候选重试；链头恢复自动切回 | 双保险，见 §3.2 |
+| D5 | 切换触发 | **四层判定**：① 主动预警（可设阈值，0 = 关闭）以**最小（最短周期）在报窗口**的剩余 % 为准；② 硬墙兜底（任一窗口/上限打到 100% 即不可用）；③ 被动观测（限流/配额立即冷却换线、连接异常原地重试一次 + 连续熔断才标记、4xx 透传）；④ 切回探视（资格判定 + 真实请求探针 + ×2 指数退避 + 达上限等 reset_at） | 避免「月剩 5% / 5h 剩 98%」误切；不预测、只观测，误切为零 |
 | D6 | 配额输入 | 复用 SharedProviderState/UsageSnapshot.min_remaining_percent；**候选级**手填日上限 `Candidate.plan_limit_tokens_daily`（无配额 API 的 provider；路由器直读 settings，不动 Provider 构造签名）；实际消耗由路由器自记账 | provider 无配额 API 时主动切换的依据 |
 | D7 | UI 布局 | 设置页"路由"pane 承载全部配置；主界面 header 加快速开关（绿/灰/琥珀状态点）；切换时事件 + 系统通知 | 用户修订；快速开关关闭时监听保留、请求返回 503 + 原因 |
 | D8 | 凭据纪律 | 上游凭据一律 keyring（BearerKey 账户才可作候选）；路由本地 token 为本机自生成值存 config.toml（hub_token 先例）；源码/测试零凭据字面量 | Mimosa 约束 + keyring 既有体系 |
+| D10 | 路由数量 | **单路由**：整个 TokenRouter 一条链（`routes` 仅保留首条以平滑迁移旧配置）。用户提出多路由 + 模型别名分派后评估：两条链的切换状态、探视退避、状态展示都要独立维护，维护成本与收益不成比例 | 简化配置与心智负担；并行多工具的需求用「多窗口/多实例」而非多路由满足 |
 | D9 | 记账口径 | 路由消耗写 `usage_daily`，`source = "router:<instance_id>"`、`kind='provider'`、仅 model='' 总量行，增量累计；不与 REPLACE 回放型来源冲突 | 账本规定"差分类不与回放类同键"；`router:*` 键无其他写入方 |
 
 ## 3. 详细设计
@@ -59,14 +60,41 @@ base_url = "https://api.minimaxi.com"
 plan_limit_tokens_daily = 10000000   # 可选：手填日上限（tokens/自然日）
 ```
 
-- `Settings.router: RouterSettings`（serde default，旧配置零迁移成本）。
+- `Settings.router: RouterSettings`（serde default，旧配置零迁移成本；v1 的
+  `failover_threshold_percent` 等字段被 serde 忽略，新字段取默认值）。参数：
+  `enabled` / `port` / `proactive_threshold_percent`（主动预警阈值，0 = 关闭）/
+  `error_cooldown_secs` / `conn_breaker_count` / `probe_start_secs` /
+  `probe_max_attempts`。
 - 候选 `base_url` 必填：路由器对上游零假设（官方/中转站皆可），设置页按账户 kind 预填。
   Anthropic 中转站因此不需要独立的 `anthropic_api` 账户 kind——中转差异由候选 base_url 承载。
 - 手填日上限在**候选级**：路由器直读 settings 计算 used/limit，无需触碰 Provider
   构造签名（13 个 provider 的 uniform registry 保持不动）。
 - 凭据要求：候选账户必须是 `Credentials::BearerKey`（请求时校验，非 BearerKey 记错误态并跳过）。
 
-### 3.2 路由决策状态机（router/decision.rs，纯函数）
+### 3.2 四层判定（router/decision.rs，纯函数）
+
+**① 主动预警（可关）**：`Constraint { period_rank, remaining_percent, full }` 集合经
+`assess()` 汇总——`min_window_remaining` 取**周期序最小者**（five_hour 0 < daily 1 <
+weekly 2 < monthly 3）的剩余 %（同周期多来源取更小），低于
+`proactive_threshold_percent` → 该线路不可用。阈值 0 = 关闭。无刻度数据不拦截。
+
+**② 硬墙兜底**：`full`（used ≥ quota / over_quota / 达到手填上限）→ 立即不可用，
+与阈值无关。
+
+**③ 被动观测**（`on_result`）：QuotaError → 冷却 `Retry-After ?? error_cooldown_secs`
+（限流不会毫秒级恢复，不原地重试）；AuthError → 凭据错冷却；ServerError → **只累计
+`consecutive_conn_errors`，达 `conn_breaker_count` 才短冷却 60s**（单次抖动不杀线路，
+服务器层另有一次原地重试）；ClientError → 不动状态。
+
+**④ 切回探视**：选择恒按链序取第一个可用者，链头恢复自然回主线路；主线路「无窗口
+打满 + 最小窗口有余量」= 有资格。资格满足但实测仍限流 → `ProbeState` 记录
+`attempts` 与 `next_probe_at`（×2 退避），未到期的探视**连降级路径都跳过主线路**；
+达 `probe_max_attempts` 后 `next_probe_at` = 快照里的 `reset_at`（拿不到则 15 分钟
+低频）。探视成功（主线路 2xx）清空探视态。资格丢失（有墙打满）立即清空。
+
+`pick_candidate(candidates, states, route_state, policy, now)`：主线路
+（index 0）处于探视退避中且未到期 → 跳过；到期且未打满 → 放行一次作为探针；其余
+按 `available()` 判定，无可用者时降级到第一个未冷却者。
 
 每路由运行态 `RouteState { last_used_index: Option<usize>, candidates: Vec<CandidateState> }`，
 `CandidateState { cooldown_until, cooldown_reason(Quota|Auth|Error), last_error }`。
