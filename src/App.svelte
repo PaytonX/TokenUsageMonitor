@@ -9,6 +9,8 @@
     getUsage,
     getProviderStates,
     getSettings,
+    getRouterStatus,
+    onRouterSwitched,
     onUsageUpdated,
     onProviderError,
     onSettingsChanged,
@@ -35,6 +37,7 @@
     type Settings,
     type BurnInfo,
     type PeekSide,
+    type RouterStatus,
     ringWindowRemaining,
     providerShortName,
     payAsYouGoLabel,
@@ -282,6 +285,46 @@
   // 模式恢复判定阈值（逻辑像素）：介于 compact(168) 与 dashboard(400) 之间。
   const PILL_RESTORE_MAX_W = 200;
   let settings = $state<Settings | null>(null);
+  // TokenRouter 运行态（快速开关的状态点数据源）。enabled 以 settings 为准，
+  // listening/bind_error 来自 get_router_status，切换事件与设置保存都会刷新。
+  let routerStatus = $state<RouterStatus | null>(null);
+  let routerOn = $derived(settings?.router?.enabled ?? false);
+  let routerListening = $derived(routerStatus?.health.listening ?? false);
+  let routerBindError = $derived(routerStatus?.health.bind_error ?? null);
+  let routerTitle = $derived(
+    routerBindError
+      ? `TokenRouter：端口异常（${routerBindError}）`
+      : routerOn
+        ? `TokenRouter：已启用${routerListening ? "，监听中" : ""}（点击停用）`
+        : "TokenRouter：已停用（点击启用）",
+  );
+
+  /** 快速开关：翻转 router.enabled 并整体保存，settings-changed 事件会带回新态。 */
+  async function toggleRouter() {
+    if (!settings) return;
+    const next: Settings = {
+      ...settings,
+      router: {
+        ...(settings.router ?? {
+          port: 43211,
+          failover_threshold_percent: 20,
+          failback_threshold_percent: 50,
+          error_cooldown_secs: 300,
+          routes: [],
+        }),
+        enabled: !routerOn,
+      },
+    };
+    try {
+      await saveSettings(next);
+      settings = next;
+    } catch {
+      /* 保存失败保持原态；设置页里能看到具体错误。 */
+    }
+    getRouterStatus()
+      .then((s) => (routerStatus = s))
+      .catch(() => {});
+  }
 
   // Per-account accent map (instance_id -> #RRGGBB), derived from settings.
   // Snapshot `provider_id` doubles as the account `instance_id`, so lookup by it.
@@ -317,6 +360,18 @@
     errors = extractErrors(states);
     settings = await getSettings();
     lastRefreshAt = Date.now();
+
+    // TokenRouter 状态点：初始拉取 + 切换事件刷新。
+    getRouterStatus()
+      .then((s) => (routerStatus = s))
+      .catch(() => {});
+    unlistenFns.push(
+      await onRouterSwitched(() => {
+        getRouterStatus()
+          .then((s) => (routerStatus = s))
+          .catch(() => {});
+      }),
+    );
 
 
     // Live updates.
@@ -1000,6 +1055,20 @@
           <ProgressRing value={headerMoney ? 0 : ringArcValue} label={headerMoney ?? ringArcLabel} size={28} stroke={3} idle={snapshots.length === 0 || !!headerMoney} countdown={displayRemaining} />
         {/if}
         <button class="shell__btn" onclick={refresh} title="立即刷新">↻</button>
+        <button
+          type="button"
+          class="shell__btn shell__btn--router"
+          class:is-on={routerOn}
+          onclick={toggleRouter}
+          title={routerTitle}
+        >
+          <span
+            class="router-dot"
+            class:router-dot--on={routerOn && routerListening}
+            class:router-dot--warn={routerOn && !routerListening && !routerBindError}
+            class:router-dot--err={!!routerBindError}
+          ></span>⇄
+        </button>
         <button class="shell__btn" onclick={() => openSettings()} title="设置">⚙</button>
         <button class="shell__btn" onclick={toggleMode} title="折叠到迷你态">⤢</button>
         <button class="shell__btn shell__btn--close" onclick={closeApp} title="关闭">×</button>
@@ -1296,6 +1365,28 @@
     color: var(--tum-accent);
     border-color: var(--tum-accent-stroke);
     background: var(--tum-accent-fill);
+  }
+
+  /* TokenRouter 快速开关：⇄ + 状态点（绿=服务中 / 琥珀=启用未监听 / 红=端口异常）。 */
+  .shell__btn--router.is-on {
+    color: var(--tum-accent);
+    border-color: var(--tum-accent-stroke);
+  }
+  .router-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--tum-text-muted, #8b949e);
+    margin-right: 2px;
+  }
+  .router-dot--on {
+    background: #34d399;
+  }
+  .router-dot--warn {
+    background: #fbbf24;
+  }
+  .router-dot--err {
+    background: #f87171;
   }
 
   .shell__cards {

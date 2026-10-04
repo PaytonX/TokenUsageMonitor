@@ -17,6 +17,7 @@
     getDeviceReport,
     getExchangeRates,
     refreshExchangeRates,
+    getRouterStatus,
     type ProviderCatalog,
     type Preset,
     type PresetSubMode,
@@ -26,6 +27,9 @@
     type TestResult,
     type ProxyTestResult,
     type RatesSnapshot,
+    type RouterSettings,
+    type RouterStatus,
+    defaultRouterSettings,
     emitTabsChanged,
     readHiddenTabs,
     readAggMode,
@@ -36,7 +40,7 @@
   import { CURRENCIES, USD_RATES, applyRatesSnapshot, type Currency } from "./lib/currency";
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
 
-  type Tab = "general" | "accounts" | "interaction" | "network" | "about";
+  type Tab = "general" | "accounts" | "interaction" | "network" | "router" | "about";
 
   /** 可做精确覆盖的工具标识（须与后端 local::roots 的 key 一致）。 */
   const TOOL_DATA_DIR_KEYS = [".claude", ".codex", ".zcode", ".minimax", "cherry-studio"] as const;
@@ -124,6 +128,11 @@
   let toolDataDirs = $state<Record<string, string>>({});
   let proxyTesting = $state(false);
   let proxyResult = $state<ProxyTestResult | null>(null);
+  // TokenRouter（spec: docs/superpowers/specs/2026-10-04-token-router-design.md）：
+  // 编辑态配置 + 运行态快照（健康/候选徽标）。token 由后端保存时补发，前端只展示。
+  let routerCfg = $state<RouterSettings>(defaultRouterSettings());
+  let routerStatus = $state<RouterStatus | null>(null);
+  let tokenCopiedFor = $state<string | null>(null);
   // 汇率（B.6/C6）：编辑态覆盖值 + 最近一次生效快照（供 placeholder/更新时间展示）。
   let rateOverrides = $state<Record<string, number | undefined>>({});
   let ratesSnapshot = $state<RatesSnapshot | null>(null);
@@ -204,6 +213,8 @@
       rateOverrides = { ...(s.rate_overrides ?? {}) };
       toolDataRoots = [...(s.tool_data_roots ?? [])];
       toolDataDirs = { ...(s.tool_data_dirs ?? {}) };
+      routerCfg = { ...defaultRouterSettings(), ...(s.router ?? {}) };
+      void refreshRouterStatus();
       forms = buildForms();
       // 选中项失效（账户被删/首次加载）时回落到第一个账户。
       if (!selectedAccountId || !forms.some((f) => f.meta.instance_id === selectedAccountId)) {
@@ -398,6 +409,157 @@
     }
   }
 
+  // --- TokenRouter -------------------------------------------------------------
+
+  /** 候选账户 kind → 上游根地址预填。路由器对上游零假设，这里是「添加候选时
+   *  省一次粘贴」的便利值；用户随时可改成中转站地址。 */
+  const ROUTER_BASE_PRESETS: Record<string, string> = {
+    anthropic: "https://api.anthropic.com",
+    openai: "https://api.openai.com",
+    deepseek: "https://api.deepseek.com",
+    kimi: "https://api.moonshot.cn",
+    kimi_global: "https://api.moonshot.ai",
+    xai: "https://api.x.ai",
+    minimax: "https://api.minimaxi.com",
+    minimax_api: "https://api.minimaxi.com",
+  };
+
+  let routeSeq = 0;
+  function nextRouteId(): string {
+    routeSeq += 1;
+    return `route-${Date.now().toString(36)}-${routeSeq}`;
+  }
+
+  function accountKindOf(instanceId: string): string {
+    return (
+      catalog?.accounts.find((a) => a.instance_id === instanceId)?.provider_kind ?? ""
+    );
+  }
+
+  /** 选账户时自动预填该 kind 的官方根地址（覆盖旧值，选人即选上游）。 */
+  function onCandidateAccountChanged(route: RouterSettings["routes"][number], candIndex: number, instanceId: string) {
+    const cand = route.candidates[candIndex];
+    if (!cand) return;
+    cand.account = instanceId;
+    const base = ROUTER_BASE_PRESETS[accountKindOf(instanceId)];
+    if (base) cand.base_url = base;
+  }
+
+  function addRoute() {
+    routerCfg.routes.push({
+      id: nextRouteId(),
+      name: `路由 ${routerCfg.routes.length + 1}`,
+      protocol: "openai",
+      token: "",
+      candidates: [],
+    });
+  }
+
+  function removeRoute(index: number) {
+    routerCfg.routes = routerCfg.routes.filter((_, i) => i !== index);
+  }
+
+  function addCandidate(routeIndex: number) {
+    const route = routerCfg.routes[routeIndex];
+    if (!route) return;
+    route.candidates.push({ account: "", model: "", base_url: "" });
+  }
+
+  function removeCandidate(routeIndex: number, candIndex: number) {
+    const route = routerCfg.routes[routeIndex];
+    if (!route) return;
+    route.candidates = route.candidates.filter((_, i) => i !== candIndex);
+  }
+
+  function moveCandidate(routeIndex: number, candIndex: number, dir: -1 | 1) {
+    const route = routerCfg.routes[routeIndex];
+    if (!route) return;
+    const to = candIndex + dir;
+    if (to < 0 || to >= route.candidates.length) return;
+    const [c] = route.candidates.splice(candIndex, 1);
+    route.candidates.splice(to, 0, c);
+  }
+
+  async function copyRouteToken(routeId: string, token: string) {
+    try {
+      await navigator.clipboard.writeText(token);
+      tokenCopiedFor = routeId;
+      setTimeout(() => (tokenCopiedFor = null), 1500);
+    } catch {
+      /* 剪贴板不可用（无权限等）：静默，用户可手动选择文本复制。 */
+    }
+  }
+
+  async function refreshRouterStatus() {
+    try {
+      routerStatus = await getRouterStatus();
+    } catch {
+      routerStatus = null;
+    }
+  }
+
+  /** 编辑态 → 落盘态：数值夹取 + 去掉半填的候选/无候选的路由。token 留空由
+   *  后端补发（ensure_route_tokens），已生成的原样保留。 */
+  function sanitizeRouter(cfg: RouterSettings): RouterSettings {
+    const clampInt = (v: number, lo: number, hi: number, dflt: number) => {
+      const n = Math.round(v);
+      return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : dflt;
+    };
+    return {
+      enabled: cfg.enabled,
+      port: clampInt(cfg.port, 1, 65535, 43211),
+      failover_threshold_percent: clampInt(cfg.failover_threshold_percent, 1, 99, 20),
+      failback_threshold_percent: clampInt(cfg.failback_threshold_percent, 1, 99, 50),
+      error_cooldown_secs: clampInt(cfg.error_cooldown_secs, 5, 86400, 300),
+      routes: cfg.routes
+        .map((r) => ({
+          id: r.id || nextRouteId(),
+          name: r.name.trim() || "未命名路由",
+          protocol: r.protocol,
+          token: r.token.trim(),
+          candidates: r.candidates
+            .map((c) => ({
+              account: c.account.trim(),
+              model: c.model.trim(),
+              base_url: c.base_url.trim().replace(/\/+$/, ""),
+              ...(Number.isFinite(c.plan_limit_tokens_daily) &&
+              (c.plan_limit_tokens_daily ?? 0) > 0
+                ? { plan_limit_tokens_daily: c.plan_limit_tokens_daily }
+                : {}),
+            }))
+            .filter((c) => c.account && c.model && c.base_url),
+        }))
+        .filter((r) => r.candidates.length > 0),
+    };
+  }
+
+  const ROUTER_STATE_LABELS: Record<string, string> = {
+    ok: "可用",
+    cooldown: "冷却",
+    low_quota: "低配额",
+    unusable: "凭据缺失",
+  };
+
+  function candidateBadge(state: string): string {
+    switch (state) {
+      case "ok":
+        return "route-badge--ok";
+      case "cooldown":
+      case "low_quota":
+        return "route-badge--warn";
+      default:
+        return "route-badge--bad";
+    }
+  }
+
+  function cooldownUntilText(iso?: string): string {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const secs = Math.max(0, Math.round((d.getTime() - Date.now()) / 1000));
+    return secs > 90 ? `${Math.round(secs / 60)} 分钟后` : `${secs} 秒后`;
+  }
+
   // --- Bulk save --------------------------------------------------------------
 
   /** Apply the countdown-mode switch immediately so the dashboard ring flips
@@ -492,6 +654,7 @@
             .map(([k, v]) => [k, v.trim()])
             .filter(([, v]) => v.length > 0),
         ),
+        router: sanitizeRouter(routerCfg),
       };
       await saveSettings(next);
       // Mirror the display-currency choice into localStorage so every window
@@ -623,6 +786,16 @@ async function handleMinimize() {
         onclick={() => (tab = "network")}
       >
         网络
+      </button>
+      <button
+        class="nav-item"
+        class:is-active={tab === "router"}
+        onclick={() => {
+          tab = "router";
+          void refreshRouterStatus();
+        }}
+      >
+        路由
       </button>
       <button
         class="nav-item"
@@ -1320,6 +1493,160 @@ async function handleMinimize() {
                 />
               </label>
             {/each}
+          </div>
+        </div>
+
+      {:else if tab === "router"}
+        <div class="pane">
+          <h2 class="pane__title">路由（TokenRouter）</h2>
+
+          <div class="section">
+            <h3 class="section__title">本地路由代理</h3>
+            <p class="hint">
+              在本机开一个 API 代理端口：工具把 baseURL 指到
+              <code>http://127.0.0.1:{routerCfg.port}</code>、API key 填各路由的 token，
+              请求就会在候选之间自动路由——配额耗尽自动换下一个候选重试，长任务不中断。
+              停用时端口保留、请求返回明确错误，主面板头部 ⇄ 按钮可随时快速开关。
+            </p>
+            <div class="behavior-row">
+              <div class="behavior-info">
+                <span class="behavior-label">
+                  启用路由代理
+                  {#if routerStatus?.health.bind_error}
+                    <span class="route-badge route-badge--bad">端口异常</span>
+                  {:else if routerStatus?.health.listening}
+                    <span class="route-badge route-badge--ok">监听中</span>
+                  {/if}
+                </span>
+                <span class="behavior-hint">
+                  {#if routerStatus?.health.bind_error}
+                    {routerStatus.health.bind_error} —— 换一个端口并保存即可恢复。
+                  {:else if routerStatus?.health.listening}
+                    服务健康：127.0.0.1:{routerStatus.health.port}
+                  {:else}
+                    保存后生效；状态点变绿即开始服务。
+                  {/if}
+                </span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" bind:checked={routerCfg.enabled} />
+                <span class="toggle__track"><span class="toggle__thumb"></span></span>
+              </label>
+            </div>
+            <div class="route-grid">
+              <label class="field">
+                <span class="field__label">端口</span>
+                <input class="field__input" type="number" min="1" max="65535" bind:value={routerCfg.port} />
+              </label>
+              <label class="field">
+                <span class="field__label">主动切换阈值（剩余 %）</span>
+                <input class="field__input" type="number" min="1" max="99" bind:value={routerCfg.failover_threshold_percent} />
+              </label>
+              <label class="field">
+                <span class="field__label">回切阈值（剩余 %）</span>
+                <input class="field__input" type="number" min="1" max="99" bind:value={routerCfg.failback_threshold_percent} />
+              </label>
+              <label class="field">
+                <span class="field__label">配额错误冷却（秒）</span>
+                <input class="field__input" type="number" min="5" max="86400" bind:value={routerCfg.error_cooldown_secs} />
+              </label>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3 class="section__title">路由列表</h3>
+            <p class="hint">
+              每条路由是一条「同协议候选的有序链」：链头为主模型，其余为备选。
+              候选账户需为 API Key 型凭据；手填日上限仅对不上报配额的来源（如 Claude 订阅）有意义，
+              used 取经本路由的实际消耗。
+            </p>
+
+            {#each routerCfg.routes as route, ri (route.id)}
+              <div class="route-card">
+                <div class="route-card__head">
+                  <input class="field__input route-name" type="text" bind:value={route.name} placeholder="路由名称" />
+                  <select class="field__input route-protocol" bind:value={route.protocol}>
+                    <option value="openai">OpenAI 兼容</option>
+                    <option value="anthropic">Anthropic</option>
+                  </select>
+                  <button type="button" class="btn btn--ghost" onclick={() => removeRoute(ri)}>删除路由</button>
+                </div>
+                <div class="route-token">
+                  <span class="route-token__label">API Key</span>
+                  <code class="route-token__value">{route.token || "（保存后自动生成）"}</code>
+                  {#if route.token}
+                    <button type="button" class="btn btn--ghost" onclick={() => copyRouteToken(route.id, route.token)}>
+                      {tokenCopiedFor === route.id ? "已复制" : "复制"}
+                    </button>
+                  {/if}
+                </div>
+
+                <div class="route-cands">
+                  {#each route.candidates as cand, ci (ci)}
+                    <div
+                      class="route-cand"
+                      class:route-cand--active={routerStatus?.routes.find((r) => r.id === route.id)?.active_index === ci}
+                    >
+                      <span class="route-cand__order">{ci === 0 ? "主" : `备${ci}`}</span>
+                      <select
+                        class="field__input route-cand__account"
+                        value={cand.account}
+                        onchange={(e) => onCandidateAccountChanged(route, ci, (e.currentTarget as HTMLSelectElement).value)}
+                      >
+                        <option value="">选择账户…</option>
+                        {#each catalog?.accounts ?? [] as acct (acct.instance_id)}
+                          <option value={acct.instance_id}>{acct.label}</option>
+                        {/each}
+                      </select>
+                      <input class="field__input route-cand__model" type="text" bind:value={cand.model} placeholder="模型名（如 claude-sonnet-4-5）" />
+                      <input class="field__input route-cand__base" type="text" bind:value={cand.base_url} placeholder="上游地址（选账户后自动预填）" />
+                      <input
+                        class="field__input route-cand__limit"
+                        type="number"
+                        min="0"
+                        bind:value={cand.plan_limit_tokens_daily}
+                        placeholder="日上限"
+                        title="手填订阅日上限（tokens/自然日），仅对不上报配额的来源有意义；留空不启用"
+                      />
+                      <div class="route-cand__ops">
+                        <button type="button" class="route-op" disabled={ci === 0} onclick={() => moveCandidate(ri, ci, -1)} title="上移">↑</button>
+                        <button type="button" class="route-op" disabled={ci === route.candidates.length - 1} onclick={() => moveCandidate(ri, ci, 1)} title="下移">↓</button>
+                        <button type="button" class="route-op route-op--del" onclick={() => removeCandidate(ri, ci)} title="删除候选">×</button>
+                      </div>
+                      {#if routerStatus}
+                        {@const rs = routerStatus.routes.find((r) => r.id === route.id)?.candidates[ci]}
+                        {#if rs}
+                          <div class="route-cand__status">
+                            <span class="route-badge {candidateBadge(rs.state)}">{ROUTER_STATE_LABELS[rs.state] ?? rs.state}</span>
+                            {#if rs.remaining_percent !== undefined && rs.remaining_percent !== null}
+                              <span>剩 {Math.round(rs.remaining_percent)}%</span>
+                            {/if}
+                            {#if rs.state === "cooldown" && rs.cooldown_until}
+                              <span>{cooldownUntilText(rs.cooldown_until)}恢复</span>
+                            {/if}
+                            {#if rs.last_error}
+                              <span class="route-cand__err" title={rs.last_error}>{rs.last_error}</span>
+                            {/if}
+                          </div>
+                        {/if}
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+                <div class="account__actions">
+                  <button type="button" class="btn btn--ghost" onclick={() => addCandidate(ri)}>＋ 添加候选</button>
+                </div>
+              </div>
+            {/each}
+
+            <div class="account__actions">
+              <button type="button" class="btn btn--ghost" onclick={addRoute}>＋ 添加路由</button>
+            </div>
+            <p class="hint">
+              接入示例（Anthropic 路由，Claude Code）：<code>ANTHROPIC_BASE_URL=http://127.0.0.1:{routerCfg.port}</code>、
+              <code>{"ANTHROPIC_AUTH_TOKEN=<路由 token>"}</code>。切换对工具完全透明；
+              只有尚未向工具回写任何字节的请求才会换候选重试。
+            </p>
           </div>
         </div>
 
@@ -2414,6 +2741,130 @@ async function handleMinimize() {
   .roots-input {
     flex: 1;
     min-width: 0;
+  }
+
+  /* ---- TokenRouter 路由 pane ---- */
+  .route-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .route-card {
+    border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
+    border-radius: var(--tum-radius-md, 10px);
+    padding: 12px;
+    margin-bottom: 12px;
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .route-card__head {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .route-name {
+    flex: 1;
+    min-width: 0;
+  }
+  .route-protocol {
+    width: auto;
+  }
+  .route-token {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin: 8px 0;
+    flex-wrap: wrap;
+  }
+  .route-token__label {
+    font-size: 12px;
+    color: var(--tum-text-muted, #8b949e);
+  }
+  .route-token__value {
+    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    word-break: break-all;
+  }
+  .route-cands {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .route-cand {
+    display: grid;
+    grid-template-columns: 28px 150px 1fr 1.3fr 90px auto;
+    gap: 6px;
+    align-items: center;
+    padding: 8px;
+    border-radius: var(--tum-radius-sm, 8px);
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .route-cand--active {
+    outline: 1px solid rgba(76, 194, 255, 0.45);
+  }
+  .route-cand__order {
+    font-size: 11px;
+    color: var(--tum-text-muted, #8b949e);
+    text-align: center;
+  }
+  .route-cand__ops {
+    display: flex;
+    gap: 4px;
+  }
+  .route-op {
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    border: none;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--tum-text-primary, #e6edf3);
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .route-op:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .route-op--del:hover {
+    background: rgba(255, 82, 82, 0.25);
+  }
+  .route-cand__status {
+    grid-column: 2 / -1;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    font-size: 11px;
+    color: var(--tum-text-muted, #8b949e);
+    min-width: 0;
+  }
+  .route-cand__err {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+  .route-badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 1.6;
+  }
+  .route-badge--ok {
+    background: rgba(16, 185, 129, 0.18);
+    color: #34d399;
+  }
+  .route-badge--warn {
+    background: rgba(245, 158, 11, 0.18);
+    color: #fbbf24;
+  }
+  .route-badge--bad {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
   }
 
 </style>

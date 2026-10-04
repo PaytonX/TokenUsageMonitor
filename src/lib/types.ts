@@ -310,6 +310,94 @@ export interface Settings {
   /** Optional outbound proxy (http/https/socks5). Null/empty/blank = direct.
    * Changing this rebuilds the shared HTTP client and the provider registry. */
   proxy_url?: string | null;
+  /** TokenRouter 本地路由代理配置。镜像 Rust `router::config::RouterSettings`；
+   * 旧 dev-mock / 测试夹具可能缺省，读取端用 `??` 兜底。 */
+  router?: RouterSettings;
+}
+
+/** TokenRouter 路由面协议。同协议转发：一条路由链上的候选必须同协议。 */
+export type RouterProtocol = "anthropic" | "openai";
+
+/** 镜像 Rust `router::config::CandidateConfig`：路由链上的一个候选。 */
+export interface RouterCandidate {
+  /** 账户 instance_id：凭据与配额快照来源（须为 API Key 型凭据）。 */
+  account: string;
+  /** 转发时重写进请求 body 的上游模型名。 */
+  model: string;
+  /** 上游 API 根地址（官方端点或中转站皆可）。 */
+  base_url: string;
+  /** 手填订阅日上限（tokens/自然日），仅对不上报配额的 provider 有意义。 */
+  plan_limit_tokens_daily?: number;
+}
+
+/** 镜像 Rust `router::config::RouteConfig`。token 为空表示等待后端补发。 */
+export interface RouterRoute {
+  id: string;
+  name: string;
+  protocol: RouterProtocol;
+  token: string;
+  candidates: RouterCandidate[];
+}
+
+/** 镜像 Rust `router::config::RouterSettings`。 */
+export interface RouterSettings {
+  enabled: boolean;
+  port: number;
+  /** 主动切换阈值：剩余% 低于它的新请求导向下一候选。 */
+  failover_threshold_percent: number;
+  /** 配额冷却到期后恢复到该剩余% 以上才回用（防抖）。 */
+  failback_threshold_percent: number;
+  /** 配额/凭据错误的默认冷却秒数。 */
+  error_cooldown_secs: number;
+  routes: RouterRoute[];
+}
+
+/** `get_router_status` 负载，镜像 Rust `router::RouterStatusPayload`。 */
+export interface RouterStatus {
+  enabled: boolean;
+  health: { listening: boolean; port: number; bind_error?: string };
+  routes: RouterRouteStatus[];
+}
+
+export interface RouterRouteStatus {
+  id: string;
+  name: string;
+  protocol: RouterProtocol;
+  /** 当前激活候选（最近一次实际承接请求者）；尚未承接过 = null。 */
+  active_index: number | null;
+  candidates: RouterCandidateStatus[];
+}
+
+export interface RouterCandidateStatus {
+  account: string;
+  model: string;
+  base_url: string;
+  state: "ok" | "cooldown" | "low_quota" | "unusable";
+  cooldown_until?: string;
+  cooldown_reason?: "quota" | "auth" | "error";
+  remaining_percent?: number;
+  last_error?: string;
+}
+
+/** `router-switched` 事件负载，镜像 Rust `router::RouterSwitchEvent`。 */
+export interface RouterSwitchEvent {
+  route_id: string;
+  route_name: string;
+  from: string | null;
+  to: string;
+  reason: "initial" | "failover" | "failback";
+}
+
+/** 前端新建路由的默认配置（Settings 路由 pane 的「添加路由」入口）。 */
+export function defaultRouterSettings(): RouterSettings {
+  return {
+    enabled: false,
+    port: 43211,
+    failover_threshold_percent: 20,
+    failback_threshold_percent: 50,
+    error_cooldown_secs: 300,
+    routes: [],
+  };
 }
 
 /** One effective exchange-rate row (backend `exchange::RateRow`). `source`:

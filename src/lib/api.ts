@@ -16,6 +16,8 @@ import type {
   ProviderError,
   ProviderState,
   ProxyTestResult,
+  RouterStatus,
+  RouterSwitchEvent,
   Settings,
   TestResult,
   UsageSnapshot,
@@ -207,6 +209,19 @@ export async function testProxy(url: string): Promise<ProxyTestResult> {
  * null when the file is absent; rejects only on an unreadable/invalid file. */
 export async function detectCodexToken(): Promise<DetectedCodexToken | null> {
   return invoke<DetectedCodexToken | null>("detect_codex_token");
+}
+
+/** TokenRouter 运行状态：服务健康 + 每路由/每候选实时状态（设置页路由 pane
+ * 与主界面快速开关的数据源）。 */
+export async function getRouterStatus(): Promise<RouterStatus> {
+  return invoke<RouterStatus>("get_router_status");
+}
+
+/** Rust → 各窗口：路由发生了实际切换（failover / failback / 首次承接）。 */
+export function onRouterSwitched(
+  cb: (ev: RouterSwitchEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<RouterSwitchEvent>("router-switched", (e) => cb(e.payload));
 }
 
 // Event listeners ----------------------------------------------------------
