@@ -288,6 +288,37 @@ async fn quota_429_fails_over_to_next_candidate() {
 }
 
 #[tokio::test]
+async fn empty_candidate_model_passes_client_model_through() {
+    // 候选模型名留空 = 透传工具的原始模型名（同名模型接多个上游的场景）。
+    let mock = Arc::new(MockState::new(false));
+    let upstream = spawn_mock(
+        axum::Router::new()
+            .route("/v1/chat/completions", post(chat_ok))
+            .with_state(mock.clone()),
+    )
+    .await;
+    let routes_toml = format!(
+        "[[router.routes]]\nid = \"rp\"\nname = \"passthrough\"\nprotocol = \"openai\"\ntoken = \"tok-pass\"\n\n[[router.routes.candidates]]\naccount = \"acct-1\"\nmodel = \"\"\nbase_url = \"{upstream}\"\n"
+    );
+    let (_core, _storage, port, _dir) = spawn_router("modelpass", true, &routes_toml).await;
+
+    let client = router_client();
+    let resp = client
+        .post(&format!("http://127.0.0.1:{port}/v1/chat/completions"))
+        .bearer_auth("tok-pass")
+        .json(&json!({"model": "client-original-model", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        mock.last_model.lock().unwrap().as_deref(),
+        Some("client-original-model"),
+        "空模型名必须透传原始模型，不得重写"
+    );
+}
+
+#[tokio::test]
 async fn sse_stream_is_forwarded_and_usage_recorded() {
     let upstream = spawn_mock(axum::Router::new().route("/v1/messages", post(sse_messages))).await;
     let routes_toml = format!(

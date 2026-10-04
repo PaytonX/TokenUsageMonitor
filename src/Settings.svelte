@@ -18,6 +18,7 @@
     getExchangeRates,
     refreshExchangeRates,
     getRouterStatus,
+    onSettingsChanged,
     type ProviderCatalog,
     type Preset,
     type PresetSubMode,
@@ -498,8 +499,10 @@
     }
   }
 
-  /** 编辑态 → 落盘态：数值夹取 + 去掉半填的候选/无候选的路由。token 留空由
-   *  后端补发（ensure_route_tokens），已生成的原样保留。 */
+  /** 编辑态 → 落盘态：数值夹取 + 去掉缺账户/缺上游地址的候选。**路由本身不
+   *  删除**——没配全候选的路由保留在列表里（请求会得到明确报错），避免用户
+   *  辛苦填了一半的内容被静默吞掉。模型名可留空（= 透传原始模型）。token 留空
+   *  由后端补发（ensure_route_tokens），已生成的原样保留。 */
   function sanitizeRouter(cfg: RouterSettings): RouterSettings {
     const clampInt = (v: number, lo: number, hi: number, dflt: number) => {
       const n = Math.round(v);
@@ -511,25 +514,23 @@
       failover_threshold_percent: clampInt(cfg.failover_threshold_percent, 1, 99, 20),
       failback_threshold_percent: clampInt(cfg.failback_threshold_percent, 1, 99, 50),
       error_cooldown_secs: clampInt(cfg.error_cooldown_secs, 5, 86400, 300),
-      routes: cfg.routes
-        .map((r) => ({
-          id: r.id || nextRouteId(),
-          name: r.name.trim() || "未命名路由",
-          protocol: r.protocol,
-          token: r.token.trim(),
-          candidates: r.candidates
-            .map((c) => ({
-              account: c.account.trim(),
-              model: c.model.trim(),
-              base_url: c.base_url.trim().replace(/\/+$/, ""),
-              ...(Number.isFinite(c.plan_limit_tokens_daily) &&
-              (c.plan_limit_tokens_daily ?? 0) > 0
-                ? { plan_limit_tokens_daily: c.plan_limit_tokens_daily }
-                : {}),
-            }))
-            .filter((c) => c.account && c.model && c.base_url),
-        }))
-        .filter((r) => r.candidates.length > 0),
+      routes: cfg.routes.map((r) => ({
+        id: r.id || nextRouteId(),
+        name: r.name.trim() || "未命名路由",
+        protocol: r.protocol,
+        token: r.token.trim(),
+        candidates: r.candidates
+          .map((c) => ({
+            account: c.account.trim(),
+            model: c.model.trim(),
+            base_url: c.base_url.trim().replace(/\/+$/, ""),
+            ...(Number.isFinite(c.plan_limit_tokens_daily) &&
+            (c.plan_limit_tokens_daily ?? 0) > 0
+              ? { plan_limit_tokens_daily: c.plan_limit_tokens_daily }
+              : {}),
+          }))
+          .filter((c) => c.account && c.base_url),
+      })),
     };
   }
 
@@ -657,6 +658,17 @@
         router: sanitizeRouter(routerCfg),
       };
       await saveSettings(next);
+      // 后端在落盘前会补发空 token（ensure_route_tokens）：入参 next 里 token
+      // 还是空的，必须回读后端的落盘结果，路由卡的 API Key 才显示得出来。
+      // 同时刷新运行态（启停/端口变化即时反映）。
+      try {
+        const fresh = await getSettings();
+        settings = fresh;
+        routerCfg = { ...defaultRouterSettings(), ...(fresh.router ?? {}) };
+        void refreshRouterStatus();
+      } catch {
+        /* 回读失败不阻塞保存：下次打开设置页会重读。 */
+      }
       // Mirror the display-currency choice into localStorage so every window
       // (model panel, detail cards) resolves it instantly without an IPC read.
       try {
@@ -724,6 +736,13 @@
   // 会导致账户与预设都不显示、所有设置开关失效、保存按钮禁用。
   onMount(() => {
     refreshAll();
+    // 其它窗口（主面板 ⇄ 快速开关）改了设置 → 同步路由编辑态，避免下一次
+    // 本窗口保存把外部改动又改回去。token 由后端补发后也经此回填。
+    onSettingsChanged((fresh) => {
+      settings = fresh;
+      routerCfg = { ...defaultRouterSettings(), ...(fresh.router ?? {}) };
+      void refreshRouterStatus();
+    });
   });
 async function handleMinimize() {
     await getCurrentWindow().minimize();
@@ -1557,8 +1576,8 @@ async function handleMinimize() {
             <h3 class="section__title">路由列表</h3>
             <p class="hint">
               每条路由是一条「同协议候选的有序链」：链头为主模型，其余为备选。
-              候选账户需为 API Key 型凭据；手填日上限仅对不上报配额的来源（如 Claude 订阅）有意义，
-              used 取经本路由的实际消耗。
+              候选账户需为 API Key 型凭据；模型名可留空（透传工具原始模型名）；
+              手填日上限仅对不上报配额的来源（如 Claude 订阅）有意义，used 取经本路由的实际消耗。
             </p>
 
             {#each routerCfg.routes as route, ri (route.id)}
@@ -1598,7 +1617,7 @@ async function handleMinimize() {
                           <option value={acct.instance_id}>{acct.label}</option>
                         {/each}
                       </select>
-                      <input class="field__input route-cand__model" type="text" bind:value={cand.model} placeholder="模型名（如 claude-sonnet-4-5）" />
+                      <input class="field__input route-cand__model" type="text" bind:value={cand.model} placeholder="模型名（留空 = 透传）" title="留空 = 透传工具的原始模型名；填写则重写为该候选的模型" />
                       <input class="field__input route-cand__base" type="text" bind:value={cand.base_url} placeholder="上游地址（选账户后自动预填）" />
                       <input
                         class="field__input route-cand__limit"

@@ -135,15 +135,20 @@ async fn route_request(
         let cand = &route.candidates[idx];
         let api_key = api_keys[idx].clone().unwrap_or_default();
 
-        let body_bytes = match forward::rewrite_model_field(&body, &cand.model) {
-            Ok(rewritten) => rewritten,
-            Err(e) => {
-                return protocol_error(
-                    protocol,
-                    StatusCode::BAD_REQUEST,
-                    invalid_request_kind(protocol),
-                    &e,
-                )
+        // 候选未指定模型（空串）= 透传工具的原始模型名；指定了才重写。
+        let body_bytes = if cand.model.is_empty() {
+            body.to_vec()
+        } else {
+            match forward::rewrite_model_field(&body, &cand.model) {
+                Ok(rewritten) => rewritten,
+                Err(e) => {
+                    return protocol_error(
+                        protocol,
+                        StatusCode::BAD_REQUEST,
+                        invalid_request_kind(protocol),
+                        &e,
+                    )
+                }
             }
         };
         let url = format!("{}{}", cand.base_url.trim_end_matches('/'), protocol.proxy_path());

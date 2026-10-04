@@ -36,7 +36,8 @@ impl RouterProtocol {
 pub struct CandidateConfig {
     /// 账户（`AccountMeta::instance_id`）：凭据与配额快照来源。须为 BearerKey。
     pub account: String,
-    /// 转发时重写进请求 body 的上游模型名。
+    /// 转发时重写进请求 body 的上游模型名；**留空 = 透传工具的原始模型名**
+    /// （同名模型接多个上游时不用挨个填）。
     pub model: String,
     /// 上游 API 根地址（不含路径），如 `https://api.anthropic.com`。
     pub base_url: String,
