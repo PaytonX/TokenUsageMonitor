@@ -35,6 +35,9 @@ pub struct SettingsDelta {
     /// Instance ids that flipped true -> false. Polling for these stops; the
     /// registry reconcile in save_settings drops their state separately.
     pub newly_disabled: Vec<String>,
+    /// TokenRouter 配置（开关/端口/路由表）发生了变化。端口变化时由
+    /// save_settings 触发代理服务重启；其余字段每请求现读，无需重启。
+    pub router_changed: bool,
 }
 
 impl SettingsDelta {
@@ -121,7 +124,9 @@ impl SettingsDelta {
             // 数据目录变了 → 本地工具面板必须重扫（save_settings 已清缓存并
             // 重建 roots 快照；此处保证前端也收到刷新信号）。
             || old.tool_data_roots != new.tool_data_roots
-            || old.tool_data_dirs != new.tool_data_dirs;
+            || old.tool_data_dirs != new.tool_data_dirs
+            // 路由配置：设置页与主界面快速开关都需要立即反映。
+            || old.router != new.router;
 
         Self {
             poll_relevant,
@@ -129,6 +134,7 @@ impl SettingsDelta {
             membership_changed,
             newly_enabled,
             newly_disabled,
+            router_changed: old.router != new.router,
         }
     }
 
@@ -243,6 +249,18 @@ mod tests {
         let d = SettingsDelta::compute(&old, &new);
         assert!(!d.poll_relevant);
         assert!(!d.membership_changed);
+    }
+
+    #[test]
+    fn router_edits_are_display_relevant_only() {
+        let old = base();
+        let mut new = old.clone();
+        new.router.enabled = true;
+        new.router.port = 43212;
+        let d = SettingsDelta::compute(&old, &new);
+        assert!(d.display_relevant);
+        assert!(d.router_changed);
+        assert!(!d.poll_relevant, "路由器不参与轮询，不该白白打一轮请求");
     }
 
     #[test]

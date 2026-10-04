@@ -28,6 +28,10 @@ tauri-plugin-single-instance = "2"
 # Async runtime + HTTP
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "socks"] }
+# TokenRouter 本地反向代理：与 tokio/reqwest 同栈，承载 SSE 流式转发
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+futures-util = "0.3"
+bytes = "1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

@@ -116,6 +116,10 @@ pub struct Settings {
     /// Accepts `http://host:port` or `socks5://host:port`; `None` uses the default client.
     #[serde(default)]
     pub proxy_url: Option<String>,
+    /// TokenRouter 本地路由代理配置（路由表/端口/阈值）。见 `router/` 模块
+    /// 与 docs/superpowers/specs/2026-10-04-token-router-design.md。
+    #[serde(default)]
+    pub router: crate::router::config::RouterSettings,
 }
 
 fn default_hub_port() -> u16 {
@@ -205,6 +209,7 @@ impl Default for Settings {
             hub_token_configured: false,
             rate_overrides: HashMap::new(),
             proxy_url: None,
+            router: crate::router::config::RouterSettings::default(),
         }
     }
 }

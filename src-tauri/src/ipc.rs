@@ -1027,6 +1027,10 @@ pub async fn save_settings(
     let old_settings = state.settings.get().await;
     let old_proxy_url = old_settings.proxy_url.clone();
     let old_autostart = old_settings.autostart;
+    // TokenRouter：补发空 token 的路由 token（hub_token 先例）。必须发生在
+    // delta 计算之前，让补发本身作为 router_changed 被观察到。
+    let mut new_settings = new_settings;
+    crate::router::config::ensure_route_tokens(&mut new_settings);
     // Classify the edit while the "before" image is still in hand - save()
     // overwrites the cache, so the diff has to happen here. Poll loops use this
     // to skip a fetch when nothing they depend on moved.
@@ -1052,6 +1056,12 @@ pub async fn save_settings(
     state.close_to_tray.store(new_settings.close_to_tray, std::sync::atomic::Ordering::SeqCst);
     state.edge_snap.store(new_settings.edge_snap, std::sync::atomic::Ordering::SeqCst);
 
+    // TokenRouter：只有端口变化才需要重启监听；enabled 与路由表每请求现读，
+    // 翻转快速开关即时生效，无需重启。
+    if old_settings.router.port != new_settings.router.port {
+        state.router.restart().await;
+    }
+
     // 开机自启对账：设置里开关变化时立即同步注册表项；注册表写入失败则
     // 让本次保存返回错误（设置已落盘，与 proxy 分支的行为一致）。
     if old_autostart != new_settings.autostart {
@@ -1070,6 +1080,10 @@ pub async fn save_settings(
         // persisted, so leave the live client/registry untouched and let the
         // user correct the URL and save again.
         let client = crate::build_http_client(new_settings.proxy_url.as_deref())?;
+        // 路由器的上游转发 client 同步换新（同口径代理，但无总超时）。
+        let router_client = crate::router::build_router_http_client(new_settings.proxy_url.as_deref())
+            .unwrap_or_else(|_| client.clone());
+        state.router.set_http_client(router_client).await;
         // Rebuild every provider against the new client in one shot.
         let fresh = crate::build_registry(
             &new_settings.accounts,
@@ -1150,6 +1164,15 @@ pub async fn save_settings(
     // re-read enabled state, but costs no request.
     let _ = state.settings_wake.send(delta);
     Ok(())
+}
+
+/// TokenRouter 运行状态：服务健康 + 每路由/每候选实时状态。设置页「路由」
+/// pane 与主界面快速开关的数据源。
+#[tauri::command]
+pub async fn get_router_status(
+    state: State<'_, AppState>,
+) -> Result<crate::router::RouterStatusPayload, String> {
+    Ok(crate::router::status_payload(&state.router).await)
 }
 
 /// 直接切换开机自启：先写注册表项，成功后再落盘设置；注册表写入失败时

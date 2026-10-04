@@ -19,6 +19,7 @@ pub mod notify;
 pub mod p2p;
 pub mod pricing;
 pub mod providers;
+pub mod router;
 pub mod scheduler;
 pub mod settings;
 pub mod settings_delta;
@@ -102,6 +103,8 @@ pub struct AppState {
     /// Cache for aggregated local-tool usage (Claude Code logs). Short TTL so
     /// the tool view isn't re-parsing hundreds of session files on every poll.
     pub local: local::SharedLocalCache,
+    /// TokenRouter 本地路由代理的共享核心（server 运行态 + 决策状态）。
+    pub router: Arc<router::RouterCore>,
 }
 
 /// Build a live provider instance for one account. Each account gets its own
@@ -342,10 +345,12 @@ pub fn run() {
                 Arc::new(RwLock::new(reg))
             };
             let http = Arc::new(RwLock::new(initial_client));
-            let credentials = {
+            let credentials = Arc::new(RwLock::new({
                 let accounts = settings_store.read_blocking().accounts;
                 load_credentials_into_cache(&settings_store, &accounts)
-            };
+            }));
+            // 调度器与 TokenRouter 共享的每账户快照表（active 切换的配额来源）。
+            let provider_state: SharedProviderState = Arc::new(RwLock::new(HashMap::new()));
 
             // burn / notify shared state.
             let burn: SharedBurnTracker =
@@ -610,10 +615,23 @@ pub fn run() {
                 })
                 .build(&tray_mgr)?;
 
+            // TokenRouter 本地路由代理：无论开关都常驻监听（停用时对请求回
+            // 503 + 原因），开关翻转零延迟；端口变化由 save_settings 触发
+            // restart。上游 client 独立无总超时，出站代理与监控同口径。
+            let router_core = Arc::new(router::RouterCore::new(
+                Arc::new(settings_store.clone()),
+                credentials.clone(),
+                provider_state.clone(),
+                store.clone(),
+                initial_proxy.as_deref(),
+                Some(app.handle().clone()),
+            ));
+            router_core.spawn();
+
             let state = AppState {
                 registry,
-                state: Arc::new(RwLock::new(HashMap::new())),
-                credentials: Arc::new(RwLock::new(credentials)),
+                state: provider_state,
+                credentials,
                 storage: store,
                 settings: Arc::new(settings_store),
                 burn,
@@ -630,6 +648,7 @@ pub fn run() {
                 pill_last_move_ms: Arc::new(AtomicU64::new(0)),
                 _tray: tray,
                 local,
+                router: router_core,
             };
 
             app.manage(state);
@@ -833,6 +852,7 @@ pub fn run() {
             ipc::get_exchange_rates,
             ipc::refresh_exchange_rates,
             ipc::set_autostart,
+            ipc::get_router_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

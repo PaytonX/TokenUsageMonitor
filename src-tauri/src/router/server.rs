@@ -1,0 +1,504 @@
+//! axum 服务：鉴权 → 选路 → 改写转发 → 用量记账。
+//!
+//! 主循环 [`route_request`]：按链序选候选（[`decision::pick_candidate`]），
+//! 上游结果分级处理——可重试错误写回冷却状态后换下一个候选重试，参数类
+//! 4xx 原样透传，成功则转发响应（SSE 流式旁路扫描 usage 记账）。
+
+use crate::notify;
+use crate::router::config::{CandidateConfig, RouteConfig, RouterProtocol};
+use crate::router::decision::{self, DecisionPolicy, ResolvedCandidate, UpstreamOutcome};
+use crate::router::forward;
+use crate::router::{ledger_source, RouterCore, RouterSwitchEvent};
+use axum::body::{Body, Bytes};
+use axum::extract::State;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use serde_json::json;
+use std::sync::Arc;
+use tauri::Emitter;
+
+/// 请求体上限：长上下文会话可到几十 MB，axum 默认 2MB 会截断。
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+pub fn build_router(core: Arc<RouterCore>) -> axum::Router {
+    axum::Router::new()
+        .route(
+            "/v1/messages",
+            axum::routing::post(|state, headers, body| async move {
+                proxy_post(state, headers, body, RouterProtocol::Anthropic, true).await
+            }),
+        )
+        .route(
+            "/v1/messages/count_tokens",
+            axum::routing::post(|state, headers, body| async move {
+                proxy_post(state, headers, body, RouterProtocol::Anthropic, false).await
+            }),
+        )
+        .route(
+            "/v1/chat/completions",
+            axum::routing::post(|state, headers, body| async move {
+                proxy_post(state, headers, body, RouterProtocol::OpenAi, true).await
+            }),
+        )
+        .route("/v1/models", axum::routing::get(proxy_models))
+        .route("/health", axum::routing::get(health))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .with_state(core)
+}
+
+async fn proxy_post(
+    State(core): State<Arc<RouterCore>>,
+    headers: HeaderMap,
+    body: Bytes,
+    protocol: RouterProtocol,
+    accounting: bool,
+) -> Response {
+    route_request(core, headers, body, protocol, accounting).await
+}
+
+async fn route_request(
+    core: Arc<RouterCore>,
+    headers: HeaderMap,
+    body: Bytes,
+    protocol: RouterProtocol,
+    accounting: bool,
+) -> Response {
+    // ---- 全局开关 + 鉴权 -----------------------------------------------
+    let settings = core.settings.get().await;
+    if !settings.router.enabled {
+        let kind = match protocol {
+            RouterProtocol::Anthropic => "api_error",
+            RouterProtocol::OpenAi => "server_error",
+        };
+        return protocol_error(
+            protocol,
+            StatusCode::SERVICE_UNAVAILABLE,
+            kind,
+            "TokenRouter 已停用：在主界面快速开关或 设置 → 路由 中开启。",
+        );
+    }
+    let Some(route) = authorize(&settings, &headers) else {
+        return protocol_error(
+            protocol,
+            StatusCode::UNAUTHORIZED,
+            auth_error_kind(protocol),
+            "缺少或无效的路由 token（应为设置页路由列表中的 tr_… token）。",
+        );
+    };
+    if route.protocol != protocol {
+        return protocol_error(
+            protocol,
+            StatusCode::BAD_REQUEST,
+            invalid_request_kind(protocol),
+            "路由协议与所请求的端点不符（Anthropic 路由走 /v1/messages，OpenAI 兼容路由走 /v1/chat/completions）。",
+        );
+    }
+    if route.candidates.is_empty() {
+        return protocol_error(
+            protocol,
+            StatusCode::SERVICE_UNAVAILABLE,
+            api_error_kind(protocol),
+            "该路由还没有配置任何候选。",
+        );
+    }
+
+    let policy = DecisionPolicy::from_settings(&settings.router);
+
+    // ---- 候选解析：凭据 + 配额视图（快照读取是异步的，须先于 pick） ----
+    let mut resolved: Vec<ResolvedCandidate<'_>> = Vec::with_capacity(route.candidates.len());
+    let mut api_keys: Vec<Option<String>> = Vec::with_capacity(route.candidates.len());
+    for cand in &route.candidates {
+        let key = core.api_key_of(&cand.account).await;
+        let quota = core.quota_view(cand).await;
+        resolved.push(ResolvedCandidate {
+            config: cand,
+            quota,
+            usable: key.is_some(),
+        });
+        api_keys.push(key);
+    }
+
+    // ---- 尝试循环：每次重试必然让一个候选进入冷却，故有界 ----
+    let mut last_message = String::new();
+    for _ in 0..route.candidates.len() {
+        let picked = {
+            let states = core.routes.read().await;
+            let rs = states.get(&route.id);
+            decision::pick_candidate(
+                &resolved,
+                rs.map(|r| r.candidates.as_slice()).unwrap_or(&[]),
+                policy,
+                chrono::Utc::now(),
+            )
+        };
+        let Some(idx) = picked else { break };
+        let cand = &route.candidates[idx];
+        let api_key = api_keys[idx].clone().unwrap_or_default();
+
+        let body_bytes = match forward::rewrite_model_field(&body, &cand.model) {
+            Ok(rewritten) => rewritten,
+            Err(e) => {
+                return protocol_error(
+                    protocol,
+                    StatusCode::BAD_REQUEST,
+                    invalid_request_kind(protocol),
+                    &e,
+                )
+            }
+        };
+        let url = format!("{}{}", cand.base_url.trim_end_matches('/'), protocol.proxy_path());
+        let upstream_headers = forward::build_upstream_headers(protocol, &api_key, &headers);
+        let send = core
+            .http
+            .read()
+            .await
+            .post(&url)
+            .headers(upstream_headers)
+            .body(body_bytes)
+            .send()
+            .await;
+
+        match send {
+            Err(e) => {
+                last_message = format!("上游 {} 网络错误: {e}", cand.base_url);
+                record_outcome(&core, route, idx, &UpstreamOutcome::ServerError, policy, &last_message)
+                    .await;
+                continue;
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let mut outcome = decision::classify_status(status.as_u16());
+                if let UpstreamOutcome::QuotaError { retry_after_secs: None } = &outcome {
+                    outcome = UpstreamOutcome::QuotaError {
+                        retry_after_secs: parse_retry_after(resp.headers()),
+                    };
+                }
+                if outcome.retryable() {
+                    last_message = format!("上游 {} 返回 HTTP {}", cand.base_url, status.as_u16());
+                    record_outcome(&core, route, idx, &outcome, policy, &last_message).await;
+                    continue;
+                }
+                if outcome == UpstreamOutcome::Success {
+                    mark_active(&core, route, idx).await;
+                }
+                return forward_response(&core, resp, protocol, cand, accounting).await;
+            }
+        }
+    }
+
+    protocol_error(
+        protocol,
+        StatusCode::TOO_MANY_REQUESTS,
+        rate_limit_kind(protocol),
+        &if last_message.is_empty() {
+            "所有候选暂不可用（冷却中或配额不足）。".to_string()
+        } else {
+            format!("所有候选暂不可用。{last_message}")
+        },
+    )
+}
+
+/// GET /v1/models：模型列表。无 failover 语义，取第一个凭据可用的候选直连。
+async fn proxy_models(State(core): State<Arc<RouterCore>>, headers: HeaderMap) -> Response {
+    let settings = core.settings.get().await;
+    if !settings.router.enabled {
+        return protocol_error(
+            RouterProtocol::OpenAi,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "server_error",
+            "TokenRouter 已停用。",
+        );
+    }
+    let Some(route) = authorize(&settings, &headers) else {
+        return protocol_error(
+            RouterProtocol::OpenAi,
+            StatusCode::UNAUTHORIZED,
+            "authentication_error",
+            "缺少或无效的路由 token。",
+        );
+    };
+    if route.protocol != RouterProtocol::OpenAi {
+        return protocol_error(
+            RouterProtocol::OpenAi,
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "该路由不是 OpenAI 兼容协议。",
+        );
+    }
+    for cand in &route.candidates {
+        let Some(api_key) = core.api_key_of(&cand.account).await else {
+            continue;
+        };
+        let url = format!("{}/v1/models", cand.base_url.trim_end_matches('/'));
+        let upstream_headers = forward::build_upstream_headers(RouterProtocol::OpenAi, &api_key, &headers);
+        let send = core.http.read().await.get(&url).headers(upstream_headers).send().await;
+        match send {
+            Ok(resp) => {
+                return forward_response(&core, resp, RouterProtocol::OpenAi, cand, false).await;
+            }
+            Err(_) => continue,
+        }
+    }
+    protocol_error(
+        RouterProtocol::OpenAi,
+        StatusCode::BAD_GATEWAY,
+        "server_error",
+        "没有凭据可用的候选。",
+    )
+}
+
+/// 无鉴权诊断端点：只暴露监听/开关状态，不含任何路由与账户数据。
+async fn health(State(core): State<Arc<RouterCore>>) -> Response {
+    let h = core.health.read().await.clone();
+    let enabled = core.settings.read_blocking().router.enabled;
+    let payload = json!({
+        "ok": true,
+        "listening": h.listening,
+        "enabled": enabled,
+        "port": h.port,
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(payload.to_string()))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+// ---- 内部工具 --------------------------------------------------------------
+
+/// Bearer token → 路由。空 token 的路由永不匹配（保存流程会补发）。
+fn authorize<'a>(
+    settings: &'a crate::settings::Settings,
+    headers: &HeaderMap,
+) -> Option<&'a RouteConfig> {
+    let token = bearer_token(headers)?;
+    settings
+        .router
+        .routes
+        .iter()
+        .find(|r| !r.token.is_empty() && r.token == token)
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    value
+        .strip_prefix("Bearer ")
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+}
+
+fn parse_retry_after(headers: &HeaderMap) -> Option<u64> {
+    let value = headers.get(header::RETRY_AFTER)?.to_str().ok()?;
+    value.trim().parse::<u64>().ok()
+}
+
+async fn record_outcome(
+    core: &Arc<RouterCore>,
+    route: &RouteConfig,
+    idx: usize,
+    outcome: &UpstreamOutcome,
+    policy: DecisionPolicy,
+    message: &str,
+) {
+    let mut states = core.routes.write().await;
+    let rs = states.entry(route.id.clone()).or_default();
+    rs.align(route.candidates.len());
+    decision::on_result(
+        &mut rs.candidates,
+        idx,
+        outcome,
+        policy,
+        chrono::Utc::now(),
+        Some(message),
+    );
+}
+
+/// 活跃候选变化 → 事件 + 系统通知（每次变化一条，不随请求刷屏）。
+async fn mark_active(core: &Arc<RouterCore>, route: &RouteConfig, idx: usize) {
+    let switched = {
+        let mut states = core.routes.write().await;
+        let rs = states.entry(route.id.clone()).or_default();
+        rs.align(route.candidates.len());
+        if rs.last_used_index != Some(idx) {
+            // 显式捕获旧值：None = 首次承接（initial），Some(old) = 真实切换。
+            let previous = rs.last_used_index;
+            rs.last_used_index = Some(idx);
+            Some(previous)
+        } else {
+            None
+        }
+    };
+    let Some(previous) = switched else { return };
+    let Some(app) = core.app.as_ref() else { return };
+    let from = previous
+        .and_then(|i| route.candidates.get(i))
+        .map(|c| c.model.clone());
+    let to = route.candidates[idx].model.clone();
+    let reason = match (previous, idx) {
+        (None, _) => "initial",
+        (_, 0) => "failback",
+        _ => "failover",
+    };
+    let _ = app.emit(
+        "router-switched",
+        &RouterSwitchEvent {
+            route_id: route.id.clone(),
+            route_name: route.name.clone(),
+            from: from.clone(),
+            to: to.clone(),
+            reason: reason.to_string(),
+        },
+    );
+    if reason != "initial" {
+        let reason_text = if reason == "failover" {
+            "主候选配额受限，已自动切换"
+        } else {
+            "主候选已恢复，切回主候选"
+        };
+        notify::deliver(
+            app,
+            "TokenRouter 已切换",
+            &format!(
+                "{}：{} → {}（{}）",
+                route.name,
+                from.as_deref().unwrap_or("—"),
+                to,
+                reason_text
+            ),
+        );
+    }
+}
+
+/// 转发上游响应。accounting=true 时旁路提取 usage 记账（SSE 走流式扫描，
+/// 普通 JSON 读全量后提取）。
+async fn forward_response(
+    core: &Arc<RouterCore>,
+    upstream: reqwest::Response,
+    protocol: RouterProtocol,
+    cand: &CandidateConfig,
+    accounting: bool,
+) -> Response {
+    let status = upstream.status();
+    let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
+    let source = ledger_source(&cand.account);
+
+    if !accounting {
+        // count_tokens / models：小响应，读全量透传，不记账。
+        return match upstream.bytes().await {
+            Err(e) => protocol_error(
+                protocol,
+                StatusCode::BAD_GATEWAY,
+                api_error_kind(protocol),
+                &format!("读取上游响应失败: {e}"),
+            ),
+            Ok(b) => respond(status, content_type, Body::from(b)),
+        };
+    }
+
+    let is_sse = content_type
+        .as_ref()
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_ascii_lowercase().contains("text/event-stream"))
+        .unwrap_or(false);
+    if is_sse {
+        let storage = core.storage.clone();
+        let stream = forward::ScanStream::new(
+            upstream.bytes_stream(),
+            protocol,
+            Box::new(move |input, cache_read, output| {
+                let _ = storage.accumulate_usage_daily(
+                    &source,
+                    chrono::Local::now().date_naive(),
+                    "",
+                    input,
+                    cache_read,
+                    output,
+                );
+            }),
+        );
+        return respond(status, content_type, Body::from_stream(stream));
+    }
+
+    match upstream.bytes().await {
+        Err(e) => protocol_error(
+            protocol,
+            StatusCode::BAD_GATEWAY,
+            api_error_kind(protocol),
+            &format!("读取上游响应失败: {e}"),
+        ),
+        Ok(b) => {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&b) {
+                if let Some((input, cache_read, output)) =
+                    forward::extract_usage_json(protocol, &v)
+                {
+                    let _ = core.storage.accumulate_usage_daily(
+                        &source,
+                        chrono::Local::now().date_naive(),
+                        "",
+                        input,
+                        cache_read,
+                        output,
+                    );
+                }
+            }
+            respond(status, content_type, Body::from(b))
+        }
+    }
+}
+
+fn respond(status: StatusCode, content_type: Option<HeaderValue>, body: Body) -> Response {
+    Response::builder()
+        .status(status)
+        .header(
+            header::CONTENT_TYPE,
+            content_type.unwrap_or_else(|| HeaderValue::from_static("application/json")),
+        )
+        .body(body)
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// 协议形错误体：Anthropic / OpenAI 各自的 error envelope，工具侧能直接解析。
+fn protocol_error(protocol: RouterProtocol, status: StatusCode, kind: &str, message: &str) -> Response {
+    let payload = match protocol {
+        RouterProtocol::Anthropic => json!({
+            "type": "error",
+            "error": {"type": kind, "message": message},
+        }),
+        RouterProtocol::OpenAi => json!({
+            "error": {"message": message, "type": kind, "param": null, "code": null},
+        }),
+    };
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(payload.to_string()))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn auth_error_kind(protocol: RouterProtocol) -> &'static str {
+    match protocol {
+        RouterProtocol::Anthropic => "authentication_error",
+        RouterProtocol::OpenAi => "authentication_error",
+    }
+}
+
+fn invalid_request_kind(protocol: RouterProtocol) -> &'static str {
+    match protocol {
+        RouterProtocol::Anthropic => "invalid_request_error",
+        RouterProtocol::OpenAi => "invalid_request_error",
+    }
+}
+
+fn rate_limit_kind(protocol: RouterProtocol) -> &'static str {
+    match protocol {
+        RouterProtocol::Anthropic => "rate_limit_error",
+        RouterProtocol::OpenAi => "rate_limit_error",
+    }
+}
+
+fn api_error_kind(protocol: RouterProtocol) -> &'static str {
+    match protocol {
+        RouterProtocol::Anthropic => "api_error",
+        RouterProtocol::OpenAi => "server_error",
+    }
+}

@@ -6,6 +6,7 @@
 //!
 //! Adding a new provider = one new module + one line in the registry.
 
+pub mod anthropic;
 pub mod codex;
 pub mod deepseek;
 pub mod kimi;
@@ -292,6 +293,16 @@ pub const PRESETS: &[Preset] = &[
         display_name: "ChatGPT Codex",
         auth_kind: AuthKind::LocalToken,
         default_accent: "#10a37f",
+        sub_modes: None,
+        experimental: true,
+    },
+    // TokenRouter 配套：Anthropic 无公开配额 API，卡片日窗 = 经路由消耗
+    // （used-only）；配额上限在路由候选的手填日限里。实验性。
+    Preset {
+        kind: "anthropic",
+        display_name: "Anthropic / Claude",
+        auth_kind: AuthKind::BearerKey,
+        default_accent: "#d97757",
         sub_modes: None,
         experimental: true,
     },
@@ -606,6 +617,9 @@ pub type ProviderBuilder =
 /// plus one `PRESETS` entry (top-level kind or a `sub_modes` item); the
 /// frontend only adds the kind's short-name mapping. No match arms to update.
 pub static PROVIDER_REGISTRY: &[(&'static str, ProviderBuilder)] = &[
+    ("anthropic", |h, s, i, l| {
+        Arc::new(anthropic::AnthropicProvider::new(h, s, i, l))
+    }),
     ("minimax", |h, s, i, l| Arc::new(minimax::MiniMaxProvider::new(h, s, i, l))),
     ("minimax_api", |h, s, i, l| Arc::new(minimax_api::MiniMaxApiProvider::new(h, s, i, l))),
     ("deepseek", |h, s, i, l| Arc::new(deepseek::DeepSeekProvider::new(h, s, i, l))),

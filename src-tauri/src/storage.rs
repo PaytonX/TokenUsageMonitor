@@ -348,6 +348,59 @@ impl Storage {
         Ok(rows.flatten().collect())
     }
 
+    /// 路由记账：把一次经 TokenRouter 转发的用量增量累计进统一账本
+    /// （`source = router:<instance_id>`，kind='provider'，model='' 总量行）。
+    /// `router:*` 键没有其他写入方，与 `replace_usage_daily` 的全量回放语义
+    /// 天然隔离——ON CONFLICT 累加不会和 REPLACE 互相覆盖。
+    pub fn accumulate_usage_daily(
+        &self,
+        source: &str,
+        date: NaiveDate,
+        model: &str,
+        input: f64,
+        cache_read: f64,
+        output: f64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO usage_daily
+             (source, kind, date, model, input, cache_read, output, total, unit, cost, currency, cost_estimated, captured_at)
+             VALUES (?1, 'provider', ?2, ?3, ?4, ?5, ?6, ?7, 'tokens', NULL, NULL, 0, ?8)
+             ON CONFLICT(source, date, model) DO UPDATE SET
+                input = input + excluded.input,
+                cache_read = cache_read + excluded.cache_read,
+                output = output + excluded.output,
+                total = total + excluded.total,
+                captured_at = excluded.captured_at",
+            params![
+                source,
+                date.to_string(),
+                model,
+                input,
+                cache_read,
+                output,
+                input + cache_read + output,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 今日某来源的账本总量（仅 model='' 总量行）。TokenRouter 手填日限的
+    /// used 口径：used = 路由器自记账的当日经路由消耗。
+    pub fn sum_usage_daily_today(&self, source: &str) -> Result<f64> {
+        let conn = self.conn.lock().unwrap();
+        let today = chrono::Local::now().date_naive().to_string();
+        let total = conn.query_row(
+            "SELECT COALESCE(SUM(total), 0.0) FROM usage_daily
+             WHERE source = ?1 AND date = ?2 AND model = ''",
+            params![source, today],
+            |row| row.get::<_, f64>(0),
+        )?;
+        Ok(total)
+    }
+
     /// 旧数据一次性迁移：把 `daily_snapshots` 里的 `minimax-code` 键（tokens）
     /// 与 `hermes_daily` 台账导入统一账本。目标来源已有数据时跳过——迁移只发生
     /// 一次，之后由正常回放路径维护。

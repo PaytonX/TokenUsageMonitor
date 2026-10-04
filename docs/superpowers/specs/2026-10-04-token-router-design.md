@@ -24,7 +24,7 @@ ETA、窗口重置检测），但只"看"不用。TokenRouter 把这份数据变
 | D3 | 路由识别 | 多条命名路由，每条一个本地 token（`tr_<routeId>_<hex>`，存 config.toml）；工具以该 token 作 API key；仅绑定 127.0.0.1 | Claude Code 只能改 BASE_URL+TOKEN，无法加路径前缀；按 token 识别对工具零侵入 |
 | D4 | 代理实现 | axum + reqwest(stream)；独立无总超时的上游 Client | hub.rs 阻塞实现承载不了 SSE；共享 http client 有 15s 总超时，不能复用 |
 | D5 | 切换触发 | 主动（剩余% < 阈值）+ 被动（429/402/401/403/5xx 分级冷却）；仅在未向客户端发出字节前换候选重试；链头恢复自动切回 | 双保险，见 §3.2 |
-| D6 | 配额输入 | 复用 SharedProviderState/UsageSnapshot.min_remaining_percent；账户级手填日上限 `AccountMeta.plan_limit_tokens_daily`（无配额 API 的 provider）；实际消耗由路由器自记账 | provider 无配额 API 时主动切换的依据 |
+| D6 | 配额输入 | 复用 SharedProviderState/UsageSnapshot.min_remaining_percent；**候选级**手填日上限 `Candidate.plan_limit_tokens_daily`（无配额 API 的 provider；路由器直读 settings，不动 Provider 构造签名）；实际消耗由路由器自记账 | provider 无配额 API 时主动切换的依据 |
 | D7 | UI 布局 | 设置页"路由"pane 承载全部配置；主界面 header 加快速开关（绿/灰/琥珀状态点）；切换时事件 + 系统通知 | 用户修订；快速开关关闭时监听保留、请求返回 503 + 原因 |
 | D8 | 凭据纪律 | 上游凭据一律 keyring（BearerKey 账户才可作候选）；路由本地 token 为本机自生成值存 config.toml（hub_token 先例）；源码/测试零凭据字面量 | Mimosa 约束 + keyring 既有体系 |
 | D9 | 记账口径 | 路由消耗写 `usage_daily`，`source = "router:<instance_id>"`、`kind='provider'`、仅 model='' 总量行，增量累计；不与 REPLACE 回放型来源冲突 | 账本规定"差分类不与回放类同键"；`router:*` 键无其他写入方 |
@@ -56,11 +56,14 @@ base_url = "https://api.anthropic.com"
 account = "minimax-456-0"
 model = "MiniMax-M2"
 base_url = "https://api.minimaxi.com"
+plan_limit_tokens_daily = 10000000   # 可选：手填日上限（tokens/自然日）
 ```
 
 - `Settings.router: RouterSettings`（serde default，旧配置零迁移成本）。
-- 账户级手填日上限：`AccountMeta.plan_limit_tokens_daily: Option<f64>`（tokens/自然日）。
 - 候选 `base_url` 必填：路由器对上游零假设（官方/中转站皆可），设置页按账户 kind 预填。
+  Anthropic 中转站因此不需要独立的 `anthropic_api` 账户 kind——中转差异由候选 base_url 承载。
+- 手填日上限在**候选级**：路由器直读 settings 计算 used/limit，无需触碰 Provider
+  构造签名（13 个 provider 的 uniform registry 保持不动）。
 - 凭据要求：候选账户必须是 `Credentials::BearerKey`（请求时校验，非 BearerKey 记错误态并跳过）。
 
 ### 3.2 路由决策状态机（router/decision.rs，纯函数）
