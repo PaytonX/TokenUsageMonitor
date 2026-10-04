@@ -853,6 +853,7 @@ pub fn run() {
             ipc::refresh_exchange_rates,
             ipc::set_autostart,
             ipc::get_router_status,
+            ipc::fetch_upstream_models,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

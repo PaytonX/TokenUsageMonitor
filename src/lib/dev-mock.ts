@@ -345,6 +345,8 @@ function mockInvoke(cmd: string, args: any = {}): any {
     case "get_exchange_rates": return RATES;
     case "refresh_exchange_rates": return RATES;
     case "get_router_status": return ROUTER_STATUS;
+    case "fetch_upstream_models":
+      return ["claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1", "MiniMax-M2"];
     // 账户日账视图：真机走 daily_snapshots（有数据），桩里直接由 provider 行派生，
     // 否则切到「账户日账」口径会永远空态，预览与真机不一致。
     case "get_heatmap": {

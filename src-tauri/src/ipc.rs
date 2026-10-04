@@ -1175,6 +1175,21 @@ pub async fn get_router_status(
     Ok(crate::router::status_payload(&state.router).await)
 }
 
+/// 拉取某候选上游的模型列表（GET {base}/v1/models），供设置页「模型名」
+/// 下拉选择。凭据按账户从 keyring 取。
+#[tauri::command]
+pub async fn fetch_upstream_models(
+    state: State<'_, AppState>,
+    protocol: crate::router::config::RouterProtocol,
+    account: String,
+    base_url: String,
+) -> Result<Vec<String>, String> {
+    state
+        .router
+        .fetch_upstream_models(protocol, &account, &base_url)
+        .await
+}
+
 /// 直接切换开机自启：先写注册表项，成功后再落盘设置；注册表写入失败时
 /// 不改动存储，保证复选框与系统实际状态不出现分歧。
 #[tauri::command]

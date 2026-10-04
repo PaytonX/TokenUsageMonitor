@@ -18,6 +18,7 @@ import type {
   ProxyTestResult,
   RouterStatus,
   RouterSwitchEvent,
+  RouterProtocol,
   Settings,
   TestResult,
   UsageSnapshot,
@@ -222,6 +223,20 @@ export function onRouterSwitched(
   cb: (ev: RouterSwitchEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<RouterSwitchEvent>("router-switched", (e) => cb(e.payload));
+}
+
+/** 拉取某候选上游的模型列表（GET {base}/v1/models），供设置页「模型名」
+ *  下拉选择。凭据按账户从 keyring 取，失败时 reject 错误文案。 */
+export async function fetchUpstreamModels(
+  protocol: RouterProtocol,
+  account: string,
+  baseUrl: string,
+): Promise<string[]> {
+  return invoke<string[]>("fetch_upstream_models", {
+    protocol,
+    account,
+    baseUrl,
+  });
 }
 
 // Event listeners ----------------------------------------------------------

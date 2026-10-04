@@ -21,6 +21,7 @@ pub mod server;
 use crate::providers::{Credentials, SharedProviderState};
 use crate::settings::SettingsStore;
 use crate::storage::Storage;
+use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::Serialize;
@@ -326,5 +327,53 @@ impl RouterCore {
             }
             _ => None,
         }
+    }
+
+    /// 拉取上游的模型列表（`GET {base}/v1/models`），供设置页「模型名」
+    /// 下拉选择。Anthropic 与 OpenAI 兼容上游的响应同形
+    /// （`{"data":[{"id":…}, …]}`），按 id 升序去重返回。
+    pub async fn fetch_upstream_models(
+        &self,
+        protocol: config::RouterProtocol,
+        account: &str,
+        base_url: &str,
+    ) -> Result<Vec<String>, String> {
+        let api_key = self
+            .api_key_of(account)
+            .await
+            .ok_or_else(|| "该账户没有可用的 API Key 凭据（先在「账户与额度」里保存凭据）".to_string())?;
+        let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+        let headers = forward::build_upstream_headers(protocol, &api_key, &HeaderMap::default());
+        let resp = self
+            .http
+            .read()
+            .await
+            .get(&url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| format!("请求上游失败: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("上游返回 HTTP {}", resp.status()));
+        }
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("响应不是合法 JSON: {e}"))?;
+        let mut ids: Vec<String> = v
+            .get("data")
+            .and_then(|d| d.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return Err("上游没有返回任何模型（data 为空或格式不符）".to_string());
+        }
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
     }
 }

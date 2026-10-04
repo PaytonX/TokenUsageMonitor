@@ -16,7 +16,8 @@ use axum::routing::{get, post};
 use axum::Json;
 use serde_json::json;
 
-use token_usage_monitor_lib::router::{self, RouterCore};
+use token_usage_monitor_lib::router::config::RouterProtocol;
+use token_usage_monitor_lib::router::RouterCore;
 use token_usage_monitor_lib::providers::Credentials;
 use token_usage_monitor_lib::settings::SettingsStore;
 use token_usage_monitor_lib::storage::Storage;
@@ -285,6 +286,33 @@ async fn quota_429_fails_over_to_next_candidate() {
         Some("model-2"),
         "重试必须落在候选 2 的模型上"
     );
+}
+
+#[tokio::test]
+async fn fetch_upstream_models_lists_and_validates() {
+    let upstream = spawn_mock(axum::Router::new().route(
+        "/v1/models",
+        get(|| async {
+            Json(json!({"data": [{"id": "model-b"}, {"id": "model-a"}, {"id": "model-a"}]}))
+        }),
+    ))
+    .await;
+    let (core, _storage, _port, _dir) =
+        spawn_router("modelfetch", true, &openai_route(&upstream, None)).await;
+
+    // 正常路径：取 data[].id，排序去重。
+    let ids = core
+        .fetch_upstream_models(RouterProtocol::OpenAi, "acct-1", &upstream)
+        .await
+        .unwrap();
+    assert_eq!(ids, vec!["model-a".to_string(), "model-b".to_string()]);
+
+    // 无凭据账户：明确报错而不是空列表。
+    let err = core
+        .fetch_upstream_models(RouterProtocol::OpenAi, "no-such-account", &upstream)
+        .await
+        .unwrap_err();
+    assert!(err.contains("API Key"), "err: {err}");
 }
 
 #[tokio::test]

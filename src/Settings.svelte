@@ -19,6 +19,7 @@
     refreshExchangeRates,
     getRouterStatus,
     onSettingsChanged,
+    fetchUpstreamModels,
     type ProviderCatalog,
     type Preset,
     type PresetSubMode,
@@ -496,6 +497,42 @@
       routerStatus = await getRouterStatus();
     } catch {
       routerStatus = null;
+    }
+  }
+
+  // 模型列表拉取：按「账户|上游地址」缓存，同一上游的候选共享一份结果。
+  let modelOptions = $state<Record<string, string[]>>({});
+  let modelFetching = $state<Record<string, boolean>>({});
+  let modelFetchError = $state<Record<string, string>>({});
+
+  function modelKey(account: string, baseUrl: string): string {
+    return `${account}|${baseUrl}`;
+  }
+
+  function modelDomId(account: string, baseUrl: string): string {
+    // datalist 的 id 只允许 [A-Za-z0-9_-]；instance_id 里只有安全字符，
+    // base_url 里的 :/ . 等折叠为 _。
+    return `mdl-${modelKey(account, baseUrl).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  }
+
+  async function handleFetchModels(
+    route: RouterSettings["routes"][number],
+    cand: RouterSettings["routes"][number]["candidates"][number],
+  ) {
+    const key = modelKey(cand.account, cand.base_url);
+    if (!cand.account || !cand.base_url) {
+      modelFetchError[key] = "先选择账户并填写上游地址，再拉取模型列表";
+      return;
+    }
+    modelFetching[key] = true;
+    modelFetchError[key] = "";
+    try {
+      const list = await fetchUpstreamModels(route.protocol, cand.account, cand.base_url);
+      modelOptions[key] = list;
+    } catch (e) {
+      modelFetchError[key] = String(e);
+    } finally {
+      modelFetching[key] = false;
     }
   }
 
@@ -1576,8 +1613,9 @@ async function handleMinimize() {
             <h3 class="section__title">路由列表</h3>
             <p class="hint">
               每条路由是一条「同协议候选的有序链」：链头为主模型，其余为备选。
-              候选账户需为 API Key 型凭据；模型名可留空（透传工具原始模型名）；
-              手填日上限仅对不上报配额的来源（如 Claude 订阅）有意义，used 取经本路由的实际消耗。
+              工具端模型名可任填（推荐 <code>auto</code>）——实际模型由各候选决定；
+              候选模型名留空则透传工具端的名字（此时工具端的名字必须是上游真实模型）。
+              候选账户需为 API Key 型凭据；手填日上限仅对不上报配额的来源（如 Claude 订阅）有意义。
             </p>
 
             {#each routerCfg.routes as route, ri (route.id)}
@@ -1617,7 +1655,28 @@ async function handleMinimize() {
                           <option value={acct.instance_id}>{acct.label}</option>
                         {/each}
                       </select>
-                      <input class="field__input route-cand__model" type="text" bind:value={cand.model} placeholder="模型名（留空 = 透传）" title="留空 = 透传工具的原始模型名；填写则重写为该候选的模型" />
+                      <span class="route-cand__modelwrap">
+                        <input
+                          class="field__input route-cand__model"
+                          type="text"
+                          list={modelDomId(cand.account, cand.base_url)}
+                          bind:value={cand.model}
+                          placeholder="模型名（留空 = 透传）"
+                          title="留空 = 透传工具的原始模型名；填写则重写为该候选的模型。点 ▼ 从上游拉取模型列表选择"
+                        />
+                        <button
+                          type="button"
+                          class="route-op"
+                          onclick={() => handleFetchModels(route, cand)}
+                          disabled={modelFetching[modelKey(cand.account, cand.base_url)] || !cand.account || !cand.base_url}
+                          title="从上游拉取模型列表（GET /v1/models）"
+                        >{modelFetching[modelKey(cand.account, cand.base_url)] ? "…" : "▼"}</button>
+                        <datalist id={modelDomId(cand.account, cand.base_url)}>
+                          {#each modelOptions[modelKey(cand.account, cand.base_url)] ?? [] as m (m)}
+                            <option value={m}></option>
+                          {/each}
+                        </datalist>
+                      </span>
                       <input class="field__input route-cand__base" type="text" bind:value={cand.base_url} placeholder="上游地址（选账户后自动预填）" />
                       <input
                         class="field__input route-cand__limit"
@@ -1648,6 +1707,11 @@ async function handleMinimize() {
                             {/if}
                           </div>
                         {/if}
+                      {/if}
+                      {#if modelFetchError[modelKey(cand.account, cand.base_url)]}
+                        <div class="route-cand__fetcherr">
+                          {modelFetchError[modelKey(cand.account, cand.base_url)]}
+                        </div>
                       {/if}
                     </div>
                   {/each}
@@ -2831,6 +2895,24 @@ async function handleMinimize() {
   .route-cand__ops {
     display: flex;
     gap: 4px;
+  }
+  .route-cand__modelwrap {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    min-width: 0;
+  }
+  .route-cand__modelwrap .route-cand__model {
+    flex: 1;
+    min-width: 0;
+  }
+  .route-cand__fetcherr {
+    grid-column: 2 / -1;
+    font-size: 11px;
+    color: #f87171;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .route-op {
     width: 24px;
