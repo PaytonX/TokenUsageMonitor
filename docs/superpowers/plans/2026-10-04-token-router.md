@@ -88,6 +88,11 @@ RouterCore(axum, 127.0.0.1:port) ─ 决策 ────┼─ 候选2 ...
    （`fetch_upstream_models`：GET {base}/v1/models，keyring 凭据注入，data[].id
    排序去重；前端 datalist + ▼ 按钮，按「账户|上游地址」缓存）。并明确用法口径：
    工具端模型名可任填（如 auto），实际模型由候选决定；候选留空才是透传模式。
+   ⑥**404 (no body) 根因**：Cherry Studio 类客户端在 API 地址（不带 /v1）后直接
+   拼接 /chat/completions 与 /models，此前只注册了带 /v1 的路径，未匹配路径落
+   axum 默认 404 空 body。已注册无 /v1 别名路径，且 fallback 返回带可用端点
+   指引的 404 JSON；⑦候选行网格改为 minmax(0,…) 全列可收缩——输入框固有最小
+   宽度 + auto 最小尺寸把整行撑爆面板，字段溢出错位。
 
 ## 验收标准
 
