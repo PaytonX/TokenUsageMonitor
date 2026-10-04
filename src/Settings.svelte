@@ -2877,12 +2877,22 @@ async function handleMinimize() {
   }
   .route-cand {
     display: grid;
-    grid-template-columns: 28px 150px 1fr 1.3fr 90px auto;
+    /* minmax(0, …)：输入框有固有最小宽度，auto 最小尺寸会把整行撑爆面板
+     * （模型名/上游地址/日上限全部溢出错位）——所有列必须可收缩。 */
+    grid-template-columns:
+      24px minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1.3fr) minmax(0, 0.65fr)
+      auto;
     gap: 6px;
     align-items: center;
     padding: 8px;
     border-radius: var(--tum-radius-sm, 8px);
     background: rgba(255, 255, 255, 0.03);
+  }
+  .route-cand > * {
+    min-width: 0;
+  }
+  .route-cand .field__input {
+    width: 100%;
   }
   .route-cand--active {
     outline: 1px solid rgba(76, 194, 255, 0.45);

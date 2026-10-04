@@ -289,6 +289,44 @@ async fn quota_429_fails_over_to_next_candidate() {
 }
 
 #[tokio::test]
+async fn non_v1_path_alias_works_and_fallback_gives_hint() {
+    // Cherry Studio 类客户端在 API 地址（不带 /v1）后直接拼接 /chat/completions。
+    let mock = Arc::new(MockState::new(false));
+    let upstream = spawn_mock(
+        axum::Router::new()
+            .route("/v1/chat/completions", post(chat_ok))
+            .with_state(mock.clone()),
+    )
+    .await;
+    let (_core, _storage, port, _dir) =
+        spawn_router("pathalias", true, &openai_route(&upstream, None)).await;
+    let client = router_client();
+
+    let resp = client
+        .post(&format!("http://127.0.0.1:{port}/chat/completions"))
+        .bearer_auth("tok-openai")
+        .json(&json!({"model": "x"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "不带 /v1 的路径别名必须可达");
+
+    // 未匹配路径：404 带指引 body（而不是 axum 默认的空 body）。
+    let resp = client
+        .post(&format!("http://127.0.0.1:{port}/wrong/path"))
+        .bearer_auth("tok-openai")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("/v1/chat/completions"), "hint: {message}");
+    assert!(message.contains("/wrong/path"), "hint must echo the path");
+}
+
+#[tokio::test]
 async fn fetch_upstream_models_lists_and_validates() {
     let upstream = spawn_mock(axum::Router::new().route(
         "/v1/models",

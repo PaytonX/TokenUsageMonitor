@@ -40,10 +40,39 @@ pub fn build_router(core: Arc<RouterCore>) -> axum::Router {
                 proxy_post(state, headers, body, RouterProtocol::OpenAi, true).await
             }),
         )
+        // 兼容不带 /v1 前缀的客户端（Cherry Studio 等在 API 地址后直接拼接
+        // /chat/completions 与 /models；此前这些路径落到 axum 默认 404 空
+        // body，工具侧只能看到「404 no body」无从排查）。
+        .route(
+            "/chat/completions",
+            axum::routing::post(|state, headers, body| async move {
+                proxy_post(state, headers, body, RouterProtocol::OpenAi, true).await
+            }),
+        )
         .route("/v1/models", axum::routing::get(proxy_models))
+        .route("/models", axum::routing::get(proxy_models))
         .route("/health", axum::routing::get(health))
+        .fallback(not_found)
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(core)
+}
+
+/// 未匹配路径：返回带可用端点指引的 404 JSON（替代 axum 默认的空 body），
+/// 并记日志便于排查工具侧的路径拼接问题。
+async fn not_found(uri: axum::http::Uri) -> Response {
+    tracing::warn!(target: "tum.router", "unmatched path: {}", uri.path());
+    let message = format!(
+        "未知路径 {}。可用端点：/v1/chat/completions（或 /chat/completions）、/v1/messages、/v1/messages/count_tokens、/v1/models（或 /models）、/health。 \
+         若工具的 API 地址不含 /v1，直接拼接即可；含 /v1 则同样成立。",
+        uri.path()
+    );
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({"error": {"message": message, "type": "not_found"}}).to_string(),
+        ))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn proxy_post(
