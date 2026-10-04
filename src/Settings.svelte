@@ -1812,7 +1812,7 @@ async function handleMinimize() {
                     <h3 class="rt-sect__title">
                       链路 <span class="rt-sect__sub">按顺序尝试：① 不可用时自动换 ②，主线路恢复后探视切回</span>
                     </h3>
-                    <div class="rt-lines">
+                    <div class="rt-lines" class:rt-lines--single={route.candidates.length < 2}>
                       {#each route.candidates as cand, i (i)}
                         {@const cs = st?.candidates[i]}
                         <div
@@ -3048,6 +3048,7 @@ async function handleMinimize() {
   }
   .rt-card__name:hover { border-color: var(--tum-border, rgba(255, 255, 255, 0.1)); }
   .rt-card__name:focus { border-color: var(--tum-accent, #4cc2ff); background: rgba(0, 0, 0, 0.2); }
+  .rt-card .btn { white-space: nowrap; flex: none; }
   .rt-desc { padding: 0 17px 12px; margin: 0; font-size: 12.5px; color: var(--tum-text-muted, #8b949e); line-height: 1.6; }
   .rt-hint { font-size: 12px; color: var(--tum-text-muted, #8b949e); }
   .rt-empty { padding: 18px; }
@@ -3231,7 +3232,22 @@ async function handleMinimize() {
   .rt-collapse > div { overflow: hidden; min-height: 0; }
 
   /* 线路卡（step 圆点 + 入场动画 + 激活呼吸光晕） */
-  .rt-lines { display: flex; flex-direction: column; }
+  .rt-lines { display: flex; flex-direction: column; position: relative; }
+  /* 连接线是**整条链共用的一根导轨**：从第一个圆点中心连到最后一个圆点中心，
+   * 端点 = 卡片上/下内边距 + 圆点半径，与各卡片高度无关。逐卡各画一段的做法
+   * 会让每段的终点落在自己高度的中线，卡片高度不一时线就断了。 */
+  .rt-lines::before {
+    content: "";
+    position: absolute;
+    left: 24px;
+    top: 29px;
+    bottom: 29px;
+    width: 2px;
+    background: var(--tum-border, rgba(255, 255, 255, 0.14));
+    opacity: 0.85;
+    pointer-events: none;
+  }
+  .rt-lines--single::before { display: none; }
   .rt-line {
     position: relative; margin: 0 17px 12px; padding: 13px 14px 14px 52px;
     border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
@@ -3240,11 +3256,6 @@ async function handleMinimize() {
     animation: rtLineIn 0.34s cubic-bezier(0.21, 0.8, 0.35, 1) both;
   }
   @keyframes rtLineIn { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
-  .rt-line::before {
-    content: ""; position: absolute; left: 24px; top: -13px; bottom: 50%;
-    width: 2px; background: var(--tum-text-muted, #64748b); opacity: 0.7;
-  }
-  .rt-line:first-child::before { display: none; }
   .rt-line--on {
     border-color: var(--tum-accent, #4cc2ff);
     animation: rtLineIn 0.34s cubic-bezier(0.21, 0.8, 0.35, 1) both, rtGlow 2.6s ease-in-out infinite;
@@ -3265,6 +3276,7 @@ async function handleMinimize() {
     background: var(--tum-accent, #4cc2ff); border-color: var(--tum-accent, #4cc2ff); color: #fff;
   }
   .rt-line__hd { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; flex-wrap: wrap; }
+  .rt-line__hd .line-badge { flex: none; }
   .rt-line__ttl { font-size: 13.5px; font-weight: 650; }
   .rt-line--on .rt-line__ttl { color: var(--tum-accent, #4cc2ff); }
   .rt-line__row {
