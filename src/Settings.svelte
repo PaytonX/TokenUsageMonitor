@@ -1839,7 +1839,7 @@ async function handleMinimize() {
                           </div>
                           <div class="rt-line__row">
                             <label class="rt-field">
-                              <span class="rt-label">账户</span>
+                              <span class="rt-label" title="选择已配置且有 API Key 凭据的账户；选定后自动带出上游地址">账户</span>
                               <select
                                 class="rt-input"
                                 value={cand.account}
@@ -1852,7 +1852,7 @@ async function handleMinimize() {
                               </select>
                             </label>
                             <label class="rt-field">
-                              <span class="rt-label">模型（工具端可任填，实际由此决定；留空 = 透传）</span>
+                              <span class="rt-label" title="工具端模型名可任填（如 auto），实际模型由线路决定；留空 = 透传工具端原名">模型（实际由此决定，留空 = 透传）</span>
                               <span class="rt-model-wrap">
                                 <input class="rt-input rt-mono" type="text" bind:value={cand.model} placeholder="留空 = 透传" />
                                 <button
@@ -1874,7 +1874,7 @@ async function handleMinimize() {
                             </label>
                           </div>
                           <label class="rt-field">
-                            <span class="rt-label">上游地址（选账户自动带出，可改为中转站）</span>
+                            <span class="rt-label" title="选账户后自动带出该 kind 的官方地址；可改为中转站地址">上游地址（选账户自动带出，可改为中转站）</span>
                             <span class="rt-url-row">
                               <input class="rt-input rt-mono" type="text" bind:value={cand.base_url} placeholder="选择账户后自动预填" />
                               {#if cand.base_url === (ROUTER_BASE_PRESETS[accountKindOf(cand.account)] ?? "")}
@@ -1903,11 +1903,11 @@ async function handleMinimize() {
                             </summary>
                             <div class="rt-cap__body">
                               <label class="rt-field">
-                                <span class="rt-label">日上限（tokens / 自然日，路由自记账）</span>
+                                <span class="rt-label" title="手填订阅日上限（tokens / 自然日）；used 取经本路由的实际消耗。仅对不上报配额的来源有意义">日上限（tokens / 自然日）</span>
                                 <input class="rt-input" type="number" min="0" bind:value={cand.plan_limit_tokens_daily} placeholder="未设" />
                               </label>
                               <label class="rt-field">
-                                <span class="rt-label" title="仅对有金额统计的账户生效（余额差分类：DeepSeek / Kimi 等）；订阅类账户无金额数据，设置不生效">月上限（账户币种金额，按量付费用）</span>
+                                <span class="rt-label" title="按量付费月消耗上限（账户币种金额，如 20 = ¥20/月）；used 取 provider 统计的月已用。仅对有金额统计的账户生效（余额差分类：DeepSeek / Kimi 等），订阅类账户设置不生效">月上限（账户币种金额）</span>
                                 <input class="rt-input" type="number" min="0" bind:value={cand.monthly_cost_limit} placeholder="如 20 = ¥20/月" />
                               </label>
                             </div>
@@ -3102,7 +3102,13 @@ async function handleMinimize() {
     gap: 12px 14px; margin-top: 12px;
   }
   .rt-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-  .rt-label { font-size: 11.5px; font-weight: 600; color: var(--tum-text-muted, #8b949e); }
+  /* 字段标签固定单行高度：否则「模型（…）」这类长标签折行会把下方输入框
+   * 顶低，与相邻字段错位。完整文案由 title 承载。 */
+  .rt-label {
+    font-size: 11.5px; font-weight: 600; color: var(--tum-text-muted, #8b949e);
+    height: 16px; line-height: 16px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
   .rt-input {
     width: 100%; background: rgba(0, 0, 0, 0.26);
     border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
@@ -3239,13 +3245,16 @@ async function handleMinimize() {
   .rt-lines::before {
     content: "";
     position: absolute;
-    left: 24px;
+    /* 圆点中心 = 卡片左边距 17 + 圆点偏移 9 + 半径 16 = 42px；2px 宽 → left 41px。
+     * 之前写成 24px（漏算卡片边距），竖线整体左移 17px 不与圆点重合。 */
+    left: 41px;
     top: 29px;
     bottom: 29px;
     width: 2px;
     background: var(--tum-border, rgba(255, 255, 255, 0.14));
     opacity: 0.85;
     pointer-events: none;
+    z-index: 0;
   }
   .rt-lines--single::before { display: none; }
   .rt-line {
@@ -3268,7 +3277,8 @@ async function handleMinimize() {
   .rt-line__num {
     position: absolute; left: 9px; top: 13px; width: 32px; height: 32px; border-radius: 50%;
     display: grid; place-items: center; font-size: 13px; font-weight: 700; z-index: 2;
-    background: rgba(0, 0, 0, 0.3);
+    /* 不透明底：导轨从圆点正后方穿过，半透明底会看到线影 */
+    background: var(--tum-surface, #161b22);
     border: 2px solid var(--tum-border, rgba(255, 255, 255, 0.16));
     color: var(--tum-text-muted, #8b949e); transition: 0.25s;
   }
