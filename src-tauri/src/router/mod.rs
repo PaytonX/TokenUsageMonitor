@@ -1,15 +1,17 @@
 //! TokenRouter：本地反向代理，在 provider 账户间自动路由切换。
 //!
 //! spec: docs/superpowers/specs/2026-10-04-token-router-design.md
+//! v2 口径（2026-10-04 原型确认）：**单路由** + 四层判定（主动预警 / 硬墙 /
+//! 被动观测 / 探视切回），详见 decision.rs 顶部注释。
 //!
 //! 模块切分：
 //! - [`config`]：`Settings.router` 配置类型与本地 token 生成
-//! - [`decision`]：路由决策纯函数状态机（链序选择 / 冷却 / fail-back）
+//! - [`decision`]：四层判定的纯函数状态机
 //! - [`forward`]：请求改写（模型重写 / 头清洗）与响应用量旁路扫描
 //! - [`server`]：axum 服务与转发主循环
 //!
 //! 运行态挂在 [`RouterCore`]（`AppState.router`）。只有端口变化才重启服务
-//! （[`RouterCore::restart`]）；enabled 与路由表每请求现读，保存设置无需
+//! （[`RouterCore::restart`]）；enabled 与路由配置每请求现读，保存设置无需
 //! ping 路由器。服务无论开关常驻绑定：停用时对请求回 503 + 原因，开关
 //! 翻转零延迟，且工具侧报错清晰。
 
@@ -56,17 +58,17 @@ pub struct RouterCore {
     pub settings: Arc<SettingsStore>,
     /// 账户凭据缓存（keyring 镜像）。候选凭据须为 BearerKey 才可路由。
     pub credentials: Arc<RwLock<HashMap<String, Credentials>>>,
-    /// scheduler 维护的每账户最新快照（主动切换的配额来源）。
+    /// scheduler 维护的每账户最新快照（主动预警的配额来源）。
     pub snapshots: SharedProviderState,
     pub storage: Arc<Storage>,
     /// 上游转发专用 client：无总超时（SSE 分钟级），尊重用户出站代理设置。
     /// 代理设置变化时由 save_settings 整体换新（与 AppState.http 同套路）。
     pub http: RwLock<Client>,
-    /// 每路由决策运行态，键 = `RouteConfig.id`。
+    /// 每路由决策运行态，键 = `RouteConfig.id`（v2 单路由：只有第一条）。
     pub routes: RwLock<HashMap<String, decision::RouteState>>,
     /// 服务健康。
     pub health: RwLock<RouterHealth>,
-    /// 当前 server 任务的停机信号；由 [`serve`] 写入、[`restart`] 消费。
+    /// 当前 server 任务的停机信号；由 [`serve`] 写入、[`RouterCore::restart`] 消费。
     shutdown: RwLock<Option<watch::Sender<bool>>>,
     /// 当前 server 任务的 join 句柄；重启时限时等待旧任务让出端口。
     server_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -78,6 +80,14 @@ pub struct RouterCore {
 /// 与 REPLACE 回放型来源天然隔离）。
 pub fn ledger_source(account: &str) -> String {
     format!("router:{account}")
+}
+
+/// 约束的周期序：用于「最小（最短周期）窗口」选择。
+pub mod period {
+    pub const FIVE_HOUR: u8 = 0;
+    pub const DAILY: u8 = 1;
+    pub const WEEKLY: u8 = 2;
+    pub const MONTHLY: u8 = 3;
 }
 
 impl RouterCore {
@@ -115,39 +125,95 @@ impl RouterCore {
         *self.http.write().await = client;
     }
 
-    /// 候选的配额视图：min(provider 快照最紧窗口, 手填日限, 月消耗上限)。
-    /// 快照缺失/错误 → None 分量（数据缺失不拦截请求）；手填日限的 used =
-    /// 路由自记账当日总量；月消耗上限的 used = provider 快照月窗已用。
-    pub async fn quota_view(&self, cand: &config::CandidateConfig) -> decision::QuotaView {
-        let mut view = decision::QuotaView::default();
+    /// 候选的配额判定（① 最小窗口 + ② 硬墙）。约束集：
+    /// - provider 在报窗口（five_hour/daily/weekly/monthly，有的才算）；
+    /// - 手填日限（tokens，视为「日窗口」，used = 路由自记账当日总量）；
+    /// - 手填月限（金额，视为「月窗口」，used = provider 快照月窗已用，
+    ///   仅余额差分类账户有数据；无数据则该约束不参与）。
+    pub async fn quota_verdict(&self, cand: &config::CandidateConfig) -> decision::QuotaVerdict {
+        let mut constraints: Vec<decision::Constraint> = Vec::new();
         let snaps = self.snapshots.read().await;
-        if let Some(snapshot) = snaps.get(&cand.account).and_then(|s| s.snapshot.as_ref()) {
-            view = view.combine(decision::QuotaView {
-                remaining: Some(snapshot.min_remaining_percent()),
-            });
-            // 按量付费形态：月窗只有 used（本币金额、quota=0），min_remaining_percent
-            // 对它恒返回 1.0——必须用用户设定的月消耗上限才能算出剩余比。
-            if let Some(limit) = cand.monthly_cost_limit.filter(|l| *l > 0.0) {
-                if let Some(monthly) = snapshot.windows.monthly.as_ref() {
-                    if monthly.used > 0.0 {
-                        view = view.combine(decision::QuotaView {
-                            remaining: Some((1.0 - monthly.used / limit).clamp(0.0, 1.0)),
-                        });
-                    }
-                }
+        let snapshot = snaps.get(&cand.account).and_then(|s| s.snapshot.as_ref());
+        if let Some(snapshot) = snapshot {
+            let windows = [
+                (period::FIVE_HOUR, snapshot.windows.five_hour.as_ref()),
+                (period::DAILY, snapshot.windows.daily.as_ref()),
+                (period::WEEKLY, snapshot.windows.weekly.as_ref()),
+                (period::MONTHLY, snapshot.windows.monthly.as_ref()),
+            ];
+            for (rank, w) in windows {
+                let Some(w) = w else { continue };
+                let remaining = if w.quota > 0.0 {
+                    Some(1.0 - w.percent())
+                } else {
+                    None // used-only 窗口（余额差分/订阅口径），无配额刻度
+                };
+                let full = w.over_quota || (w.quota > 0.0 && w.used >= w.quota);
+                constraints.push(decision::Constraint {
+                    period_rank: rank,
+                    remaining_percent: remaining,
+                    full,
+                });
             }
         }
         drop(snaps);
+
+        // 手填日限（tokens）：used = 路由自记账的当日消耗。
         if let Some(limit) = cand.plan_limit_tokens_daily.filter(|l| *l > 0.0) {
             let used = self
                 .storage
                 .sum_usage_daily_today(&ledger_source(&cand.account))
                 .unwrap_or(0.0);
-            view = view.combine(decision::QuotaView {
-                remaining: Some((1.0 - used / limit).clamp(0.0, 1.0)),
+            constraints.push(decision::Constraint {
+                period_rank: period::DAILY,
+                remaining_percent: Some((1.0 - used / limit).clamp(0.0, 1.0)),
+                full: used >= limit,
             });
         }
-        view
+
+        // 手填月限（金额）：used = provider 快照月窗已用（余额差分统计）。
+        if let Some(limit) = cand.monthly_cost_limit.filter(|l| *l > 0.0) {
+            let snaps = self.snapshots.read().await;
+            let monthly_used = snaps
+                .get(&cand.account)
+                .and_then(|s| s.snapshot.as_ref())
+                .and_then(|s| s.windows.monthly.as_ref())
+                .map(|w| w.used)
+                .unwrap_or(0.0);
+            drop(snaps);
+            if monthly_used > 0.0 {
+                constraints.push(decision::Constraint {
+                    period_rank: period::MONTHLY,
+                    remaining_percent: Some((1.0 - monthly_used / limit).clamp(0.0, 1.0)),
+                    full: monthly_used >= limit,
+                });
+            }
+        }
+
+        decision::assess(&constraints)
+    }
+
+    /// 该账户快照里最近的未来窗口重置时间（探视放弃后等待的锚点）。
+    pub async fn next_reset_at(&self, account: &str) -> Option<DateTime<Utc>> {
+        let snaps = self.snapshots.read().await;
+        let now = Utc::now();
+        snaps
+            .get(account)
+            .and_then(|s| s.snapshot.as_ref())
+            .map(|s| {
+                [
+                    s.windows.five_hour.as_ref(),
+                    s.windows.daily.as_ref(),
+                    s.windows.weekly.as_ref(),
+                    s.windows.monthly.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                .filter_map(|w| w.reset_at)
+                .filter(|t| *t > now)
+                .min()
+            })
+            .unwrap_or(None)
     }
 
     /// （重）启动本地代理服务。旧任务先收到停机信号并限时等待退出，
@@ -229,22 +295,33 @@ pub fn build_router_http_client(proxy_url: Option<&str>) -> Result<Client, Strin
         .map_err(|e| format!("building router client failed: {e}"))
 }
 
-/// `get_router_status` 的负载：健康 + 每路由/每候选实时状态。
+/// `get_router_status` 的负载（v2 单路由）：健康 + 路由实时状态。
 #[derive(Debug, Serialize)]
 pub struct RouterStatusPayload {
     pub enabled: bool,
     pub health: RouterHealth,
-    pub routes: Vec<RouteStatus>,
+    /// 未配置路由时为 None。
+    pub route: Option<RouteStatus>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct RouteStatus {
     pub id: String,
     pub name: String,
+    pub on: bool,
     pub protocol: config::RouterProtocol,
-    /// 当前激活候选（最近一次实际承接请求者）；尚未承接过 = None。
+    /// 当前激活线路（最近一次实际承接请求者）；尚未承接过 = None。
     pub active_index: Option<usize>,
+    /// 切回探视状态（主线路资格满足但实测失败、退避等待中）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe: Option<ProbeStatus>,
     pub candidates: Vec<CandidateStatus>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProbeStatus {
+    pub attempts: u32,
+    pub next_probe_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize)]
@@ -252,42 +329,47 @@ pub struct CandidateStatus {
     pub account: String,
     pub model: String,
     pub base_url: String,
-    /// ok | cooldown | low_quota | unusable
+    /// ok | low_quota | full | cooldown | unusable
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cooldown_until: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cooldown_reason: Option<decision::CooldownReason>,
-    /// 综合剩余比例（快照 ∩ 手填日限的较小者）；无数据 = None。
+    /// 最小（最短周期）窗口剩余 %；无刻度数据 = None。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remaining_percent: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
 
-/// 组装状态负载（IPC 用）。快照读取走 [`RouterCore::quota_view`]。
+/// 组装状态负载（IPC 用）。
 pub async fn status_payload(core: &Arc<RouterCore>) -> RouterStatusPayload {
     let settings = core.settings.get().await;
     let now = Utc::now();
+    let policy = decision::DecisionPolicy::from_settings(&settings.router);
     let routes_state = core.routes.read().await;
-    let mut routes = Vec::with_capacity(settings.router.routes.len());
-    for route in &settings.router.routes {
-        let rs = routes_state.get(&route.id);
-        let mut candidates = Vec::with_capacity(route.candidates.len());
-        for (i, cand) in route.candidates.iter().enumerate() {
-            let quota = core.quota_view(cand).await;
+    let route_config = settings.router.active_route().cloned();
+    let mut route: Option<RouteStatus> = None;
+    if let Some(route_cfg) = route_config {
+        let rs = routes_state.get(&route_cfg.id);
+        let mut candidates = Vec::with_capacity(route_cfg.candidates.len());
+        for (i, cand) in route_cfg.candidates.iter().enumerate() {
+            let verdict = core.quota_verdict(cand).await;
             let st = rs
                 .and_then(|r| r.candidates.get(i))
                 .cloned()
                 .unwrap_or_default();
             let usable = core.is_usable(cand).await;
+            let cooling = st.cooldown_until.is_some_and(|u| u > now);
             let state = if !usable {
                 "unusable"
-            } else if st.cooldown_until.is_some_and(|u| u > now) {
+            } else if cooling {
                 "cooldown"
-            } else if quota
-                .remaining
-                .is_some_and(|r| r * 100.0 < settings.router.failover_threshold_percent as f64)
+            } else if verdict.hard_full {
+                "full"
+            } else if verdict
+                .min_window_remaining
+                .is_some_and(|r| r * 100.0 < settings.router.proactive_threshold_percent as f64)
             {
                 "low_quota"
             } else {
@@ -300,23 +382,29 @@ pub async fn status_payload(core: &Arc<RouterCore>) -> RouterStatusPayload {
                 state: state.to_string(),
                 cooldown_until: st.cooldown_until,
                 cooldown_reason: st.cooldown_reason,
-                remaining_percent: quota.remaining.map(|r| (r * 100.0).clamp(0.0, 100.0)),
+                remaining_percent: verdict.min_window_remaining.map(|r| (r * 100.0).clamp(0.0, 100.0)),
                 last_error: st.last_error,
             });
         }
-        routes.push(RouteStatus {
-            id: route.id.clone(),
-            name: route.name.clone(),
-            protocol: route.protocol,
+        route = Some(RouteStatus {
+            id: route_cfg.id.clone(),
+            name: route_cfg.name.clone(),
+            on: route_cfg.on,
+            protocol: route_cfg.protocol,
             active_index: rs.and_then(|r| r.last_used_index),
+            probe: rs.and_then(|r| r.probe.as_ref()).map(|p| ProbeStatus {
+                attempts: p.attempts,
+                next_probe_at: p.next_probe_at,
+            }),
             candidates,
         });
     }
+    drop(routes_state);
     let health = core.health.read().await.clone();
     RouterStatusPayload {
         enabled: settings.router.enabled,
         health,
-        routes,
+        route,
     }
 }
 

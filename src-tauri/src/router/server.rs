@@ -1,12 +1,16 @@
 //! axum 服务：鉴权 → 选路 → 改写转发 → 用量记账。
 //!
-//! 主循环 [`route_request`]：按链序选候选（[`decision::pick_candidate`]），
-//! 上游结果分级处理——可重试错误写回冷却状态后换下一个候选重试，参数类
-//! 4xx 原样透传，成功则转发响应（SSE 流式旁路扫描 usage 记账）。
+//! 主循环 [`route_request`]：按链序选线路（[`decision::pick_candidate`]），
+//! 上游结果分级处理（③ 被动观测）——限流/配额立即冷却并换下一条线路；
+//! 连接异常原地重试一次、跨请求累计熔断；参数类 4xx 原样透传；成功则转发
+//! 响应（SSE 流式旁路扫描 usage 记账）。④ 切回探视：主线路资格满足但实测
+//! 失败时按 ×2 退避安排下一次探针。
 
 use crate::notify;
 use crate::router::config::{CandidateConfig, RouteConfig, RouterProtocol};
-use crate::router::decision::{self, DecisionPolicy, ResolvedCandidate, UpstreamOutcome};
+use crate::router::decision::{
+    self, DecisionPolicy, ProbeState, ResolvedCandidate, UpstreamOutcome,
+};
 use crate::router::forward;
 use crate::router::{ledger_source, RouterCore, RouterSwitchEvent};
 use axum::body::{Body, Bytes};
@@ -15,10 +19,15 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::Emitter;
 
 /// 请求体上限：长上下文会话可到几十 MB，axum 默认 2MB 会截断。
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+/// 连接类错误的原地重试退避（毫秒）。
+const CONN_RETRY_BACKOFF_MS: u64 = 300;
+/// 拿不到 reset_at 时的低频探视间隔（秒）。
+const PROBE_FALLBACK_SECS: u64 = 900;
 
 pub fn build_router(core: Arc<RouterCore>) -> axum::Router {
     axum::Router::new()
@@ -95,14 +104,10 @@ async fn route_request(
     // ---- 全局开关 + 鉴权 -----------------------------------------------
     let settings = core.settings.get().await;
     if !settings.router.enabled {
-        let kind = match protocol {
-            RouterProtocol::Anthropic => "api_error",
-            RouterProtocol::OpenAi => "server_error",
-        };
         return protocol_error(
             protocol,
             StatusCode::SERVICE_UNAVAILABLE,
-            kind,
+            api_error_kind(protocol),
             "TokenRouter 已停用：在主界面快速开关或 设置 → 路由 中开启。",
         );
     }
@@ -114,6 +119,14 @@ async fn route_request(
             "缺少或无效的路由 token（应为设置页路由列表中的 tr_… token）。",
         );
     };
+    if !route.on {
+        return protocol_error(
+            protocol,
+            StatusCode::SERVICE_UNAVAILABLE,
+            api_error_kind(protocol),
+            "该路由链已停用（路由卡上的开关可重新启用）。",
+        );
+    }
     if route.protocol != protocol {
         return protocol_error(
             protocol,
@@ -127,18 +140,18 @@ async fn route_request(
             protocol,
             StatusCode::SERVICE_UNAVAILABLE,
             api_error_kind(protocol),
-            "该路由还没有配置任何候选。",
+            "该路由还没有配置任何线路。",
         );
     }
 
     let policy = DecisionPolicy::from_settings(&settings.router);
 
-    // ---- 候选解析：凭据 + 配额视图（快照读取是异步的，须先于 pick） ----
+    // ---- 线路解析：凭据 + 配额判定（快照读取是异步的，须先于 pick） ----
     let mut resolved: Vec<ResolvedCandidate<'_>> = Vec::with_capacity(route.candidates.len());
     let mut api_keys: Vec<Option<String>> = Vec::with_capacity(route.candidates.len());
     for cand in &route.candidates {
         let key = core.api_key_of(&cand.account).await;
-        let quota = core.quota_view(cand).await;
+        let quota = core.quota_verdict(cand).await;
         resolved.push(ResolvedCandidate {
             config: cand,
             quota,
@@ -147,16 +160,43 @@ async fn route_request(
         api_keys.push(key);
     }
 
-    // ---- 尝试循环：每次重试必然让一个候选进入冷却，故有界 ----
+    // ---- ④ 探视态维护：资格丢失即清退避（资格恢复后重新按链序自然尝试） ----
+    {
+        let mut states = core.routes.write().await;
+        let rs = states.entry(route.id.clone()).or_default();
+        rs.align(route.candidates.len());
+        let main_ok = resolved.first().map(|c| c.quota.can_probe).unwrap_or(false);
+        if rs.probe.is_some() && !main_ok {
+            rs.probe = None;
+        }
+    }
+
+    // ---- 尝试循环 --------------------------------------------------------
+    // tried：本请求已失败过的线路（不重复尝试）；conn_retried：连接类原地重试
+    // 已用（每个线路一次）。循环上限 = 线路数 × 2（原地重试占一档），有界。
+    let mut tried = vec![false; route.candidates.len()];
+    let mut conn_retried = vec![false; route.candidates.len()];
     let mut last_message = String::new();
-    for _ in 0..route.candidates.len() {
+
+    for _ in 0..route.candidates.len() * 2 {
+        // 视图：已试过的线路标记为不可用，让 pick 自然跳过（探视/降级逻辑不变）。
+        let view: Vec<ResolvedCandidate<'_>> = resolved
+            .iter()
+            .enumerate()
+            .map(|(i, c)| ResolvedCandidate {
+                config: c.config,
+                quota: c.quota,
+                usable: c.usable && !tried[i],
+            })
+            .collect();
         let picked = {
             let states = core.routes.read().await;
             let rs = states.get(&route.id);
             decision::pick_candidate(
-                &resolved,
+                &view,
                 rs.map(|r| r.candidates.as_slice()).unwrap_or(&[]),
-                policy,
+                Some(rs.unwrap_or(&decision::RouteState::default())),
+                &policy,
                 chrono::Utc::now(),
             )
         };
@@ -195,6 +235,13 @@ async fn route_request(
         match send {
             Err(e) => {
                 last_message = format!("上游 {} 网络错误: {e}", cand.base_url);
+                if !conn_retried[idx] {
+                    // 连接类先原地重试一次（短暂退避），网络抖动不杀线路。
+                    conn_retried[idx] = true;
+                    tokio::time::sleep(Duration::from_millis(CONN_RETRY_BACKOFF_MS)).await;
+                    continue;
+                }
+                tried[idx] = true;
                 record_outcome(&core, route, idx, &UpstreamOutcome::ServerError, policy, &last_message)
                     .await;
                 continue;
@@ -209,11 +256,19 @@ async fn route_request(
                 }
                 if outcome.retryable() {
                     last_message = format!("上游 {} 返回 HTTP {}", cand.base_url, status.as_u16());
+                    tried[idx] = true;
                     record_outcome(&core, route, idx, &outcome, policy, &last_message).await;
+                    // ④ 主线路限流：资格满足则安排探视退避（×2），资格丢失则清退避。
+                    if idx == 0 {
+                        update_probe(&core, route, resolved[idx].quota.can_probe, &policy).await;
+                    }
                     continue;
                 }
                 if outcome == UpstreamOutcome::Success {
                     mark_active(&core, route, idx).await;
+                    if idx == 0 {
+                        clear_probe(&core, route).await;
+                    }
                 }
                 return forward_response(&core, resp, protocol, cand, accounting).await;
             }
@@ -225,9 +280,9 @@ async fn route_request(
         StatusCode::TOO_MANY_REQUESTS,
         rate_limit_kind(protocol),
         &if last_message.is_empty() {
-            "所有候选暂不可用（冷却中或配额不足）。".to_string()
+            "所有线路暂不可用（冷却中或配额不足）。".to_string()
         } else {
-            format!("所有候选暂不可用。{last_message}")
+            format!("所有线路暂不可用。{last_message}")
         },
     )
 }
@@ -264,8 +319,16 @@ async fn proxy_models(State(core): State<Arc<RouterCore>>, headers: HeaderMap) -
             continue;
         };
         let url = format!("{}/v1/models", cand.base_url.trim_end_matches('/'));
-        let upstream_headers = forward::build_upstream_headers(RouterProtocol::OpenAi, &api_key, &headers);
-        let send = core.http.read().await.get(&url).headers(upstream_headers).send().await;
+        let upstream_headers =
+            forward::build_upstream_headers(RouterProtocol::OpenAi, &api_key, &headers);
+        let send = core
+            .http
+            .read()
+            .await
+            .get(&url)
+            .headers(upstream_headers)
+            .send()
+            .await;
         match send {
             Ok(resp) => {
                 return forward_response(&core, resp, RouterProtocol::OpenAi, cand, false).await;
@@ -277,7 +340,7 @@ async fn proxy_models(State(core): State<Arc<RouterCore>>, headers: HeaderMap) -
         RouterProtocol::OpenAi,
         StatusCode::BAD_GATEWAY,
         "server_error",
-        "没有凭据可用的候选。",
+        "没有凭据可用的线路。",
     )
 }
 
@@ -341,13 +404,59 @@ async fn record_outcome(
         &mut rs.candidates,
         idx,
         outcome,
-        policy,
+        &policy,
         chrono::Utc::now(),
         Some(message),
     );
 }
 
-/// 活跃候选变化 → 事件 + 系统通知（每次变化一条，不随请求刷屏）。
+/// 主线路限流后的探视退避（④）：资格满足 → 建立/推进退避（×2）；
+/// 达到最大次数后等待窗口重置（reset_at），拿不到则 15 分钟低频探视。
+async fn update_probe(
+    core: &Arc<RouterCore>,
+    route: &RouteConfig,
+    eligible: bool,
+    policy: &DecisionPolicy,
+) {
+    let now = chrono::Utc::now();
+    let Some(cand) = route.candidates.first() else { return };
+    if !eligible {
+        // 资格丢失（有墙打满）：等冷却自然结束再判定，探视态清空。
+        let mut states = core.routes.write().await;
+        if let Some(rs) = states.get_mut(&route.id) {
+            rs.probe = None;
+        }
+        return;
+    }
+    let reset_at = core.next_reset_at(&cand.account).await;
+    let mut states = core.routes.write().await;
+    let rs = states.entry(route.id.clone()).or_default();
+    rs.align(route.candidates.len());
+    let probe = rs.probe.get_or_insert_with(|| ProbeState {
+        attempts: 0,
+        next_probe_at: now,
+    });
+    decision::advance_probe(probe, policy, now);
+    if probe.attempts >= policy.probe_max_attempts {
+        probe.next_probe_at = reset_at.unwrap_or(now + chrono::Duration::seconds(PROBE_FALLBACK_SECS as i64));
+    }
+    tracing::info!(
+        target: "tum.router",
+        route = %route.name,
+        attempt = probe.attempts,
+        "main line probe failed; next probe scheduled"
+    );
+}
+
+/// 探视成功（主线路真实请求 2xx）→ 清退避，流量自然回主线路。
+async fn clear_probe(core: &Arc<RouterCore>, route: &RouteConfig) {
+    let mut states = core.routes.write().await;
+    if let Some(rs) = states.get_mut(&route.id) {
+        rs.probe = None;
+    }
+}
+
+/// 活跃线路变化 → 事件 + 系统通知（每次变化一条，不随请求刷屏）。
 async fn mark_active(core: &Arc<RouterCore>, route: &RouteConfig, idx: usize) {
     let switched = {
         let mut states = core.routes.write().await;
@@ -385,9 +494,9 @@ async fn mark_active(core: &Arc<RouterCore>, route: &RouteConfig, idx: usize) {
     );
     if reason != "initial" {
         let reason_text = if reason == "failover" {
-            "主候选配额受限，已自动切换"
+            "主线路配额受限，已自动切换"
         } else {
-            "主候选已恢复，切回主候选"
+            "主线路已恢复，切回主线路"
         };
         notify::deliver(
             app,
@@ -492,7 +601,12 @@ fn respond(status: StatusCode, content_type: Option<HeaderValue>, body: Body) ->
 }
 
 /// 协议形错误体：Anthropic / OpenAI 各自的 error envelope，工具侧能直接解析。
-fn protocol_error(protocol: RouterProtocol, status: StatusCode, kind: &str, message: &str) -> Response {
+fn protocol_error(
+    protocol: RouterProtocol,
+    status: StatusCode,
+    kind: &str,
+    message: &str,
+) -> Response {
     let payload = match protocol {
         RouterProtocol::Anthropic => json!({
             "type": "error",
@@ -509,25 +623,16 @@ fn protocol_error(protocol: RouterProtocol, status: StatusCode, kind: &str, mess
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-fn auth_error_kind(protocol: RouterProtocol) -> &'static str {
-    match protocol {
-        RouterProtocol::Anthropic => "authentication_error",
-        RouterProtocol::OpenAi => "authentication_error",
-    }
+fn auth_error_kind(_protocol: RouterProtocol) -> &'static str {
+    "authentication_error"
 }
 
-fn invalid_request_kind(protocol: RouterProtocol) -> &'static str {
-    match protocol {
-        RouterProtocol::Anthropic => "invalid_request_error",
-        RouterProtocol::OpenAi => "invalid_request_error",
-    }
+fn invalid_request_kind(_protocol: RouterProtocol) -> &'static str {
+    "invalid_request_error"
 }
 
-fn rate_limit_kind(protocol: RouterProtocol) -> &'static str {
-    match protocol {
-        RouterProtocol::Anthropic => "rate_limit_error",
-        RouterProtocol::OpenAi => "rate_limit_error",
-    }
+fn rate_limit_kind(_protocol: RouterProtocol) -> &'static str {
+    "rate_limit_error"
 }
 
 fn api_error_kind(protocol: RouterProtocol) -> &'static str {
