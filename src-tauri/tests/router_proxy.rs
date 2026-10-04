@@ -354,6 +354,73 @@ async fn fetch_upstream_models_lists_and_validates() {
 }
 
 #[tokio::test]
+async fn monthly_cost_limit_drives_quota_view() {
+    // 按量付费形态：月窗只有 used（本币金额、quota=0），min_remaining_percent
+    // 恒 1.0；用户设定月消耗上限后，剩余比 = 1 - used/limit，才让阈值生效。
+    let upstream = spawn_mock(
+        axum::Router::new()
+            .route("/v1/chat/completions", post(chat_ok))
+            .with_state(Arc::new(MockState::new(false))),
+    )
+    .await;
+    let routes_toml = format!(
+        "[[router.routes]]\nid = \"mc\"\nname = \"cost\"\nprotocol = \"openai\"\ntoken = \"tok-mc\"\n\n[[router.routes.candidates]]\naccount = \"acct-1\"\nmodel = \"m1\"\nbase_url = \"{upstream}\"\nmonthly_cost_limit = 10.0\n"
+    );
+    let (core, _storage, _port, _dir) = spawn_router("monthlycost", true, &routes_toml).await;
+
+    // 注入 DeepSeek 式快照：月窗已用 9（quota=0），余额 2.5。
+    let snap = token_usage_monitor_lib::providers::UsageSnapshot {
+        provider_id: "acct-1".into(),
+        provider_display_name: "DeepSeek".into(),
+        plan_tier: None,
+        timestamp: chrono::Utc::now(),
+        windows: token_usage_monitor_lib::providers::UsageWindows {
+            monthly: Some(token_usage_monitor_lib::providers::WindowUsage {
+                used: 9.0,
+                quota: 0.0,
+                unit: token_usage_monitor_lib::providers::UsageUnit::Cny,
+                reset_at: None,
+                over_quota: false,
+                cost_source: token_usage_monitor_lib::providers::CostSource::Estimated,
+                tokens: None,
+            }),
+            ..Default::default()
+        },
+        heatmap: None,
+    };
+    core.snapshots.write().await.insert(
+        "acct-1".to_string(),
+        token_usage_monitor_lib::providers::ProviderState {
+            snapshot: Some(snap),
+            last_error: None,
+            last_updated_at: Some(chrono::Utc::now()),
+        },
+    );
+
+    let cand = token_usage_monitor_lib::router::config::CandidateConfig {
+        account: "acct-1".into(),
+        model: "m1".into(),
+        base_url: upstream,
+        plan_limit_tokens_daily: None,
+        monthly_cost_limit: Some(10.0),
+    };
+    let view = core.quota_view(&cand).await;
+    let remaining = view.remaining.expect("monthly cost limit must yield remaining");
+    assert!(
+        (remaining - 0.1).abs() < 1e-9,
+        "月消耗 9/10 → 剩余 10%，低于 20% 阈值应触发主动切换，got {remaining}"
+    );
+
+    // 未设月上限：退回快照口径（quota=0 的月窗 → 剩余 1.0）。
+    let no_limit = token_usage_monitor_lib::router::config::CandidateConfig {
+        monthly_cost_limit: None,
+        ..cand
+    };
+    let view = core.quota_view(&no_limit).await;
+    assert_eq!(view.remaining, Some(1.0));
+}
+
+#[tokio::test]
 async fn empty_candidate_model_passes_client_model_through() {
     // 候选模型名留空 = 透传工具的原始模型名（同名模型接多个上游的场景）。
     let mock = Arc::new(MockState::new(false));

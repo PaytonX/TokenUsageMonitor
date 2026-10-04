@@ -115,8 +115,9 @@ impl RouterCore {
         *self.http.write().await = client;
     }
 
-    /// 候选的配额视图：min(provider 快照最紧窗口, 手填日限剩余比)。
-    /// 快照缺失/错误 → None 分量；手填日限的 used = 路由自记账当日总量。
+    /// 候选的配额视图：min(provider 快照最紧窗口, 手填日限, 月消耗上限)。
+    /// 快照缺失/错误 → None 分量（数据缺失不拦截请求）；手填日限的 used =
+    /// 路由自记账当日总量；月消耗上限的 used = provider 快照月窗已用。
     pub async fn quota_view(&self, cand: &config::CandidateConfig) -> decision::QuotaView {
         let mut view = decision::QuotaView::default();
         let snaps = self.snapshots.read().await;
@@ -124,6 +125,17 @@ impl RouterCore {
             view = view.combine(decision::QuotaView {
                 remaining: Some(snapshot.min_remaining_percent()),
             });
+            // 按量付费形态：月窗只有 used（本币金额、quota=0），min_remaining_percent
+            // 对它恒返回 1.0——必须用用户设定的月消耗上限才能算出剩余比。
+            if let Some(limit) = cand.monthly_cost_limit.filter(|l| *l > 0.0) {
+                if let Some(monthly) = snapshot.windows.monthly.as_ref() {
+                    if monthly.used > 0.0 {
+                        view = view.combine(decision::QuotaView {
+                            remaining: Some((1.0 - monthly.used / limit).clamp(0.0, 1.0)),
+                        });
+                    }
+                }
+            }
         }
         drop(snaps);
         if let Some(limit) = cand.plan_limit_tokens_daily.filter(|l| *l > 0.0) {

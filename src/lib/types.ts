@@ -328,6 +328,9 @@ export interface RouterCandidate {
   base_url: string;
   /** 手填订阅日上限（tokens/自然日），仅对不上报配额的 provider 有意义。 */
   plan_limit_tokens_daily?: number;
+  /** 按量付费月消耗上限（账户计价币种金额）。对比 provider 快照月窗已用
+   * （余额差分统计），达到 failover 阈值即主动切换。 */
+  monthly_cost_limit?: number;
 }
 
 /** 镜像 Rust `router::config::RouteConfig`。token 为空表示等待后端补发。 */

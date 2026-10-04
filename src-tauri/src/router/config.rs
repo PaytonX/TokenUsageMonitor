@@ -45,6 +45,12 @@ pub struct CandidateConfig {
     /// （如 Claude 订阅）；used 取路由器自记账的当日消耗。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_limit_tokens_daily: Option<f64>,
+    /// 按量付费的月消耗上限（**账户计价币种**金额，如 ¥ / $）。对比 provider
+    /// 快照月窗的已用（余额差分账户本就在统计月消费）；达到 failover 阈值
+    /// 即主动切换——这是按量付费形态下阈值生效的入口。余额耗尽的最终兜底
+    /// 仍是上游 402 的被动切换。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monthly_cost_limit: Option<f64>,
 }
 
 /// 一条命名路由：同协议候选的有序链 + 本地鉴权 token。
@@ -203,6 +209,7 @@ mod tests {
                 model: "claude-sonnet-4-5".into(),
                 base_url: "https://api.anthropic.com".into(),
                 plan_limit_tokens_daily: Some(1_000_000.0),
+                monthly_cost_limit: None,
             }],
         });
         let dumped = toml::to_string_pretty(&s).expect("serialize");

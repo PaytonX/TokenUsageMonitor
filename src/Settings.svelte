@@ -492,6 +492,17 @@
     }
   }
 
+  let routerUrlCopied = $state(false);
+  async function copyRouterUrl() {
+    try {
+      await navigator.clipboard.writeText(`http://127.0.0.1:${routerCfg.port}`);
+      routerUrlCopied = true;
+      setTimeout(() => (routerUrlCopied = false), 1500);
+    } catch {
+      /* 剪贴板不可用：静默。 */
+    }
+  }
+
   async function refreshRouterStatus() {
     try {
       routerStatus = await getRouterStatus();
@@ -557,15 +568,19 @@
         protocol: r.protocol,
         token: r.token.trim(),
         candidates: r.candidates
-          .map((c) => ({
-            account: c.account.trim(),
-            model: c.model.trim(),
-            base_url: c.base_url.trim().replace(/\/+$/, ""),
-            ...(Number.isFinite(c.plan_limit_tokens_daily) &&
-            (c.plan_limit_tokens_daily ?? 0) > 0
-              ? { plan_limit_tokens_daily: c.plan_limit_tokens_daily }
-              : {}),
-          }))
+            .map((c) => ({
+              account: c.account.trim(),
+              model: c.model.trim(),
+              base_url: c.base_url.trim().replace(/\/+$/, ""),
+              ...(Number.isFinite(c.plan_limit_tokens_daily) &&
+              (c.plan_limit_tokens_daily ?? 0) > 0
+                ? { plan_limit_tokens_daily: c.plan_limit_tokens_daily }
+                : {}),
+              ...(Number.isFinite(c.monthly_cost_limit) &&
+              (c.monthly_cost_limit ?? 0) > 0
+                ? { monthly_cost_limit: c.monthly_cost_limit }
+                : {}),
+            }))
           .filter((c) => c.account && c.base_url),
       })),
     };
@@ -1589,6 +1604,14 @@ async function handleMinimize() {
                 <span class="toggle__track"><span class="toggle__thumb"></span></span>
               </label>
             </div>
+            <div class="route-url-row">
+              <span class="route-url__label">工具接入地址</span>
+              <code class="route-url__value">http://127.0.0.1:{routerCfg.port}</code>
+              <button type="button" class="btn btn--ghost" onclick={copyRouterUrl}>
+                {routerUrlCopied ? "已复制" : "复制"}
+              </button>
+              <span class="route-url__hint">填到工具的「API 地址 / Base URL」（带不带 /v1 均可）</span>
+            </div>
             <div class="route-grid">
               <label class="field">
                 <span class="field__label">端口</span>
@@ -1678,14 +1701,24 @@ async function handleMinimize() {
                         </datalist>
                       </span>
                       <input class="field__input route-cand__base" type="text" bind:value={cand.base_url} placeholder="上游地址（选账户后自动预填）" />
-                      <input
-                        class="field__input route-cand__limit"
-                        type="number"
-                        min="0"
-                        bind:value={cand.plan_limit_tokens_daily}
-                        placeholder="日上限"
-                        title="手填订阅日上限（tokens/自然日），仅对不上报配额的来源有意义；留空不启用"
-                      />
+                      <span class="route-cand__limits">
+                        <input
+                          class="field__input"
+                          type="number"
+                          min="0"
+                          bind:value={cand.plan_limit_tokens_daily}
+                          placeholder="日上限"
+                          title="手填订阅日上限（tokens/自然日），used 取经本路由的实际消耗；留空不启用"
+                        />
+                        <input
+                          class="field__input"
+                          type="number"
+                          min="0"
+                          bind:value={cand.monthly_cost_limit}
+                          placeholder="月上限"
+                          title="按量付费月消耗上限（账户币种金额，如 ¥/$；对比 provider 统计的月已用），达到切换阈值即主动绕开；留空不启用"
+                        />
+                      </span>
                       <div class="route-cand__ops">
                         <button type="button" class="route-op" disabled={ci === 0} onclick={() => moveCandidate(ri, ci, -1)} title="上移">↑</button>
                         <button type="button" class="route-op" disabled={ci === route.candidates.length - 1} onclick={() => moveCandidate(ri, ci, 1)} title="下移">↓</button>
@@ -2911,6 +2944,30 @@ async function handleMinimize() {
     gap: 4px;
     align-items: center;
     min-width: 0;
+  }
+  .route-cand__limits {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .route-url-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .route-url__label,
+  .route-url__hint {
+    font-size: 12px;
+    color: var(--tum-text-muted, #8b949e);
+  }
+  .route-url__value {
+    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
   }
   .route-cand__modelwrap .route-cand__model {
     flex: 1;

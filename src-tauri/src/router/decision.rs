@@ -260,6 +260,7 @@ mod tests {
             model: format!("model-{account}"),
             base_url: "https://upstream.test".to_string(),
             plan_limit_tokens_daily: None,
+            monthly_cost_limit: None,
         }
     }
 
