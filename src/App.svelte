@@ -307,9 +307,11 @@
       router: {
         ...(settings.router ?? {
           port: 43211,
-          failover_threshold_percent: 20,
-          failback_threshold_percent: 50,
+          proactive_threshold_percent: 20,
           error_cooldown_secs: 300,
+          conn_breaker_count: 3,
+          probe_start_secs: 60,
+          probe_max_attempts: 5,
           routes: [],
         }),
         enabled: !routerOn,

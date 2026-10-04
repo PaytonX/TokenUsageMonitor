@@ -293,34 +293,34 @@ function localTools() {
 
 const MACHINE = { device_id: "preview", hostname: "PREVIEW", os: "windows", arch: "x64", version: "0.1.0", pid: 0 };
 
-/** TokenRouter 状态桩：一条演示路由（链头低配额 → 徽标可见），便于预览路由 pane。 */
+/** TokenRouter 状态桩：单路由演示（主线路低配额 → 徽标可见 + 探视进行中）。 */
 const ROUTER_STATUS = {
   enabled: true,
   health: { listening: true, port: 43211 },
-  routes: [
-    {
-      id: "route-preview-1",
-      name: "Claude Code 主力",
-      protocol: "anthropic",
-      active_index: 1,
-      candidates: [
-        {
-          account: "anthropic-1",
-          model: "claude-sonnet-4-5",
-          base_url: "https://api.anthropic.com",
-          state: "low_quota",
-          remaining_percent: 12,
-        },
-        {
-          account: "minimax-1",
-          model: "MiniMax-M2",
-          base_url: "https://api.minimaxi.com",
-          state: "ok",
-          remaining_percent: 86,
-        },
-      ],
-    },
-  ],
+  route: {
+    id: "route-preview-1",
+    name: "MiniMax-Deepseek",
+    on: true,
+    protocol: "openai",
+    active_index: 1,
+    probe: { attempts: 2, next_probe_at: new Date(now + 240_000).toISOString() },
+    candidates: [
+      {
+        account: "anthropic-1",
+        model: "claude-sonnet-4-5",
+        base_url: "https://api.anthropic.com",
+        state: "low_quota",
+        remaining_percent: 12,
+      },
+      {
+        account: "minimax-1",
+        model: "MiniMax-M2",
+        base_url: "https://api.minimaxi.com",
+        state: "ok",
+        remaining_percent: 86,
+      },
+    ],
+  },
 };
 
 /** @param cmd Tauri command 名（snake_case）或插件命令（plugin:event|listen） */

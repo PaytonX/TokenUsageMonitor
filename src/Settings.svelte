@@ -23,6 +23,9 @@
     type ProviderCatalog,
     type Preset,
     type PresetSubMode,
+    type RouterCandidate,
+    type RouterRoute,
+    type RouterProtocol,
     type AccountMeta,
     type Settings,
     type Credentials,
@@ -411,10 +414,19 @@
     }
   }
 
-  // --- TokenRouter -------------------------------------------------------------
+  /** 线路序号圆点（①..⑤），超出回退为数字。 */
+  const CIRCLES = ["①", "②", "③", "④", "⑤"];
 
-  /** 候选账户 kind → 上游根地址预填。路由器对上游零假设，这里是「添加候选时
-   *  省一次粘贴」的便利值；用户随时可改成中转站地址。 */
+  /** 「服务设置」折叠态（低频参数，不占日常视野）。 */
+  let svcOpen = $state(false);
+  /** 路由链编辑区折叠态：收起时只显示链路摘要 + Key + 当前走谁。 */
+  let chainOpen = $state(true);
+  /** API Key 复制反馈。 */
+  let tokenCopied = $state(false);
+
+  // --- TokenRouter（v2：单路由 + 四层判定） -------------------------------------
+
+  /** 线路账户 kind → 上游根地址预填。选账户即省一次粘贴；随时可改成中转站。 */
   const ROUTER_BASE_PRESETS: Record<string, string> = {
     anthropic: "https://api.anthropic.com",
     openai: "https://api.openai.com",
@@ -438,57 +450,57 @@
     );
   }
 
-  /** 选账户时自动预填该 kind 的官方根地址（覆盖旧值，选人即选上游）。 */
-  function onCandidateAccountChanged(route: RouterSettings["routes"][number], candIndex: number, instanceId: string) {
-    const cand = route.candidates[candIndex];
-    if (!cand) return;
+  /** 生效路由（v2 单路由：只有第一条）。未配置时为 null。 */
+  let route = $derived(routerCfg.routes[0] ?? null);
+
+  function ensureRoute(): RouterRoute {
+    let r = routerCfg.routes[0];
+    if (!r) {
+      r = {
+        id: nextRouteId(),
+        name: "主力路由",
+        protocol: "openai",
+        on: true,
+        token: "",
+        candidates: [],
+      };
+      routerCfg.routes = [r];
+    }
+    return r;
+  }
+
+  /** 选账户时自动预填该 kind 的官方根地址（选人即选上游）。 */
+  function onCandidateAccountChanged(cand: RouterCandidate, instanceId: string) {
     cand.account = instanceId;
     const base = ROUTER_BASE_PRESETS[accountKindOf(instanceId)];
     if (base) cand.base_url = base;
   }
 
-  function addRoute() {
-    routerCfg.routes.push({
-      id: nextRouteId(),
-      name: `路由 ${routerCfg.routes.length + 1}`,
-      protocol: "openai",
-      token: "",
-      candidates: [],
-    });
+  function addCandidate() {
+    ensureRoute().candidates.push({ account: "", model: "", base_url: "" });
   }
 
-  function removeRoute(index: number) {
-    routerCfg.routes = routerCfg.routes.filter((_, i) => i !== index);
+  function removeCandidate(index: number) {
+    const r = route;
+    if (r) r.candidates = r.candidates.filter((_, i) => i !== index);
   }
 
-  function addCandidate(routeIndex: number) {
-    const route = routerCfg.routes[routeIndex];
-    if (!route) return;
-    route.candidates.push({ account: "", model: "", base_url: "" });
+  function moveCandidate(index: number, dir: -1 | 1) {
+    const r = route;
+    if (!r) return;
+    const to = index + dir;
+    if (to < 0 || to >= r.candidates.length) return;
+    const [c] = r.candidates.splice(index, 1);
+    r.candidates.splice(to, 0, c);
   }
 
-  function removeCandidate(routeIndex: number, candIndex: number) {
-    const route = routerCfg.routes[routeIndex];
-    if (!route) return;
-    route.candidates = route.candidates.filter((_, i) => i !== candIndex);
-  }
-
-  function moveCandidate(routeIndex: number, candIndex: number, dir: -1 | 1) {
-    const route = routerCfg.routes[routeIndex];
-    if (!route) return;
-    const to = candIndex + dir;
-    if (to < 0 || to >= route.candidates.length) return;
-    const [c] = route.candidates.splice(candIndex, 1);
-    route.candidates.splice(to, 0, c);
-  }
-
-  async function copyRouteToken(routeId: string, token: string) {
+  async function copyRouteToken(token: string) {
     try {
       await navigator.clipboard.writeText(token);
-      tokenCopiedFor = routeId;
-      setTimeout(() => (tokenCopiedFor = null), 1500);
+      tokenCopied = true;
+      setTimeout(() => (tokenCopied = false), 1500);
     } catch {
-      /* 剪贴板不可用（无权限等）：静默，用户可手动选择文本复制。 */
+      /* 剪贴板不可用：静默，用户可手动选择文本复制。 */
     }
   }
 
@@ -511,25 +523,17 @@
     }
   }
 
-  // 模型列表拉取：按「账户|上游地址」缓存，同一上游的候选共享一份结果。
+  // 模型列表拉取：按「账户|上游地址」缓存，同一上游的线路共享一份结果。
   let modelOptions = $state<Record<string, string[]>>({});
   let modelFetching = $state<Record<string, boolean>>({});
   let modelFetchError = $state<Record<string, string>>({});
+  let modelPickerFor = $state<string | null>(null);
 
   function modelKey(account: string, baseUrl: string): string {
     return `${account}|${baseUrl}`;
   }
 
-  function modelDomId(account: string, baseUrl: string): string {
-    // datalist 的 id 只允许 [A-Za-z0-9_-]；instance_id 里只有安全字符，
-    // base_url 里的 :/ . 等折叠为 _。
-    return `mdl-${modelKey(account, baseUrl).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-  }
-
-  async function handleFetchModels(
-    route: RouterSettings["routes"][number],
-    cand: RouterSettings["routes"][number]["candidates"][number],
-  ) {
+  async function handleFetchModels(cand: RouterCandidate, protocol: RouterProtocol) {
     const key = modelKey(cand.account, cand.base_url);
     if (!cand.account || !cand.base_url) {
       modelFetchError[key] = "先选择账户并填写上游地址，再拉取模型列表";
@@ -538,8 +542,8 @@
     modelFetching[key] = true;
     modelFetchError[key] = "";
     try {
-      const list = await fetchUpstreamModels(route.protocol, cand.account, cand.base_url);
-      modelOptions[key] = list;
+      modelOptions[key] = await fetchUpstreamModels(protocol, cand.account, cand.base_url);
+      modelPickerFor = key;
     } catch (e) {
       modelFetchError[key] = String(e);
     } finally {
@@ -547,10 +551,14 @@
     }
   }
 
-  /** 编辑态 → 落盘态：数值夹取 + 去掉缺账户/缺上游地址的候选。**路由本身不
-   *  删除**——没配全候选的路由保留在列表里（请求会得到明确报错），避免用户
-   *  辛苦填了一半的内容被静默吞掉。模型名可留空（= 透传原始模型）。token 留空
-   *  由后端补发（ensure_route_tokens），已生成的原样保留。 */
+  function pickModel(cand: RouterCandidate, model: string) {
+    cand.model = model;
+    modelPickerFor = null;
+  }
+
+  /** 编辑态 → 落盘态：数值夹取 + 去掉缺账户/缺上游地址的线路。**路由本身不
+   *  删除**——没配全线路的路由保留（请求会得到明确报错），避免吞掉用户填了
+   *  一半的内容。模型名可留空（= 透传工具原始模型名）。token 留空由后端补发。 */
   function sanitizeRouter(cfg: RouterSettings): RouterSettings {
     const clampInt = (v: number, lo: number, hi: number, dflt: number) => {
       const n = Math.round(v);
@@ -559,50 +567,63 @@
     return {
       enabled: cfg.enabled,
       port: clampInt(cfg.port, 1, 65535, 43211),
-      failover_threshold_percent: clampInt(cfg.failover_threshold_percent, 1, 99, 20),
-      failback_threshold_percent: clampInt(cfg.failback_threshold_percent, 1, 99, 50),
+      proactive_threshold_percent: clampInt(cfg.proactive_threshold_percent, 0, 95, 20),
       error_cooldown_secs: clampInt(cfg.error_cooldown_secs, 5, 86400, 300),
-      routes: cfg.routes.map((r) => ({
+      conn_breaker_count: clampInt(cfg.conn_breaker_count, 1, 20, 3),
+      probe_start_secs: clampInt(cfg.probe_start_secs, 10, 3600, 60),
+      probe_max_attempts: clampInt(cfg.probe_max_attempts, 1, 20, 5),
+      routes: cfg.routes.slice(0, 1).map((r) => ({
         id: r.id || nextRouteId(),
         name: r.name.trim() || "未命名路由",
         protocol: r.protocol,
+        on: r.on,
         token: r.token.trim(),
         candidates: r.candidates
-            .map((c) => ({
-              account: c.account.trim(),
-              model: c.model.trim(),
-              base_url: c.base_url.trim().replace(/\/+$/, ""),
-              ...(Number.isFinite(c.plan_limit_tokens_daily) &&
-              (c.plan_limit_tokens_daily ?? 0) > 0
-                ? { plan_limit_tokens_daily: c.plan_limit_tokens_daily }
-                : {}),
-              ...(Number.isFinite(c.monthly_cost_limit) &&
-              (c.monthly_cost_limit ?? 0) > 0
-                ? { monthly_cost_limit: c.monthly_cost_limit }
-                : {}),
-            }))
+          .map((c) => ({
+            account: c.account.trim(),
+            model: c.model.trim(),
+            base_url: c.base_url.trim().replace(/\/+$/, ""),
+            ...(Number.isFinite(c.plan_limit_tokens_daily) &&
+            (c.plan_limit_tokens_daily ?? 0) > 0
+              ? { plan_limit_tokens_daily: c.plan_limit_tokens_daily }
+              : {}),
+            ...(Number.isFinite(c.monthly_cost_limit) &&
+            (c.monthly_cost_limit ?? 0) > 0
+              ? { monthly_cost_limit: c.monthly_cost_limit }
+              : {}),
+          }))
           .filter((c) => c.account && c.base_url),
       })),
     };
   }
 
-  const ROUTER_STATE_LABELS: Record<string, string> = {
+  const LINE_STATE_LABELS: Record<string, string> = {
     ok: "可用",
+    low_quota: "低余量",
+    full: "已用尽",
     cooldown: "冷却",
-    low_quota: "低配额",
     unusable: "凭据缺失",
   };
 
-  function candidateBadge(state: string): string {
+  function lineBadge(state: string): string {
     switch (state) {
       case "ok":
-        return "route-badge--ok";
-      case "cooldown":
+        return "line-badge--ok";
       case "low_quota":
-        return "route-badge--warn";
+      case "cooldown":
+        return "line-badge--warn";
       default:
-        return "route-badge--bad";
+        return "line-badge--bad";
     }
+  }
+
+  /** 线路剩余条的颜色：与切走线阈值联动（低余量/告警/正常）。 */
+  function remainingColor(pct: number | undefined): string {
+    if (pct === undefined || pct === null) return "var(--tx3)";
+    const t = routerCfg.proactive_threshold_percent;
+    if (pct <= t) return "#ef4444";
+    if (pct <= t * 2) return "#f59e0b";
+    return "#22c55e";
   }
 
   function cooldownUntilText(iso?: string): string {
@@ -611,6 +632,26 @@
     if (Number.isNaN(d.getTime())) return "";
     const secs = Math.max(0, Math.round((d.getTime() - Date.now()) / 1000));
     return secs > 90 ? `${Math.round(secs / 60)} 分钟后` : `${secs} 秒后`;
+  }
+
+  function probeInText(iso?: string): string {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const secs = Math.max(0, Math.round((d.getTime() - Date.now()) / 1000));
+    return secs > 90 ? `${Math.round(secs / 60)} 分钟后` : `${secs} 秒后`;
+  }
+
+  /** 切走线仪表：当前承载流量的线路的最小窗口剩余（无刻度数据时 null）。 */
+  let gaugeRemaining = $derived.by(() => {
+    const st = routerStatus;
+    if (!st?.route || st.route.active_index === null) return null;
+    return st.route.candidates[st.route.active_index]?.remaining_percent ?? null;
+  });
+
+  function onGaugeInput(e: Event) {
+    const v = Number((e.currentTarget as HTMLInputElement).value);
+    if (Number.isFinite(v)) routerCfg.proactive_threshold_percent = v;
   }
 
   // --- Bulk save --------------------------------------------------------------
@@ -1568,202 +1609,322 @@ async function handleMinimize() {
         </div>
 
       {:else if tab === "router"}
+        <!-- ═══════ 服务卡 ═══════ -->
         <div class="pane">
-          <h2 class="pane__title">路由（TokenRouter）</h2>
-
-          <div class="section">
-            <h3 class="section__title">本地路由代理</h3>
-            <p class="hint">
-              在本机开一个 API 代理端口：工具把 baseURL 指到
-              <code>http://127.0.0.1:{routerCfg.port}</code>、API key 填各路由的 token，
-              请求就会在候选之间自动路由——配额耗尽自动换下一个候选重试，长任务不中断。
-              停用时端口保留、请求返回明确错误，主面板头部 ⇄ 按钮可随时快速开关。
-            </p>
-            <div class="behavior-row">
-              <div class="behavior-info">
-                <span class="behavior-label">
-                  启用路由代理
-                  {#if routerStatus?.health.bind_error}
-                    <span class="route-badge route-badge--bad">端口异常</span>
-                  {:else if routerStatus?.health.listening}
-                    <span class="route-badge route-badge--ok">监听中</span>
-                  {/if}
-                </span>
-                <span class="behavior-hint">
-                  {#if routerStatus?.health.bind_error}
-                    {routerStatus.health.bind_error} —— 换一个端口并保存即可恢复。
-                  {:else if routerStatus?.health.listening}
-                    服务健康：127.0.0.1:{routerStatus.health.port}
-                  {:else}
-                    保存后生效；状态点变绿即开始服务。
-                  {/if}
-                </span>
-              </div>
-              <label class="toggle">
+          <section class="rt-card" class:rt-card--off={!routerCfg.enabled}>
+            <div class="rt-card__hd">
+              <h2 class="rt-card__title">TokenRouter</h2>
+              {#if routerStatus?.health.bind_error}
+                <span class="line-badge line-badge--bad"><i class="rt-dot rt-dot--err"></i>端口异常</span>
+              {:else if routerCfg.enabled && routerStatus?.health.listening}
+                <span class="line-badge line-badge--ok"><i class="rt-dot rt-dot--live"></i>服务中</span>
+              {:else if routerCfg.enabled}
+                <span class="line-badge"><i class="rt-dot"></i>已启用</span>
+              {:else}
+                <span class="line-badge"><i class="rt-dot"></i>已停用</span>
+              {/if}
+              <span class="spacer"></span>
+              <label class="rt-switch" title="总开关：停用后工具的请求会收到明确错误">
                 <input type="checkbox" bind:checked={routerCfg.enabled} />
-                <span class="toggle__track"><span class="toggle__thumb"></span></span>
+                <span class="rt-switch__track"><span class="rt-switch__thumb"></span></span>
               </label>
             </div>
-            <div class="route-url-row">
-              <span class="route-url__label">工具接入地址</span>
-              <code class="route-url__value">http://127.0.0.1:{routerCfg.port}</code>
+            <p class="rt-desc">本机 API 代理：工具指向下面的地址，线路配额告急自动切换，长任务不中断</p>
+            <div class="rt-addr-row">
+              <code class="rt-addr">http://127.0.0.1:{routerCfg.port}</code>
               <button type="button" class="btn btn--ghost" onclick={copyRouterUrl}>
-                {routerUrlCopied ? "已复制" : "复制"}
+                {routerUrlCopied ? "已复制 ✓" : "复制地址"}
               </button>
-              <span class="route-url__hint">填到工具的「API 地址 / Base URL」（带不带 /v1 均可）</span>
+              <span class="rt-hint">填到工具的「API 地址」（带不带 /v1 均可）</span>
+              <span class="spacer"></span>
+              <button type="button" class="rt-link" onclick={() => (svcOpen = !svcOpen)}>
+                {svcOpen ? "收起服务设置 ▲" : "服务设置 ▾"}
+              </button>
             </div>
-            <div class="route-grid">
-              <label class="field">
-                <span class="field__label">端口</span>
-                <input class="field__input" type="number" min="1" max="65535" bind:value={routerCfg.port} />
-              </label>
-              <label class="field">
-                <span class="field__label">主动切换阈值（剩余 %）</span>
-                <input class="field__input" type="number" min="1" max="99" bind:value={routerCfg.failover_threshold_percent} />
-              </label>
-              <label class="field">
-                <span class="field__label">回切阈值（剩余 %）</span>
-                <input class="field__input" type="number" min="1" max="99" bind:value={routerCfg.failback_threshold_percent} />
-              </label>
-              <label class="field">
-                <span class="field__label">配额错误冷却（秒）</span>
-                <input class="field__input" type="number" min="5" max="86400" bind:value={routerCfg.error_cooldown_secs} />
-              </label>
-            </div>
-          </div>
 
-          <div class="section">
-            <h3 class="section__title">路由列表</h3>
-            <p class="hint">
-              每条路由是一条「同协议候选的有序链」：链头为主模型，其余为备选。
-              工具端模型名可任填（推荐 <code>auto</code>）——实际模型由各候选决定；
-              候选模型名留空则透传工具端的名字（此时工具端的名字必须是上游真实模型）。
-              候选账户需为 API Key 型凭据；手填日上限仅对不上报配额的来源（如 Claude 订阅）有意义。
-            </p>
-
-            {#each routerCfg.routes as route, ri (route.id)}
-              <div class="route-card">
-                <div class="route-card__head">
-                  <input class="field__input route-name" type="text" bind:value={route.name} placeholder="路由名称" />
-                  <select class="field__input route-protocol" bind:value={route.protocol}>
-                    <option value="openai">OpenAI 兼容</option>
-                    <option value="anthropic">Anthropic</option>
-                  </select>
-                  <button type="button" class="btn btn--ghost" onclick={() => removeRoute(ri)}>删除路由</button>
+            {#if svcOpen}
+              <div class="rt-sect rt-sect--in">
+                <h3 class="rt-sect__title">服务设置 <span class="rt-sect__sub">多数情况不用改</span></h3>
+                <div class="rt-grid">
+                  <label class="rt-field">
+                    <span class="rt-label">主动预警阈值（最小窗口剩余 %，0 = 关闭）</span>
+                    <input class="rt-input" type="number" min="0" max="95" bind:value={routerCfg.proactive_threshold_percent} />
+                  </label>
+                  <label class="rt-field">
+                    <span class="rt-label">配额错误冷却（秒，尊重上游 Retry-After）</span>
+                    <input class="rt-input" type="number" min="5" max="86400" bind:value={routerCfg.error_cooldown_secs} />
+                  </label>
+                  <label class="rt-field">
+                    <span class="rt-label">连接异常熔断（连续 N 次）</span>
+                    <input class="rt-input" type="number" min="1" max="20" bind:value={routerCfg.conn_breaker_count} />
+                  </label>
+                  <label class="rt-field">
+                    <span class="rt-label">切回探视起始间隔（秒，×2 退避）</span>
+                    <input class="rt-input" type="number" min="10" max="3600" bind:value={routerCfg.probe_start_secs} />
+                  </label>
+                  <label class="rt-field">
+                    <span class="rt-label">切回探视最大次数（超过后等窗口重置）</span>
+                    <input class="rt-input" type="number" min="1" max="20" bind:value={routerCfg.probe_max_attempts} />
+                  </label>
+                  <label class="rt-field">
+                    <span class="rt-label">端口</span>
+                    <input class="rt-input" type="number" min="1" max="65535" bind:value={routerCfg.port} />
+                  </label>
                 </div>
-                <div class="route-token">
-                  <span class="route-token__label">API Key</span>
-                  <code class="route-token__value">{route.token || "（保存后自动生成）"}</code>
-                  {#if route.token}
-                    <button type="button" class="btn btn--ghost" onclick={() => copyRouteToken(route.id, route.token)}>
-                      {tokenCopiedFor === route.id ? "已复制" : "复制"}
-                    </button>
+
+                <!-- 切走线仪表：当前承载流量的线路的最小窗口剩余 vs 阈值 -->
+                <div class="rt-gauge">
+                  <div class="rt-gauge__track">
+                    <div class="rt-gauge__zone rt-gauge__zone--low" style="width:{routerCfg.proactive_threshold_percent}%"></div>
+                    <div class="rt-gauge__zone rt-gauge__zone--hi" style="width:{100 - routerCfg.proactive_threshold_percent}%"></div>
+                  </div>
+                  <div class="rt-gauge__line" style="left:{routerCfg.proactive_threshold_percent}%">
+                    <span>切走线 {routerCfg.proactive_threshold_percent}%</span>
+                  </div>
+                  {#if gaugeRemaining !== null}
+                    <div class="rt-gauge__bal" style="left:{gaugeRemaining}%"></div>
+                  {/if}
+                  <input
+                    class="rt-gauge__range"
+                    type="range"
+                    min="0"
+                    max="60"
+                    step="1"
+                    value={routerCfg.proactive_threshold_percent}
+                    oninput={onGaugeInput}
+                    aria-label="主动预警阈值（最小窗口剩余 %）"
+                  />
+                </div>
+                <div class="rt-gauge__scale"><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
+                <div class="rt-gauge__state" class:rt-gauge__state--warn={gaugeRemaining !== null && gaugeRemaining <= routerCfg.proactive_threshold_percent}>
+                  {#if gaugeRemaining === null}
+                    当前承载流量的线路<strong>没有可用的配额刻度</strong>（provider 不报窗口，或未设额度上限）——
+                    主动预警对它不生效，将完全依赖限流错误与硬墙兜底切换。
+                  {:else if gaugeRemaining <= routerCfg.proactive_threshold_percent}
+                    当前承载流量的线路最小窗口还剩 <strong>{Math.round(gaugeRemaining)}%</strong>，
+                    已低于切走线 <strong>{routerCfg.proactive_threshold_percent}%</strong>，新流量已导向备用线路。
+                  {:else}
+                    当前承载流量的线路最小窗口还剩 <strong>{Math.round(gaugeRemaining)}%</strong>，
+                    距离切走线还有 <strong>{Math.round(gaugeRemaining - routerCfg.proactive_threshold_percent)}%</strong> 余量。
                   {/if}
                 </div>
 
-                <div class="route-cands">
-                  {#each route.candidates as cand, ci (ci)}
-                    <div
-                      class="route-cand"
-                      class:route-cand--active={routerStatus?.routes.find((r) => r.id === route.id)?.active_index === ci}
-                    >
-                      <span class="route-cand__order">{ci === 0 ? "主" : `备${ci}`}</span>
-                      <select
-                        class="field__input route-cand__account"
-                        value={cand.account}
-                        onchange={(e) => onCandidateAccountChanged(route, ci, (e.currentTarget as HTMLSelectElement).value)}
-                      >
-                        <option value="">选择账户…</option>
-                        {#each catalog?.accounts ?? [] as acct (acct.instance_id)}
-                          <option value={acct.instance_id}>{acct.label}</option>
-                        {/each}
-                      </select>
-                      <span class="route-cand__modelwrap">
-                        <input
-                          class="field__input route-cand__model"
-                          type="text"
-                          list={modelDomId(cand.account, cand.base_url)}
-                          bind:value={cand.model}
-                          placeholder="模型名（留空 = 透传）"
-                          title="留空 = 透传工具的原始模型名；填写则重写为该候选的模型。点 ▼ 从上游拉取模型列表选择"
-                        />
-                        <button
-                          type="button"
-                          class="route-op"
-                          onclick={() => handleFetchModels(route, cand)}
-                          disabled={modelFetching[modelKey(cand.account, cand.base_url)] || !cand.account || !cand.base_url}
-                          title="从上游拉取模型列表（GET /v1/models）"
-                        >{modelFetching[modelKey(cand.account, cand.base_url)] ? "…" : "▼"}</button>
-                        <datalist id={modelDomId(cand.account, cand.base_url)}>
-                          {#each modelOptions[modelKey(cand.account, cand.base_url)] ?? [] as m (m)}
-                            <option value={m}></option>
-                          {/each}
-                        </datalist>
-                      </span>
-                      <input class="field__input route-cand__base" type="text" bind:value={cand.base_url} placeholder="上游地址（选账户后自动预填）" />
-                      <span class="route-cand__limits">
-                        <input
-                          class="field__input"
-                          type="number"
-                          min="0"
-                          bind:value={cand.plan_limit_tokens_daily}
-                          placeholder="日上限"
-                          title="手填订阅日上限（tokens/自然日），used 取经本路由的实际消耗；留空不启用"
-                        />
-                        <input
-                          class="field__input"
-                          type="number"
-                          min="0"
-                          bind:value={cand.monthly_cost_limit}
-                          placeholder="月上限"
-                          title="按量付费月消耗上限（账户币种金额，如 ¥/$；对比 provider 统计的月已用），达到切换阈值即主动绕开；留空不启用"
-                        />
-                      </span>
-                      <div class="route-cand__ops">
-                        <button type="button" class="route-op" disabled={ci === 0} onclick={() => moveCandidate(ri, ci, -1)} title="上移">↑</button>
-                        <button type="button" class="route-op" disabled={ci === route.candidates.length - 1} onclick={() => moveCandidate(ri, ci, 1)} title="下移">↓</button>
-                        <button type="button" class="route-op route-op--del" onclick={() => removeCandidate(ri, ci)} title="删除候选">×</button>
-                      </div>
-                      {#if routerStatus}
-                        {@const rs = routerStatus.routes.find((r) => r.id === route.id)?.candidates[ci]}
-                        {#if rs}
-                          <div class="route-cand__status">
-                            <span class="route-badge {candidateBadge(rs.state)}">{ROUTER_STATE_LABELS[rs.state] ?? rs.state}</span>
-                            {#if rs.remaining_percent !== undefined && rs.remaining_percent !== null}
-                              <span>剩 {Math.round(rs.remaining_percent)}%</span>
-                            {/if}
-                            {#if rs.state === "cooldown" && rs.cooldown_until}
-                              <span>{cooldownUntilText(rs.cooldown_until)}恢复</span>
-                            {/if}
-                            {#if rs.last_error}
-                              <span class="route-cand__err" title={rs.last_error}>{rs.last_error}</span>
-                            {/if}
-                          </div>
-                        {/if}
-                      {/if}
-                      {#if modelFetchError[modelKey(cand.account, cand.base_url)]}
-                        <div class="route-cand__fetcherr">
-                          {modelFetchError[modelKey(cand.account, cand.base_url)]}
-                        </div>
-                      {/if}
+                <!-- 切回探视时间线 -->
+                {#if routerStatus?.route?.probe}
+                  {@const pr = routerStatus.route.probe}
+                  <div class="rt-probe rt-sect--in">
+                    <div class="rt-probe__t">
+                      切回探视中 · 第 {pr.attempts} / {routerCfg.probe_max_attempts} 次
+                      <span class="line-badge line-badge--ok"><i class="rt-dot rt-dot--live"></i>主线路资格满足，等待真实请求确认</span>
                     </div>
-                  {/each}
-                </div>
-                <div class="account__actions">
-                  <button type="button" class="btn btn--ghost" onclick={() => addCandidate(ri)}>＋ 添加候选</button>
+                    <div class="rt-probe__steps">
+                      {#each Array.from({ length: routerCfg.probe_max_attempts }, (_, i) => i + 1) as n (n)}
+                        <span
+                          class="rt-stp"
+                          class:rt-stp--done={n < pr.attempts}
+                          class:rt-stp--now={n === pr.attempts}
+                        >{n < pr.attempts ? `✓ ${n}` : n}</span>
+                      {/each}
+                    </div>
+                    <p class="rt-hint">下一次探视：{probeInText(pr.next_probe_at)}（失败按 ×2 退避；达上限后等窗口重置）</p>
+                  </div>
+                {/if}
+
+                <div class="rt-howto">
+                  <strong>四层判定：</strong>① 主动预警（可设，0 = 关闭）以最小（最短周期）在报窗口的剩余 % 为准，
+                  月总量剩 5% 但 5h 窗剩 98% 时不会误切；② 硬墙兜底（恒开）任一窗口 / 上限打到 100% → 立即不可用；
+                  ③ 被动观测（恒开）限流 / 配额错误立即换线路并冷却，连接异常原地重试、连续熔断才标记；
+                  ④ 切回 = 资格判定（无窗口打满 + 最小窗口有余量）通过后用真实请求探测，×2 退避，达上限等 reset_at。
                 </div>
               </div>
-            {/each}
+            {/if}
+          </section>
 
-            <div class="account__actions">
-              <button type="button" class="btn btn--ghost" onclick={addRoute}>＋ 添加路由</button>
-            </div>
-            <p class="hint">
-              接入示例（Anthropic 路由，Claude Code）：<code>ANTHROPIC_BASE_URL=http://127.0.0.1:{routerCfg.port}</code>、
-              <code>{"ANTHROPIC_AUTH_TOKEN=<路由 token>"}</code>。切换对工具完全透明；
-              只有尚未向工具回写任何字节的请求才会换候选重试。
-            </p>
-          </div>
+          <!-- ═══════ 路由链卡 ═══════ -->
+          {#if !route}
+            <section class="rt-card rt-empty">
+              <h2 class="rt-card__title">还没有配置路由</h2>
+              <p class="rt-desc">路由是一条「同协议线路的有序链」：链头是主线路，其余是备用。配额告急时自动换下一条，主线路恢复后探视切回。</p>
+              <button type="button" class="btn btn--primary" onclick={ensureRoute}>＋ 新建路由</button>
+            </section>
+          {:else}
+            {@const st = routerStatus?.route}
+            <section class="rt-card" class:rt-card--off={!route.on}>
+              <div class="rt-card__hd">
+                <input class="rt-card__name" type="text" bind:value={route.name} placeholder="路由名称" />
+                <span class="line-badge">{route.protocol === "openai" ? "OpenAI 兼容" : "Anthropic"}</span>
+                <span class="spacer"></span>
+                <label class="rt-switch" title="路由链开关：停用后该链的 token 请求返回明确错误（配置保留）">
+                  <input type="checkbox" bind:checked={route.on} />
+                  <span class="rt-switch__track"><span class="rt-switch__thumb"></span></span>
+                </label>
+                <button type="button" class="rt-link" onclick={() => (chainOpen = !chainOpen)}>
+                  当前走 {route.candidates[st?.active_index ?? 0]?.model || "—"} {chainOpen ? "▼" : "▲"}
+                </button>
+              </div>
+
+              <div class="rt-strip">
+                {#each route.candidates as cand, i (i)}
+                  <button
+                    type="button"
+                    class="rt-chip"
+                    class:rt-chip--on={st?.active_index === i}
+                    onclick={() => (chainOpen = true)}
+                  >
+                    <i class="rt-dot" style="background:{remainingColor(st?.candidates[i]?.remaining_percent)}"></i>
+                    {cand.model || "（未设模型）"}
+                  </button>
+                  {#if i < route.candidates.length - 1}<span class="rt-arrow">→</span>{/if}
+                {/each}
+                <span class="spacer"></span>
+                <code class="rt-key" title={route.token}>{route.token ? `${route.token.slice(0, 7)}…${route.token.slice(-6)}` : "待生成"}</code>
+                <button type="button" class="btn btn--ghost btn--sm" onclick={() => copyRouteToken(route.token)} disabled={!route.token}>
+                  {tokenCopied ? "已复制 ✓" : "复制"}
+                </button>
+              </div>
+
+              <div class="rt-collapse" class:rt-collapse--open={chainOpen}>
+                <div>
+                  <div class="rt-sect">
+                    <div class="rt-grid">
+                      <label class="rt-field">
+                        <span class="rt-label">路由名称</span>
+                        <input class="rt-input" type="text" bind:value={route.name} />
+                      </label>
+                      <label class="rt-field">
+                        <span class="rt-label">协议（线路上游需同协议）</span>
+                        <select class="rt-input" bind:value={route.protocol}>
+                          <option value="openai">OpenAI 兼容</option>
+                          <option value="anthropic">Anthropic</option>
+                        </select>
+                      </label>
+                    </div>
+                    <label class="rt-field" style="margin-top:12px">
+                      <span class="rt-label">API Key（保存时自动生成；工具端以此作 API 密钥）</span>
+                      <span class="rt-url-row">
+                        <input class="rt-input rt-mono" type="text" value={route.token || "（保存后自动生成）"} readonly />
+                        <button type="button" class="btn btn--ghost" onclick={() => copyRouteToken(route.token)} disabled={!route.token}>复制</button>
+                      </span>
+                    </label>
+                  </div>
+
+                  <div class="rt-sect">
+                    <h3 class="rt-sect__title">
+                      链路 <span class="rt-sect__sub">按顺序尝试：① 不可用时自动换 ②，主线路恢复后探视切回</span>
+                    </h3>
+                    <div class="rt-lines">
+                      {#each route.candidates as cand, i (i)}
+                        {@const cs = st?.candidates[i]}
+                        <div
+                          class="rt-line"
+                          class:rt-line--on={st?.active_index === i}
+                          class:rt-line--low={(cs?.remaining_percent ?? 100) <= routerCfg.proactive_threshold_percent}
+                          style="animation-delay:{i * 70}ms"
+                        >
+                          <span class="rt-line__num">{CIRCLES[i] ?? String(i + 1)}</span>
+                          <div class="rt-line__hd">
+                            <span class="rt-line__ttl">{i === 0 ? "主线路" : `备用 ${i}`}</span>
+                            {#if cs}
+                              <span class="line-badge {lineBadge(cs.state)}" title="剩余按最小（最短周期）在报窗口计算">
+                                <i class="rt-dot" style="background:{remainingColor(cs.remaining_percent)}"></i>
+                                {LINE_STATE_LABELS[cs.state] ?? cs.state}{cs.remaining_percent !== undefined ? ` · 剩 ${Math.round(cs.remaining_percent)}%` : ""}
+                              </span>
+                            {/if}
+                            <span class="spacer"></span>
+                            <span class="ops">
+                              <button type="button" class="rt-op" disabled={i === 0} onclick={() => moveCandidate(i, -1)} title="上移">↑</button>
+                              <button type="button" class="rt-op" disabled={i === route.candidates.length - 1} onclick={() => moveCandidate(i, 1)} title="下移">↓</button>
+                              <button type="button" class="rt-op rt-op--del" onclick={() => removeCandidate(i)} title="移除该线路">✕</button>
+                            </span>
+                          </div>
+                          <div class="rt-line__row">
+                            <label class="rt-field">
+                              <span class="rt-label">账户</span>
+                              <select
+                                class="rt-input"
+                                value={cand.account}
+                                onchange={(e) => onCandidateAccountChanged(cand, (e.currentTarget as HTMLSelectElement).value)}
+                              >
+                                <option value="">选择账户…</option>
+                                {#each catalog?.accounts ?? [] as acct (acct.instance_id)}
+                                  <option value={acct.instance_id}>{acct.label}</option>
+                                {/each}
+                              </select>
+                            </label>
+                            <label class="rt-field">
+                              <span class="rt-label">模型（工具端可任填，实际由此决定；留空 = 透传）</span>
+                              <span class="rt-model-wrap">
+                                <input class="rt-input rt-mono" type="text" bind:value={cand.model} placeholder="留空 = 透传" />
+                                <button
+                                  type="button"
+                                  class="rt-op"
+                                  title="从上游拉取模型列表"
+                                  disabled={modelFetching[modelKey(cand.account, cand.base_url)] || !cand.account || !cand.base_url}
+                                  onclick={() => handleFetchModels(cand, route.protocol)}
+                                >{modelFetching[modelKey(cand.account, cand.base_url)] ? "…" : "▼"}</button>
+                                {#if modelPickerFor === modelKey(cand.account, cand.base_url) && (modelOptions[modelKey(cand.account, cand.base_url)]?.length ?? 0) > 0}
+                                  <span class="rt-models">
+                                    <b>从上游拉取 · {modelOptions[modelKey(cand.account, cand.base_url)].length} 个模型</b>
+                                    {#each modelOptions[modelKey(cand.account, cand.base_url)] ?? [] as m (m)}
+                                      <button type="button" class:rt-models--sel={m === cand.model} onclick={() => pickModel(cand, m)}>{m}</button>
+                                    {/each}
+                                  </span>
+                                {/if}
+                              </span>
+                            </label>
+                          </div>
+                          <label class="rt-field">
+                            <span class="rt-label">上游地址（选账户自动带出，可改为中转站）</span>
+                            <span class="rt-url-row">
+                              <input class="rt-input rt-mono" type="text" bind:value={cand.base_url} placeholder="选择账户后自动预填" />
+                              {#if cand.base_url === (ROUTER_BASE_PRESETS[accountKindOf(cand.account)] ?? "")}
+                                <span class="rt-tag">自动带出</span>
+                              {/if}
+                            </span>
+                          </label>
+                          {#if modelFetchError[modelKey(cand.account, cand.base_url)]}
+                            <p class="rt-line__err">{modelFetchError[modelKey(cand.account, cand.base_url)]}</p>
+                          {/if}
+                          {#if cs?.last_error}
+                            <p class="rt-line__err" title={cs.last_error}>{cs.last_error}</p>
+                          {/if}
+                          {#if cs?.state === "cooldown" && cs.cooldown_until}
+                            <p class="rt-hint">冷却至 {cooldownUntilText(cs.cooldown_until)}恢复（{cs.cooldown_reason === "quota" ? "配额/限流" : cs.cooldown_reason === "auth" ? "凭据" : "连接异常熔断"}）</p>
+                          {/if}
+                          <details class="rt-cap">
+                            <summary>
+                              额度上限（可选，达到即提前切换）·
+                              {#if cand.plan_limit_tokens_daily || cand.monthly_cost_limit}
+                                日 <b>{cand.plan_limit_tokens_daily || "未设"}</b>{cand.plan_limit_tokens_daily ? " tokens" : ""} ·
+                                月 <b>{cand.monthly_cost_limit || "未设"}</b>{cand.monthly_cost_limit ? " 金额" : ""}
+                              {:else}
+                                未设置
+                              {/if}
+                            </summary>
+                            <div class="rt-cap__body">
+                              <label class="rt-field">
+                                <span class="rt-label">日上限（tokens / 自然日，路由自记账）</span>
+                                <input class="rt-input" type="number" min="0" bind:value={cand.plan_limit_tokens_daily} placeholder="未设" />
+                              </label>
+                              <label class="rt-field">
+                                <span class="rt-label" title="仅对有金额统计的账户生效（余额差分类：DeepSeek / Kimi 等）；订阅类账户无金额数据，设置不生效">月上限（账户币种金额，按量付费用）</span>
+                                <input class="rt-input" type="number" min="0" bind:value={cand.monthly_cost_limit} placeholder="如 20 = ¥20/月" />
+                              </label>
+                            </div>
+                          </details>
+                        </div>
+                      {/each}
+                    </div>
+                    <div class="rt-foot">
+                      <button type="button" class="btn btn--ghost" onclick={addCandidate}>＋ 添加备用线路</button>
+                      <span class="spacer"></span>
+                      <span class="rt-hint">工具端模型名可任填（推荐 auto）——实际模型由线路决定；线路模型留空 = 透传工具端原名</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          {/if}
         </div>
 
       {:else}
@@ -2859,180 +3020,340 @@ async function handleMinimize() {
     min-width: 0;
   }
 
-  /* ---- TokenRouter 路由 pane ---- */
-  .route-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 10px;
-    margin-top: 12px;
-  }
-  .route-card {
-    border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
-    border-radius: var(--tum-radius-md, 10px);
-    padding: 12px;
-    margin-bottom: 12px;
-    background: rgba(255, 255, 255, 0.02);
-  }
-  .route-card__head {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
-  .route-name {
-    flex: 1;
-    min-width: 0;
-  }
-  .route-protocol {
-    width: auto;
-  }
-  .route-token {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    margin: 8px 0;
-    flex-wrap: wrap;
-  }
-  .route-token__label {
-    font-size: 12px;
-    color: var(--tum-text-muted, #8b949e);
-  }
-  .route-token__value {
-    font-size: 12px;
-    padding: 3px 8px;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.05);
-    word-break: break-all;
-  }
-  .route-cands {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .route-cand {
-    display: grid;
-    /* minmax(0, …)：输入框有固有最小宽度，auto 最小尺寸会把整行撑爆面板
-     * （模型名/上游地址/日上限全部溢出错位）——所有列必须可收缩。 */
-    grid-template-columns:
-      24px minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1.3fr) minmax(0, 0.65fr)
-      auto;
-    gap: 6px;
-    align-items: center;
-    padding: 8px;
-    border-radius: var(--tum-radius-sm, 8px);
+  /* ---- TokenRouter 路由 pane（v2：单路由 + 四层判定）---- */
+  .spacer { flex: 1; }
+
+  .rt-card {
     background: rgba(255, 255, 255, 0.03);
-  }
-  .route-cand > * {
-    min-width: 0;
-  }
-  .route-cand .field__input {
-    width: 100%;
-  }
-  .route-cand--active {
-    outline: 1px solid rgba(76, 194, 255, 0.45);
-  }
-  .route-cand__order {
-    font-size: 11px;
-    color: var(--tum-text-muted, #8b949e);
-    text-align: center;
-  }
-  .route-cand__ops {
-    display: flex;
-    gap: 4px;
-  }
-  .route-cand__modelwrap {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-    min-width: 0;
-  }
-  .route-cand__limits {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-  }
-  .route-url-row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    margin-top: 10px;
-    flex-wrap: wrap;
-  }
-  .route-url__label,
-  .route-url__hint {
-    font-size: 12px;
-    color: var(--tum-text-muted, #8b949e);
-  }
-  .route-url__value {
-    font-size: 12px;
-    padding: 3px 8px;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.05);
-  }
-  .route-cand__modelwrap .route-cand__model {
-    flex: 1;
-    min-width: 0;
-  }
-  .route-cand__fetcherr {
-    grid-column: 2 / -1;
-    font-size: 11px;
-    color: #f87171;
+    border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
+    border-radius: 14px;
+    margin-bottom: 14px;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    animation: rtCardIn 0.32s cubic-bezier(0.21, 0.8, 0.35, 1) both;
   }
-  .route-op {
-    width: 24px;
-    height: 24px;
-    display: grid;
-    place-items: center;
-    border: none;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.06);
+  @keyframes rtCardIn {
+    from { opacity: 0; transform: translateY(10px) scale(0.99); }
+    to { opacity: 1; transform: none; }
+  }
+  .rt-card--off { opacity: 0.5; }
+  .rt-card__hd {
+    display: flex; align-items: center; gap: 11px;
+    padding: 15px 17px;
+  }
+  .rt-card__title { margin: 0; font-size: 15.5px; font-weight: 650; }
+  .rt-card__name {
+    background: transparent; border: 1px solid transparent; color: var(--tum-text-primary, #e6edf3);
+    font-size: 15.5px; font-weight: 650; padding: 4px 8px; border-radius: 8px;
+    min-width: 0; flex: none; max-width: 260px; transition: 0.15s;
+  }
+  .rt-card__name:hover { border-color: var(--tum-border, rgba(255, 255, 255, 0.1)); }
+  .rt-card__name:focus { border-color: var(--tum-accent, #4cc2ff); background: rgba(0, 0, 0, 0.2); }
+  .rt-desc { padding: 0 17px 12px; margin: 0; font-size: 12.5px; color: var(--tum-text-muted, #8b949e); line-height: 1.6; }
+  .rt-hint { font-size: 12px; color: var(--tum-text-muted, #8b949e); }
+  .rt-empty { padding: 18px; }
+  .rt-empty .rt-card__title { margin-bottom: 8px; }
+  .rt-empty .rt-desc { padding: 0 0 14px; }
+
+  .rt-addr-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 0 17px 14px;
+  }
+  .rt-addr {
+    font-family: var(--tum-font-mono, monospace); font-size: 13px; font-weight: 600;
+    background: rgba(0, 0, 0, 0.28); border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
+    border-radius: 8px; padding: 7px 11px; color: var(--tum-accent, #4cc2ff);
+  }
+  .rt-link {
+    background: none; border: none; color: var(--tum-accent, #4cc2ff);
+    font-size: 12.5px; font-weight: 600; padding: 4px; cursor: pointer; white-space: nowrap;
+  }
+  .rt-link:hover { text-decoration: underline; }
+
+  /* 开关（弹性滑块） */
+  .rt-switch { position: relative; width: 42px; height: 23px; flex: none; cursor: pointer; }
+  .rt-switch input { display: none; }
+  .rt-switch__track {
+    position: absolute; inset: 0; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12); transition: background 0.18s;
+  }
+  .rt-switch__thumb {
+    position: absolute; top: 2px; left: 2px; width: 17px; height: 17px;
+    border-radius: 50%; background: #8b949e;
+    transition: left 0.18s cubic-bezier(0.34, 1.4, 0.5, 1), background 0.18s;
+  }
+  .rt-switch input:checked + .rt-switch__track { background: var(--tum-accent, #4cc2ff); }
+  .rt-switch input:checked + .rt-switch__track .rt-switch__thumb { left: 21px; background: #fff; }
+
+  /* 分节（折叠区） */
+  .rt-sect {
+    border-top: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
+    padding: 15px 17px;
+    background: rgba(255, 255, 255, 0.015);
+    animation: rtCardIn 0.28s ease both;
+  }
+  .rt-sect__title {
+    margin: 0 0 3px; font-size: 13px; font-weight: 650;
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  .rt-sect__sub { font-size: 11.5px; color: var(--tum-text-muted, #8b949e); font-weight: 400; }
+
+  .rt-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px 14px; margin-top: 12px;
+  }
+  .rt-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .rt-label { font-size: 11.5px; font-weight: 600; color: var(--tum-text-muted, #8b949e); }
+  .rt-input {
+    width: 100%; background: rgba(0, 0, 0, 0.26);
+    border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
+    color: var(--tum-text-primary, #e6edf3); border-radius: 9px;
+    padding: 8px 10px; font-size: 13px; outline: none; transition: 0.14s;
+  }
+  .rt-input:focus {
+    border-color: var(--tum-accent, #4cc2ff);
+    box-shadow: 0 0 0 3px rgba(76, 194, 255, 0.14);
+  }
+  select.rt-input { cursor: pointer; }
+  .rt-mono { font-family: var(--tum-font-mono, monospace); font-size: 12.5px; }
+  .rt-url-row { display: flex; align-items: center; gap: 8px; }
+  .rt-tag {
+    flex: none; font-size: 10.5px; font-weight: 650; color: var(--tum-text-muted, #8b949e);
+    background: rgba(0, 0, 0, 0.25); border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
+    padding: 2px 7px; border-radius: 6px; white-space: nowrap;
+  }
+
+  /* 切走线仪表 */
+  .rt-gauge { position: relative; height: 44px; margin: 18px 2px 0; }
+  .rt-gauge__track {
+    position: absolute; top: 14px; left: 0; right: 0; height: 10px; border-radius: 999px;
+    overflow: hidden; display: flex; border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
+  }
+  .rt-gauge__zone { height: 100%; transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+  .rt-gauge__zone--low { background: #ef4444; opacity: 0.55; }
+  .rt-gauge__zone--hi { background: #22c55e; opacity: 0.42; }
+  .rt-gauge__line {
+    position: absolute; top: 8px; width: 2px; height: 22px; background: #ef4444;
+    transform: translateX(-1px); transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1); pointer-events: none;
+  }
+  .rt-gauge__line span {
+    position: absolute; top: -19px; left: 50%; transform: translateX(-50%);
+    white-space: nowrap; font-size: 10.5px; font-weight: 700; color: #ef4444;
+    background: var(--tum-surface, #161b22); padding: 1px 6px; border-radius: 5px;
+    border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
+  }
+  .rt-gauge__bal {
+    position: absolute; top: 10px; width: 3px; height: 18px; background: var(--tum-accent, #4cc2ff);
+    transform: translateX(-1.5px); box-shadow: 0 0 0 3px rgba(76, 194, 255, 0.22);
+    transition: left 0.6s cubic-bezier(0.34, 1.2, 0.4, 1); pointer-events: none;
+  }
+  .rt-gauge__range {
+    position: absolute; top: 5px; left: 0; right: 0; width: 100%; height: 28px;
+    margin: 0; opacity: 0; cursor: grab;
+  }
+  .rt-gauge__range:active { cursor: grabbing; }
+  .rt-gauge__scale {
+    display: flex; justify-content: space-between; font-size: 10.5px;
+    color: var(--tum-text-muted, #64748b); margin-top: 3px;
+  }
+  .rt-gauge__state {
+    margin-top: 12px; padding: 11px 13px; border-radius: 9px;
+    background: rgba(0, 0, 0, 0.22); border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
+    font-size: 12.5px; color: var(--tum-text-muted, #8b949e); line-height: 1.6; transition: 0.3s;
+  }
+  .rt-gauge__state strong { color: var(--tum-text-primary, #e6edf3); font-weight: 650; }
+  .rt-gauge__state--warn {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.32);
     color: var(--tum-text-primary, #e6edf3);
-    cursor: pointer;
-    font-size: 12px;
   }
-  .route-op:disabled {
-    opacity: 0.35;
-    cursor: default;
+
+  /* 切回探视时间线 */
+  .rt-probe {
+    margin-top: 12px; padding: 12px 13px; border-radius: 9px;
+    border: 1px solid var(--tum-accent, #4cc2ff);
+    background: rgba(76, 194, 255, 0.08);
+    animation: rtCardIn 0.3s ease both;
   }
-  .route-op--del:hover {
-    background: rgba(255, 82, 82, 0.25);
+  .rt-probe__t {
+    font-size: 12.5px; font-weight: 640; color: var(--tum-text-primary, #e6edf3);
+    margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   }
-  .route-cand__status {
-    grid-column: 2 / -1;
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    font-size: 11px;
-    color: var(--tum-text-muted, #8b949e);
-    min-width: 0;
+  .rt-probe__steps { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  .rt-stp {
+    font-size: 10.5px; font-weight: 650; padding: 3px 8px; border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
+    color: var(--tum-text-muted, #64748b);
   }
-  .route-cand__err {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 100%;
+  .rt-stp--done { color: #34d399; border-color: rgba(52, 211, 153, 0.4); }
+  .rt-stp--now {
+    color: var(--tum-accent, #4cc2ff); border-color: var(--tum-accent, #4cc2ff);
+    animation: rtStepPop 0.3s cubic-bezier(0.34, 1.5, 0.5, 1) both;
   }
-  .route-badge {
-    display: inline-block;
-    padding: 1px 8px;
-    border-radius: 999px;
-    font-size: 11px;
-    line-height: 1.6;
+  @keyframes rtStepPop { from { transform: scale(0.7); } to { transform: scale(1); } }
+
+  .rt-howto {
+    margin-top: 12px; padding: 10px 12px; border-radius: 9px;
+    border: 1px dashed var(--tum-border, rgba(255, 255, 255, 0.14));
+    font-size: 12px; color: var(--tum-text-muted, #8b949e); line-height: 1.7;
   }
-  .route-badge--ok {
-    background: rgba(16, 185, 129, 0.18);
-    color: #34d399;
+  .rt-howto strong { color: var(--tum-text-primary, #e6edf3); }
+
+  /* 链路摘要条 */
+  .rt-strip {
+    display: flex; align-items: center; gap: 8px; padding: 0 17px 14px; flex-wrap: wrap;
   }
-  .route-badge--warn {
-    background: rgba(245, 158, 11, 0.18);
-    color: #fbbf24;
+  .rt-chip {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+    padding: 4px 10px; border-radius: 999px; cursor: pointer;
+    background: rgba(0, 0, 0, 0.25); border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
+    color: var(--tum-text-muted, #8b949e); transition: 0.15s;
+    animation: rtChipIn 0.3s cubic-bezier(0.34, 1.35, 0.55, 1) both;
+    font-family: var(--tum-font-mono, monospace);
   }
-  .route-badge--bad {
-    background: rgba(239, 68, 68, 0.2);
-    color: #f87171;
+  @keyframes rtChipIn { from { opacity: 0; transform: translateX(-8px) scale(0.92); } to { opacity: 1; transform: none; } }
+  .rt-chip:hover { border-color: var(--tum-accent, #4cc2ff); }
+  .rt-chip--on {
+    border-color: var(--tum-accent, #4cc2ff); color: var(--tum-accent, #4cc2ff);
+    background: rgba(76, 194, 255, 0.1);
+    box-shadow: 0 0 12px rgba(76, 194, 255, 0.2);
+  }
+  .rt-arrow { color: var(--tum-text-muted, #64748b); font-size: 12px; }
+  .rt-key {
+    font-family: var(--tum-font-mono, monospace); font-size: 11.5px;
+    padding: 4px 9px; border-radius: 8px; color: var(--tum-text-muted, #8b949e);
+    background: rgba(0, 0, 0, 0.25); border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
+  }
+  .btn--sm { padding: 3px 9px; font-size: 11.5px; white-space: nowrap; flex: none; }
+
+  /* 折叠（grid-template-rows 高度动画） */
+  .rt-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.32s cubic-bezier(0.4, 0, 0.2, 1); }
+  .rt-collapse--open { grid-template-rows: 1fr; }
+  .rt-collapse > div { overflow: hidden; min-height: 0; }
+
+  /* 线路卡（step 圆点 + 入场动画 + 激活呼吸光晕） */
+  .rt-lines { display: flex; flex-direction: column; }
+  .rt-line {
+    position: relative; margin: 0 17px 12px; padding: 13px 14px 14px 52px;
+    border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
+    border-radius: 10px; background: rgba(0, 0, 0, 0.18);
+    transition: border-color 0.25s, box-shadow 0.25s;
+    animation: rtLineIn 0.34s cubic-bezier(0.21, 0.8, 0.35, 1) both;
+  }
+  @keyframes rtLineIn { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
+  .rt-line::before {
+    content: ""; position: absolute; left: 24px; top: -13px; bottom: 50%;
+    width: 2px; background: var(--tum-text-muted, #64748b); opacity: 0.7;
+  }
+  .rt-line:first-child::before { display: none; }
+  .rt-line--on {
+    border-color: var(--tum-accent, #4cc2ff);
+    animation: rtLineIn 0.34s cubic-bezier(0.21, 0.8, 0.35, 1) both, rtGlow 2.6s ease-in-out infinite;
+  }
+  @keyframes rtGlow {
+    0%, 100% { box-shadow: 0 0 0 3px rgba(76, 194, 255, 0.13); }
+    50% { box-shadow: 0 0 0 3px rgba(76, 194, 255, 0.26); }
+  }
+  .rt-line--low { border-color: rgba(245, 158, 11, 0.35); }
+  .rt-line__num {
+    position: absolute; left: 9px; top: 13px; width: 32px; height: 32px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 13px; font-weight: 700; z-index: 2;
+    background: rgba(0, 0, 0, 0.3);
+    border: 2px solid var(--tum-border, rgba(255, 255, 255, 0.16));
+    color: var(--tum-text-muted, #8b949e); transition: 0.25s;
+  }
+  .rt-line--on .rt-line__num {
+    background: var(--tum-accent, #4cc2ff); border-color: var(--tum-accent, #4cc2ff); color: #fff;
+  }
+  .rt-line__hd { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; flex-wrap: wrap; }
+  .rt-line__ttl { font-size: 13.5px; font-weight: 650; }
+  .rt-line--on .rt-line__ttl { color: var(--tum-accent, #4cc2ff); }
+  .rt-line__row {
+    display: grid; grid-template-columns: 1fr 1.25fr; gap: 12px; margin-bottom: 12px;
+  }
+  @media (max-width: 720px) { .rt-line__row { grid-template-columns: 1fr; } }
+  .rt-line__err { margin: 8px 0 0; font-size: 11.5px; color: #f87171; }
+  .ops { display: flex; gap: 4px; }
+  .rt-op {
+    width: 27px; height: 27px; display: grid; place-items: center;
+    border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
+    background: rgba(255, 255, 255, 0.04); border-radius: 7px;
+    color: var(--tum-text-muted, #8b949e); font-size: 11px; cursor: pointer; transition: 0.14s;
+    flex: none;
+  }
+  .rt-op:hover:not(:disabled) { color: var(--tum-text-primary, #e6edf3); transform: translateY(-1px); }
+  .rt-op--del:hover:not(:disabled) { color: #f87171; border-color: #f87171; }
+  .rt-op:disabled { opacity: 0.3; cursor: default; }
+
+  /* 模型下拉 */
+  .rt-model-wrap { position: relative; display: flex; gap: 6px; }
+  .rt-models {
+    position: absolute; top: calc(100% + 4px); right: 0; z-index: 30;
+    width: 280px; max-height: 230px; overflow: auto;
+    background: var(--tum-surface, #161b22);
+    border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.16));
+    border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); padding: 5px;
+    animation: rtCardIn 0.16s cubic-bezier(0.21, 0.8, 0.35, 1) both;
+  }
+  .rt-models b {
+    display: block; font-size: 11px; color: var(--tum-text-muted, #8b949e);
+    padding: 4px 8px 6px; border-bottom: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
+    margin-bottom: 4px; font-weight: 500;
+  }
+  .rt-models button {
+    display: block; width: 100%; text-align: left; background: none; border: 0;
+    padding: 6px 9px; border-radius: 6px; cursor: pointer; font-size: 12.5px;
+    font-family: var(--tum-font-mono, monospace); color: var(--tum-text-muted, #8b949e);
+  }
+  .rt-models button:hover { background: rgba(76, 194, 255, 0.12); color: var(--tum-accent, #4cc2ff); }
+  .rt-models--sel { color: var(--tum-accent, #4cc2ff) !important; }
+
+  /* 额度上限折叠 */
+  .rt-cap { border-top: 1px dashed var(--tum-border, rgba(255, 255, 255, 0.09)); margin-top: 10px; padding-top: 10px; }
+  .rt-cap summary {
+    cursor: pointer; font-size: 12px; color: var(--tum-text-muted, #8b949e);
+    list-style: none; display: flex; align-items: center; gap: 7px;
+  }
+  .rt-cap summary::-webkit-details-marker { display: none; }
+  .rt-cap summary::before { content: "▸"; color: var(--tum-text-muted, #64748b); transition: transform 0.16s; }
+  .rt-cap[open] summary::before { transform: rotate(90deg); }
+  .rt-cap summary:hover { color: var(--tum-text-primary, #e6edf3); }
+  .rt-cap summary b { color: var(--tum-text-primary, #e6edf3); font-weight: 600; }
+  .rt-cap__body { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 11px; }
+  @media (max-width: 720px) { .rt-cap__body { grid-template-columns: 1fr; } }
+
+  .rt-foot {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-top: 4px; padding-top: 12px;
+  }
+
+  /* 状态徽标 / 圆点 */
+  .line-badge {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600;
+    padding: 2px 9px; border-radius: 999px; white-space: nowrap;
+    background: rgba(255, 255, 255, 0.05); color: var(--tum-text-muted, #8b949e);
+    border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
+    transition: background 0.3s, color 0.3s;
+  }
+  .line-badge--ok { background: rgba(34, 197, 94, 0.14); color: #34d399; border-color: transparent; }
+  .line-badge--warn { background: rgba(245, 158, 11, 0.14); color: #fbbf24; border-color: transparent; }
+  .line-badge--bad { background: rgba(239, 68, 68, 0.16); color: #f87171; border-color: transparent; }
+  .rt-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex: none;
+    background: currentColor; color: var(--tum-text-muted, #8b949e);
+  }
+  .rt-dot--live { animation: rtPulse 1.7s ease-in-out infinite; }
+  .rt-dot--err { background: #f87171; }
+  @keyframes rtPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rt-card, .rt-line, .rt-chip, .rt-models, .rt-probe, .rt-sect {
+      animation: none;
+    }
+    .rt-line--on { animation: none; box-shadow: 0 0 0 3px rgba(76, 194, 255, 0.16); }
+    .rt-collapse { transition: none; }
   }
 
 </style>

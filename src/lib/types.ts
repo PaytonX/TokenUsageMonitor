@@ -338,36 +338,47 @@ export interface RouterRoute {
   id: string;
   name: string;
   protocol: RouterProtocol;
+  /** 路由链开关：停用后该链的 token 请求返回明确错误（配置保留）。 */
+  on: boolean;
   token: string;
   candidates: RouterCandidate[];
 }
 
-/** 镜像 Rust `router::config::RouterSettings`。 */
+/** 镜像 Rust `router::config::RouterSettings`（v2：单路由，routes 只看第一条）。 */
 export interface RouterSettings {
   enabled: boolean;
   port: number;
-  /** 主动切换阈值：剩余% 低于它的新请求导向下一候选。 */
-  failover_threshold_percent: number;
-  /** 配额冷却到期后恢复到该剩余% 以上才回用（防抖）。 */
-  failback_threshold_percent: number;
-  /** 配额/凭据错误的默认冷却秒数。 */
+  /** 主动预警阈值：最小（最短周期）在报窗口的剩余 % 低于它时换下一条线路。
+   *  0 = 关闭主动预警（纯被动观测 + 硬墙兜底）。 */
+  proactive_threshold_percent: number;
+  /** 限流/配额类错误（429/402）的冷却秒数；上游 Retry-After 优先。 */
   error_cooldown_secs: number;
+  /** 连接异常/5xx 的熔断阈值（连续 N 次失败才标记线路）。 */
+  conn_breaker_count: number;
+  /** 切回探视起始间隔（秒），失败后 ×2 指数退避。 */
+  probe_start_secs: number;
+  /** 切回探视最大次数；超过后等待窗口重置（reset_at）。 */
+  probe_max_attempts: number;
   routes: RouterRoute[];
 }
 
-/** `get_router_status` 负载，镜像 Rust `router::RouterStatusPayload`。 */
+/** `get_router_status` 负载（v2 单路由），镜像 Rust `router::RouterStatusPayload`。 */
 export interface RouterStatus {
   enabled: boolean;
   health: { listening: boolean; port: number; bind_error?: string };
-  routes: RouterRouteStatus[];
+  /** 未配置路由时为 null。 */
+  route: RouterRouteStatus | null;
 }
 
 export interface RouterRouteStatus {
   id: string;
   name: string;
+  on: boolean;
   protocol: RouterProtocol;
-  /** 当前激活候选（最近一次实际承接请求者）；尚未承接过 = null。 */
+  /** 当前激活线路（最近一次实际承接请求者）；尚未承接过 = null。 */
   active_index: number | null;
+  /** 切回探视状态（主线路资格满足但实测失败、退避等待中）。 */
+  probe?: { attempts: number; next_probe_at: string };
   candidates: RouterCandidateStatus[];
 }
 
@@ -375,9 +386,11 @@ export interface RouterCandidateStatus {
   account: string;
   model: string;
   base_url: string;
-  state: "ok" | "cooldown" | "low_quota" | "unusable";
+  /** ok | low_quota | full | cooldown | unusable */
+  state: "ok" | "low_quota" | "full" | "cooldown" | "unusable";
   cooldown_until?: string;
   cooldown_reason?: "quota" | "auth" | "error";
+  /** 最小（最短周期）窗口剩余 %；无刻度数据 = undefined。 */
   remaining_percent?: number;
   last_error?: string;
 }
@@ -391,14 +404,16 @@ export interface RouterSwitchEvent {
   reason: "initial" | "failover" | "failback";
 }
 
-/** 前端新建路由的默认配置（Settings 路由 pane 的「添加路由」入口）。 */
+/** 前端新建路由的默认配置（设置页路由 pane 的入口）。 */
 export function defaultRouterSettings(): RouterSettings {
   return {
     enabled: false,
     port: 43211,
-    failover_threshold_percent: 20,
-    failback_threshold_percent: 50,
+    proactive_threshold_percent: 20,
     error_cooldown_secs: 300,
+    conn_breaker_count: 3,
+    probe_start_secs: 60,
+    probe_max_attempts: 5,
     routes: [],
   };
 }
