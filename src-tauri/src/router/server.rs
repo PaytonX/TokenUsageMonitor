@@ -29,24 +29,61 @@ const CONN_RETRY_BACKOFF_MS: u64 = 300;
 /// 拿不到 reset_at 时的低频探视间隔（秒）。
 const PROBE_FALLBACK_SECS: u64 = 900;
 
+/// 端点描述：同一协议面下不同端点的上游路径与用量形状。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Endpoint {
+    AnthropicMessages,
+    AnthropicCountTokens,
+    OpenAiChat,
+    /// OpenAI Responses API（Codex 等）——鉴权/模型字段与 Chat 同族。
+    OpenAiResponses,
+}
+
+impl Endpoint {
+    fn protocol(self) -> RouterProtocol {
+        match self {
+            Endpoint::AnthropicMessages | Endpoint::AnthropicCountTokens => RouterProtocol::Anthropic,
+            Endpoint::OpenAiChat | Endpoint::OpenAiResponses => RouterProtocol::OpenAi,
+        }
+    }
+    /// 转发到上游的规范路径（别名 /chat/completions 也归一到带 /v1 的形式）。
+    fn upstream_path(self) -> &'static str {
+        match self {
+            Endpoint::AnthropicMessages => "/v1/messages",
+            Endpoint::AnthropicCountTokens => "/v1/messages/count_tokens",
+            Endpoint::OpenAiChat => "/v1/chat/completions",
+            Endpoint::OpenAiResponses => "/v1/responses",
+        }
+    }
+    /// 用量形状；None = 不记账（count_tokens / models）。
+    fn usage_shape(self) -> Option<forward::UsageShape> {
+        match self {
+            Endpoint::AnthropicMessages => Some(forward::UsageShape::Anthropic),
+            Endpoint::AnthropicCountTokens => None,
+            Endpoint::OpenAiChat => Some(forward::UsageShape::OpenAiChat),
+            Endpoint::OpenAiResponses => Some(forward::UsageShape::OpenAiResponses),
+        }
+    }
+}
+
 pub fn build_router(core: Arc<RouterCore>) -> axum::Router {
     axum::Router::new()
         .route(
             "/v1/messages",
             axum::routing::post(|state, headers, body| async move {
-                proxy_post(state, headers, body, RouterProtocol::Anthropic, true).await
+                proxy_post(state, headers, body, Endpoint::AnthropicMessages).await
             }),
         )
         .route(
             "/v1/messages/count_tokens",
             axum::routing::post(|state, headers, body| async move {
-                proxy_post(state, headers, body, RouterProtocol::Anthropic, false).await
+                proxy_post(state, headers, body, Endpoint::AnthropicCountTokens).await
             }),
         )
         .route(
             "/v1/chat/completions",
             axum::routing::post(|state, headers, body| async move {
-                proxy_post(state, headers, body, RouterProtocol::OpenAi, true).await
+                proxy_post(state, headers, body, Endpoint::OpenAiChat).await
             }),
         )
         // 兼容不带 /v1 前缀的客户端（Cherry Studio 等在 API 地址后直接拼接
@@ -55,7 +92,20 @@ pub fn build_router(core: Arc<RouterCore>) -> axum::Router {
         .route(
             "/chat/completions",
             axum::routing::post(|state, headers, body| async move {
-                proxy_post(state, headers, body, RouterProtocol::OpenAi, true).await
+                proxy_post(state, headers, body, Endpoint::OpenAiChat).await
+            }),
+        )
+        // OpenAI Responses API（Codex 等）——OpenAI 兼容路由自动同时服务。
+        .route(
+            "/v1/responses",
+            axum::routing::post(|state, headers, body| async move {
+                proxy_post(state, headers, body, Endpoint::OpenAiResponses).await
+            }),
+        )
+        .route(
+            "/responses",
+            axum::routing::post(|state, headers, body| async move {
+                proxy_post(state, headers, body, Endpoint::OpenAiResponses).await
             }),
         )
         .route("/v1/models", axum::routing::get(proxy_models))
@@ -71,7 +121,7 @@ pub fn build_router(core: Arc<RouterCore>) -> axum::Router {
 async fn not_found(uri: axum::http::Uri) -> Response {
     tracing::warn!(target: "tum.router", "unmatched path: {}", uri.path());
     let message = format!(
-        "未知路径 {}。可用端点：/v1/chat/completions（或 /chat/completions）、/v1/messages、/v1/messages/count_tokens、/v1/models（或 /models）、/health。 \
+        "未知路径 {}。可用端点：/v1/chat/completions（或 /chat/completions）、/v1/responses（或 /responses）、/v1/messages、/v1/messages/count_tokens、/v1/models（或 /models）、/health。 \
          若工具的 API 地址不含 /v1，直接拼接即可；含 /v1 则同样成立。",
         uri.path()
     );
@@ -88,19 +138,19 @@ async fn proxy_post(
     State(core): State<Arc<RouterCore>>,
     headers: HeaderMap,
     body: Bytes,
-    protocol: RouterProtocol,
-    accounting: bool,
+    endpoint: Endpoint,
 ) -> Response {
-    route_request(core, headers, body, protocol, accounting).await
+    route_request(core, headers, body, endpoint).await
 }
 
 async fn route_request(
     core: Arc<RouterCore>,
     headers: HeaderMap,
     body: Bytes,
-    protocol: RouterProtocol,
-    accounting: bool,
+    endpoint: Endpoint,
 ) -> Response {
+    let protocol = endpoint.protocol();
+    let accounting = endpoint.usage_shape().is_some();
     // ---- 全局开关 + 鉴权 -----------------------------------------------
     let settings = core.settings.get().await;
     if !settings.router.enabled {
@@ -132,7 +182,7 @@ async fn route_request(
             protocol,
             StatusCode::BAD_REQUEST,
             invalid_request_kind(protocol),
-            "路由协议与所请求的端点不符（Anthropic 路由走 /v1/messages，OpenAI 兼容路由走 /v1/chat/completions）。",
+            "路由协议与所请求的端点不符（Anthropic 路由走 /v1/messages，OpenAI 兼容路由走 /v1/chat/completions 或 /v1/responses）。",
         );
     }
     if route.candidates.is_empty() {
@@ -220,7 +270,7 @@ async fn route_request(
                 }
             }
         };
-        let url = forward::upstream_url(&cand.base_url, protocol.proxy_path());
+        let url = forward::upstream_url(&cand.base_url, endpoint.upstream_path());
         let upstream_headers = forward::build_upstream_headers(protocol, &api_key, &headers);
         let send = core
             .http
@@ -270,7 +320,7 @@ async fn route_request(
                         clear_probe(&core, route).await;
                     }
                 }
-                return forward_response(&core, resp, protocol, cand, accounting).await;
+                return forward_response(&core, resp, protocol, cand, endpoint, accounting).await;
             }
         }
     }
@@ -331,7 +381,7 @@ async fn proxy_models(State(core): State<Arc<RouterCore>>, headers: HeaderMap) -
             .await;
         match send {
             Ok(resp) => {
-                return forward_response(&core, resp, RouterProtocol::OpenAi, cand, false).await;
+                return forward_response(&core, resp, RouterProtocol::OpenAi, cand, Endpoint::OpenAiChat, false).await;
             }
             Err(_) => continue,
         }
@@ -519,8 +569,10 @@ async fn forward_response(
     upstream: reqwest::Response,
     protocol: RouterProtocol,
     cand: &CandidateConfig,
+    endpoint: Endpoint,
     accounting: bool,
 ) -> Response {
+    let shape = endpoint.usage_shape();
     let status = upstream.status();
     let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
     let source = ledger_source(&cand.account);
@@ -547,7 +599,7 @@ async fn forward_response(
         let storage = core.storage.clone();
         let stream = forward::ScanStream::new(
             upstream.bytes_stream(),
-            protocol,
+            shape.expect("SSE only on accounting endpoints"),
             Box::new(move |input, cache_read, output| {
                 let _ = storage.accumulate_usage_daily(
                     &source,
@@ -572,7 +624,7 @@ async fn forward_response(
         Ok(b) => {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&b) {
                 if let Some((input, cache_read, output)) =
-                    forward::extract_usage_json(protocol, &v)
+                    forward::extract_usage_json(shape.expect("json accounting endpoint"), &v)
                 {
                     let _ = core.storage.accumulate_usage_daily(
                         &source,

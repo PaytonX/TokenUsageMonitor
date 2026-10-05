@@ -86,16 +86,25 @@ fn json_num(v: &serde_json::Value) -> Option<f64> {
     v.as_f64().filter(|f| f.is_finite() && *f >= 0.0)
 }
 
+/// 同一协议面下不同端点的 usage 字段映射。Responses API（Codex）与
+/// Chat Completions 鉴权、model 字段、流式机制同族，只有 usage 形状不同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageShape {
+    Anthropic,
+    OpenAiChat,
+    OpenAiResponses,
+}
+
 /// 非流式 JSON 响应的 `(input, cache_read, output)` 提取。
 /// Anthropic 的 cache_creation（缓存写入）计入 input——订阅配额按全部
 /// 处理 token 计费，账本的 cache_read 列只装缓存命中。
 pub fn extract_usage_json(
-    protocol: RouterProtocol,
+    shape: UsageShape,
     v: &serde_json::Value,
 ) -> Option<(f64, f64, f64)> {
     let usage = v.get("usage")?;
-    match protocol {
-        RouterProtocol::Anthropic => {
+    match shape {
+        UsageShape::Anthropic => {
             let mut input = json_num(usage.get("input_tokens")?)?;
             input += usage
                 .get("cache_creation_input_tokens")
@@ -108,7 +117,7 @@ pub fn extract_usage_json(
             let output = json_num(usage.get("output_tokens")?)?;
             Some((input, cache_read, output))
         }
-        RouterProtocol::OpenAi => {
+        UsageShape::OpenAiChat => {
             let input = json_num(usage.get("prompt_tokens")?)?;
             let cache_read = usage
                 .pointer("/prompt_tokens_details/cached_tokens")
@@ -117,18 +126,29 @@ pub fn extract_usage_json(
             let output = json_num(usage.get("completion_tokens")?)?;
             Some((input, cache_read, output))
         }
+        UsageShape::OpenAiResponses => {
+            let input = json_num(usage.get("input_tokens")?)?;
+            let cache_read = usage
+                .pointer("/input_tokens_details/cached_tokens")
+                .and_then(json_num)
+                .unwrap_or(0.0);
+            let output = json_num(usage.get("output_tokens")?)?;
+            Some((input, cache_read, output))
+        }
     }
 }
 
 /// SSE 流的 usage 累计器：跨 chunk 缓冲、按完整 `data:` 行解析。
 ///
-/// 两种协议的流式语义都是「累计值覆盖」而非逐帧相加：
+/// 各形状的流式语义都是「累计值覆盖」而非逐帧相加：
 /// - Anthropic：`message_start` 带 input/cache_read，`message_delta` 带累计 output；
-/// - OpenAI：终帧带完整 `usage` 对象（未开 stream_options 时可能没有 → 记 0）。
+/// - OpenAI Chat：终帧带完整 `usage` 对象（未开 stream_options 时可能没有 → 记 0）；
+/// - OpenAI Responses：`response.completed` / `response.incomplete` 事件里的
+///   `response.usage`（reasoning tokens 已含在 output_tokens 内）。
 #[derive(Debug)]
 pub struct SseUsageScanner {
     buf: Vec<u8>,
-    protocol: RouterProtocol,
+    shape: UsageShape,
     input: f64,
     cache_read: f64,
     output: f64,
@@ -136,10 +156,10 @@ pub struct SseUsageScanner {
 }
 
 impl SseUsageScanner {
-    pub fn new(protocol: RouterProtocol) -> Self {
+    pub fn new(shape: UsageShape) -> Self {
         Self {
             buf: Vec::new(),
-            protocol,
+            shape,
             input: 0.0,
             cache_read: 0.0,
             output: 0.0,
@@ -184,8 +204,8 @@ impl SseUsageScanner {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
             return;
         };
-        match self.protocol {
-            RouterProtocol::Anthropic => {
+        match self.shape {
+            UsageShape::Anthropic => {
                 let event_type = v.get("type").and_then(|t| t.as_str());
                 if event_type == Some("message_start") {
                     if let Some(u) = v.pointer("/message/usage") {
@@ -205,7 +225,7 @@ impl SseUsageScanner {
                     }
                 }
             }
-            RouterProtocol::OpenAi => {
+            UsageShape::OpenAiChat => {
                 if let Some(u) = v.get("usage") {
                     if let Some(i) = u.get("prompt_tokens").and_then(json_num) {
                         self.input = i;
@@ -215,6 +235,27 @@ impl SseUsageScanner {
                     }
                     if let Some(o) = u.get("completion_tokens").and_then(json_num) {
                         self.output = o;
+                    }
+                }
+            }
+            UsageShape::OpenAiResponses => {
+                // 终态事件（completed/incomplete）的 response.usage 是该次响应
+                // 的完整用量；覆盖语义与其余形状一致。
+                let event_type = v.get("type").and_then(|t| t.as_str());
+                if matches!(event_type, Some("response.completed") | Some("response.incomplete")) {
+                    if let Some(u) = v.pointer("/response/usage") {
+                        if let Some(i) = u.get("input_tokens").and_then(json_num) {
+                            self.input = i;
+                        }
+                        if let Some(c) = u
+                            .pointer("/input_tokens_details/cached_tokens")
+                            .and_then(json_num)
+                        {
+                            self.cache_read = c;
+                        }
+                        if let Some(o) = u.get("output_tokens").and_then(json_num) {
+                            self.output = o;
+                        }
                     }
                 }
             }
@@ -236,12 +277,12 @@ where
 {
     pub fn new(
         inner: S,
-        protocol: RouterProtocol,
+        shape: UsageShape,
         on_end: Box<dyn FnOnce(f64, f64, f64) + Send>,
     ) -> Self {
         Self {
             inner,
-            scanner: SseUsageScanner::new(protocol),
+            scanner: SseUsageScanner::new(shape),
             on_end: Some(on_end),
         }
     }
@@ -369,7 +410,7 @@ mod tests {
             r#"{"usage":{"input_tokens":100,"cache_creation_input_tokens":50,"cache_read_input_tokens":200,"output_tokens":30}}"#,
         )
         .unwrap();
-        let (i, c, o) = extract_usage_json(RouterProtocol::Anthropic, &v).unwrap();
+        let (i, c, o) = extract_usage_json(UsageShape::Anthropic, &v).unwrap();
         assert_eq!((i, c, o), (150.0, 200.0, 30.0));
     }
 
@@ -379,13 +420,58 @@ mod tests {
             r#"{"usage":{"prompt_tokens":80,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":60}}}"#,
         )
         .unwrap();
-        let (i, c, o) = extract_usage_json(RouterProtocol::OpenAi, &v).unwrap();
+        let (i, c, o) = extract_usage_json(UsageShape::OpenAiChat, &v).unwrap();
         assert_eq!((i, c, o), (80.0, 60.0, 20.0));
     }
 
     #[test]
+    fn extract_usage_json_responses_shape() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"usage":{"input_tokens":80,"output_tokens":25,"input_tokens_details":{"cached_tokens":50},"output_tokens_details":{"reasoning_tokens":8}}}"#,
+        )
+        .unwrap();
+        let (i, c, o) = extract_usage_json(UsageShape::OpenAiResponses, &v).unwrap();
+        // reasoning 已含在 output_tokens 内，不需要单独计。
+        assert_eq!((i, c, o), (80.0, 50.0, 25.0));
+    }
+
+    #[test]
+    fn scanner_handles_responses_completed_event() {
+        let mut sc = SseUsageScanner::new(UsageShape::OpenAiResponses);
+        sc.feed(b"event: response.output_text.delta
+");
+        sc.feed(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}
+
+");
+        sc.feed(b"event: response.completed
+");
+        sc.feed(
+            b"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":7}}}}
+
+",
+        );
+        sc.feed(b"data: [DONE]
+
+");
+        sc.finish();
+        assert_eq!(sc.totals(), (12.0, 7.0, 5.0));
+    }
+
+    #[test]
+    fn scanner_handles_responses_incomplete_event() {
+        let mut sc = SseUsageScanner::new(UsageShape::OpenAiResponses);
+        sc.feed(
+            b"data: {\"type\":\"response.incomplete\",\"response\":{\"usage\":{\"input_tokens\":30,\"output_tokens\":9}}}
+
+",
+        );
+        sc.finish();
+        assert_eq!(sc.totals(), (30.0, 0.0, 9.0));
+    }
+
+    #[test]
     fn scanner_reassembles_lines_split_across_chunks() {
-        let mut sc = SseUsageScanner::new(RouterProtocol::Anthropic);
+        let mut sc = SseUsageScanner::new(UsageShape::Anthropic);
         let start = br#"event: message_start
 data: {"type":"message_start","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":40}}}
 
@@ -407,7 +493,7 @@ data: [DONE]
 
     #[test]
     fn scanner_handles_openai_usage_frame_and_done() {
-        let mut sc = SseUsageScanner::new(RouterProtocol::OpenAi);
+        let mut sc = SseUsageScanner::new(UsageShape::OpenAiChat);
         sc.feed(b"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n");
         sc.feed(b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":5}}}\n\n");
         sc.feed(b"data: [DONE]\n\n");
@@ -417,7 +503,7 @@ data: [DONE]
 
     #[test]
     fn scanner_finish_flushes_trailing_line_without_newline() {
-        let mut sc = SseUsageScanner::new(RouterProtocol::OpenAi);
+        let mut sc = SseUsageScanner::new(UsageShape::OpenAiChat);
         sc.feed(b"data: {\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1}}");
         sc.finish();
         assert_eq!(sc.totals(), (4.0, 0.0, 1.0));
@@ -425,7 +511,7 @@ data: [DONE]
 
     #[test]
     fn scanner_ignores_garbage_and_content_lines() {
-        let mut sc = SseUsageScanner::new(RouterProtocol::Anthropic);
+        let mut sc = SseUsageScanner::new(UsageShape::Anthropic);
         sc.feed(b": keep-alive\n");
         sc.feed(b"data: not-json\n");
         sc.feed(b"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hi\"}}\n");
@@ -435,7 +521,7 @@ data: [DONE]
 
     #[test]
     fn scanner_feed_after_finish_is_noop() {
-        let mut sc = SseUsageScanner::new(RouterProtocol::Anthropic);
+        let mut sc = SseUsageScanner::new(UsageShape::Anthropic);
         sc.finish();
         sc.feed(b"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":9}}\n");
         assert_eq!(sc.totals(), (0.0, 0.0, 0.0));

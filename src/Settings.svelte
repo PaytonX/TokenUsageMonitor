@@ -1928,7 +1928,7 @@ async function handleMinimize() {
                         <input class="rt-input" type="text" bind:value={route.name} />
                       </label>
                       <label class="rt-field">
-                        <span class="rt-label">协议（线路上游需同协议）</span>
+                        <span class="rt-label" title="OpenAI 兼容：/v1/chat/completions 与 /v1/responses（Codex）皆可；Anthropic：/v1/messages。线路上游需同协议">协议（线路上游需同协议）</span>
                         <select class="rt-input" bind:value={route.protocol}>
                           <option value="openai">OpenAI 兼容</option>
                           <option value="anthropic">Anthropic</option>

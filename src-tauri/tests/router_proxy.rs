@@ -545,6 +545,44 @@ async fn routing_channel_probe_reports_reachability() {
 }
 
 #[tokio::test]
+async fn responses_endpoint_serves_codex_style_requests() {
+    // OpenAI 兼容路由同时服务 /v1/responses（Codex）：model 重写 + 透传 +
+    // Responses 形状的 usage 记账（input_tokens/output_tokens）。
+    async fn responses_ok(body: String) -> Response {
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["model"], "model-1", "model 必须被重写为线路模型");
+        Json(json!({
+            "id": "resp-1",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "hi"}]}],
+            "usage": {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+        }))
+        .into_response()
+    }
+    let upstream = spawn_mock(
+        axum::Router::new().route("/v1/responses", post(responses_ok)),
+    )
+    .await;
+    let (_core, storage, port, _dir) =
+        spawn_router("responses", true, &openai_route(&upstream, None)).await;
+
+    let resp = router_client()
+        .post(&format!("http://127.0.0.1:{port}/v1/responses"))
+        .bearer_auth("tok-openai")
+        .json(&json!({"model": "whatever", "input": "hi", "stream": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["output"][0]["content"][0]["text"], "hi");
+
+    let rows = storage.load_usage_daily(Some("provider"), 7).unwrap();
+    let routed: Vec<_> = rows.iter().filter(|r| r.source == "router:acct-1").collect();
+    assert_eq!(routed.len(), 1, "rows: {rows:?}");
+    assert!((routed[0].total - 10.0).abs() < 1e-6);
+}
+
+#[tokio::test]
 async fn empty_candidate_model_passes_client_model_through() {
     let mock = Arc::new(MockState::new(false));
     let upstream = spawn_mock(
