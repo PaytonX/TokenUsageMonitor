@@ -489,6 +489,8 @@
     // 是另一个 host）；路由器会自适应版本段，最终请求 .../v3/chat/completions。
     volcengine: "https://ark.cn-beijing.volces.com/api/plan/v3",
     volcengine_api: "https://ark.cn-beijing.volces.com/api/plan/v3",
+    xiaomi_plan: "https://api.xiaomimimo.com",
+    xiaomi_api: "https://api.xiaomimimo.com",
   };
 
   let routeSeq = 0;
@@ -496,6 +498,12 @@
     routeSeq += 1;
     return `route-${Date.now().toString(36)}-${routeSeq}`;
   }
+
+  /** 可加入路由链的账户：排除本地登录态（Codex 等——ChatGPT 后端不是开放
+   *  API，无法转发）。AK/SK 账户保留（填了可选推理 Key 即可路由，见账户表单）。 */
+  let routableAccounts = $derived(
+    (catalog?.accounts ?? []).filter((a) => authKindFor(a.provider_kind) !== "local_token"),
+  );
 
   function accountKindOf(instanceId: string): string {
     return (
@@ -1921,8 +1929,10 @@ async function handleMinimize() {
                                 onchange={(e) => onCandidateAccountChanged(cand, (e.currentTarget as HTMLSelectElement).value)}
                               >
                                 <option value="">选择账户…</option>
-                                {#each catalog?.accounts ?? [] as acct (acct.instance_id)}
-                                  <option value={acct.instance_id}>{acct.label}</option>
+                                {#each routableAccounts as acct (acct.instance_id)}
+                                  <option value={acct.instance_id}>
+                                    {acct.label}{authKindFor(acct.provider_kind) === "access_key_secret" ? "（需填推理 Key）" : ""}
+                                  </option>
                                 {/each}
                               </select>
                             </label>
