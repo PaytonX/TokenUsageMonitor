@@ -31,6 +31,36 @@ pub(crate) fn parse_line(line: &str) -> Option<(f64, f64, f64, String, String)> 
         return None;
     }
     let v: Value = serde_json::from_str(line).ok()?;
+    // New format (Codex >= 0.160, desktop rollouts): usage arrives as
+    // event_msg lines with payload.type == "token_count". The per-request
+    // numbers live in payload.info.last_token_usage; total_token_usage is a
+    // session-cumulative counter and must never be summed (it repeats on
+    // every event, so accumulating it would square-count the whole session).
+    // Field semantics mirror the old shape: input_tokens includes
+    // cached_input_tokens (a subset, like the old prompt/cached pair), and
+    // reasoning_output_tokens is a subset of output_tokens.
+    if v.pointer("/payload/type").and_then(|t| t.as_str()) == Some("token_count") {
+        let u = v.pointer("/payload/info/last_token_usage")?;
+        let input_total = u.get("input_tokens").and_then(|n| n.as_f64()).unwrap_or(0.0);
+        let cached = u
+            .get("cached_input_tokens")
+            .and_then(|n| n.as_f64())
+            .unwrap_or(0.0);
+        let output = u.get("output_tokens").and_then(|n| n.as_f64()).unwrap_or(0.0);
+        let input = (input_total - cached).max(0.0);
+        if input <= 0.0 && cached <= 0.0 && output <= 0.0 {
+            return None;
+        }
+        let date = v
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .and_then(day_of)
+            .unwrap_or_default();
+        // token_count events carry no model field; the empty model routes the
+        // tokens into the "unclassified model" bucket so per-model sums keep
+        // matching per-day totals.
+        return Some((input, cached, output, date, String::new()));
+    }
     // usage may sit at line root or under `payload` (version drift).
     let usage = v.get("usage").or_else(|| v.pointer("/payload/usage"))?;
     let f = |name: &str| -> f64 {
@@ -224,5 +254,33 @@ mod tests {
     #[test]
     fn day_of_normalizes_utc_to_local() {
         assert_eq!(day_of("2026-01-02T03:04:05Z").unwrap().len(), 10);
+    }
+
+    #[test]
+    fn parses_token_count_event_from_last_usage() {
+        // Mirrors a real 2026-10 rollout line (cli 0.160). The cumulative
+        // total_token_usage must be ignored in favour of the per-request
+        // last_token_usage, otherwise each event re-counts the session.
+        let line = r#"{"timestamp":"2026-10-05T13:11:15.397Z","ordinal":26,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":47669,"cached_input_tokens":23552,"cache_write_input_tokens":0,"output_tokens":517,"reasoning_output_tokens":85,"total_tokens":48186},"last_token_usage":{"input_tokens":24067,"cached_input_tokens":23552,"cache_write_input_tokens":0,"output_tokens":93,"reasoning_output_tokens":21,"total_tokens":24160},"model_context_window":850000},"rate_limits":{}}}"#;
+        let (i, cr, o, date, model) = parse_line(line).unwrap();
+        assert_eq!(i, 515.0); // 24067 - cached 23552
+        assert_eq!(cr, 23552.0);
+        assert_eq!(o, 93.0);
+        assert_eq!(date.len(), 10);
+        assert!(model.is_empty());
+    }
+
+    #[test]
+    fn ignores_zero_usage_token_count_event() {
+        let line = r#"{"timestamp":"2026-10-05T13:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"total_tokens":0},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"total_tokens":0}}}}"#;
+        assert!(parse_line(line).is_none());
+    }
+
+    #[test]
+    fn token_count_without_last_usage_is_rejected() {
+        // Only the cumulative counter present: counting it would double-count
+        // every prior event of the session, so refuse rather than guess.
+        let line = r#"{"timestamp":"2026-10-05T13:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#;
+        assert!(parse_line(line).is_none());
     }
 }
