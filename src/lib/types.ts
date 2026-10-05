@@ -439,6 +439,16 @@ export interface RatesSnapshot {
 }
 
 /** Tagged union mirroring Rust `Credentials`. The `kind` field discriminates. */
+/** 路由通道探测结果（test_routing_channel），镜像 Rust `router::RoutingProbeResult`。 */
+export interface RoutingProbeResult {
+  ok: boolean;
+  /** 上游 HTTP 状态码；网络错误时为 null。 */
+  status: number | null;
+  url: string;
+  error?: string;
+  models?: number;
+}
+
 export type Credentials =
   | { kind: "bearer_key"; api_key: string }
   | {

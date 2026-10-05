@@ -19,6 +19,7 @@ import type {
   RouterStatus,
   RouterSwitchEvent,
   RouterProtocol,
+  RoutingProbeResult,
   Settings,
   TestResult,
   UsageSnapshot,
@@ -171,6 +172,20 @@ export async function getCredentials(
   providerId: string,
 ): Promise<Credentials | null> {
   return invoke<Credentials | null>("get_credentials", { providerId });
+}
+
+/** 路由通道探测：用表单凭据对上游推理端点发免费探测（GET /v1/models）。
+ *  与监控通道互补；无路由 Key 时返回 ok=false + 原因（不算错误）。 */
+export async function testRoutingChannel(
+  protocol: RouterProtocol,
+  baseUrl: string,
+  creds: Credentials,
+): Promise<RoutingProbeResult> {
+  return invoke<RoutingProbeResult>("test_routing_channel", {
+    protocol,
+    baseUrl,
+    creds,
+  });
 }
 
 export async function saveCredentials(

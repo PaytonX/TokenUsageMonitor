@@ -52,6 +52,22 @@ pub struct RouterSwitchEvent {
     pub reason: String,
 }
 
+/// 路由通道探测结果（`test_routing_channel`）。
+#[derive(Debug, Clone, Serialize)]
+pub struct RoutingProbeResult {
+    /// 2xx = 推理端点可达且 Key 有效。
+    pub ok: bool,
+    /// 上游 HTTP 状态码；网络错误时为 None。
+    pub status: Option<u16>,
+    /// 实际探测的完整 URL（诊断用）。
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// /models 可用时返回的模型数量。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models: Option<usize>,
+}
+
 /// 路由器共享核心：IPC（`get_router_status`）、server 任务、设置保存流程
 /// 三方读写的全部运行态。
 pub struct RouterCore {
@@ -486,6 +502,62 @@ impl RouterCore {
         ids.sort();
         ids.dedup();
         Ok(ids)
+    }
+
+    /// 路由通道探测（`test_routing_channel`）：对上游推理端点发一次免费的
+    /// `GET /v1/models`，验证「路径可达 + Key 有效」。与监控通道（fetch_usage
+    /// 的用量签名接口）完全独立——火山等监控/推理分离的 Provider 上，测试
+    /// 连接通过不代表路由可通。
+    pub async fn probe_routing_channel(
+        &self,
+        protocol: config::RouterProtocol,
+        base_url: &str,
+        api_key: &str,
+    ) -> RoutingProbeResult {
+        let url = forward::upstream_url(base_url, "/v1/models");
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return RoutingProbeResult {
+                ok: false,
+                status: None,
+                url,
+                error: Some("仅支持 http/https 上游地址".to_string()),
+                models: None,
+            };
+        }
+        let headers = forward::build_upstream_headers(protocol, api_key, &HeaderMap::default());
+        let send = self.http.read().await.get(&url).headers(headers).send().await;
+        match send {
+            Err(e) => RoutingProbeResult {
+                ok: false,
+                status: None,
+                url,
+                error: Some(format!("网络错误: {e}")),
+                models: None,
+            },
+            Ok(r) => {
+                let status = r.status().as_u16();
+                if r.status().is_success() {
+                    let models = r.json::<serde_json::Value>().await.ok().and_then(|v| {
+                        v.get("data").and_then(|d| d.as_array()).map(|a| a.len())
+                    });
+                    RoutingProbeResult {
+                        ok: true,
+                        status: Some(status),
+                        url,
+                        error: None,
+                        models,
+                    }
+                } else {
+                    RoutingProbeResult {
+                        ok: false,
+                        status: Some(status),
+                        url,
+                        error: Some(format!("HTTP {status}")),
+                        models: None,
+                    }
+                }
+            }
+        }
     }
 }
 

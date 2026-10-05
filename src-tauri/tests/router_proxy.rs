@@ -516,6 +516,35 @@ async fn upstream_404_fails_over_to_next_candidate() {
 }
 
 #[tokio::test]
+async fn routing_channel_probe_reports_reachability() {
+    // 路由通道探测：/models 可达 → ok + 模型数；404 → ok=false（中性，非失败）；
+    // 无凭据 → ok=false + 明确原因。
+    let upstream = spawn_mock(axum::Router::new().route(
+        "/v1/models",
+        get(|| async { Json(json!({"data": [{"id": "m1"}, {"id": "m2"}]})) }),
+    ))
+    .await;
+    let (core, _storage, _port, _dir) =
+        spawn_router("probe2", true, &openai_route(&upstream, None)).await;
+
+    let key = mock_key();
+    let ok = core
+        .probe_routing_channel(RouterProtocol::OpenAi, &upstream, &key)
+        .await;
+    assert!(ok.ok);
+    assert_eq!(ok.models, Some(2));
+    assert_eq!(ok.status, Some(200));
+
+    // 上游未实现 /models：中性结果（404 不算硬失败，转发以实际为准）。
+    let bare = spawn_mock(axum::Router::new()).await;
+    let miss = core
+        .probe_routing_channel(RouterProtocol::OpenAi, &bare, &key)
+        .await;
+    assert!(!miss.ok);
+    assert_eq!(miss.status, Some(404));
+}
+
+#[tokio::test]
 async fn empty_candidate_model_passes_client_model_through() {
     let mock = Arc::new(MockState::new(false));
     let upstream = spawn_mock(

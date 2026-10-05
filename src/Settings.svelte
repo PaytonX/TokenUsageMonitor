@@ -7,6 +7,7 @@
     saveSettings,
     saveCredentials,
     getCredentials,
+    testRoutingChannel,
     deleteCredentials,
     testProvider,
     testProxy,
@@ -27,6 +28,7 @@
     type RouterCandidate,
     type RouterRoute,
     type RouterProtocol,
+    type RoutingProbeResult,
     type AccountMeta,
     type Settings,
     type Credentials,
@@ -73,6 +75,8 @@
     /** AccessKeySecret 账户的可选推理 API Key（仅 TokenRouter 路由用；
      *  监控用量仍走 AK/SK 签名，留空即「仅监控、不可路由」）。 */
     routeApiKey: string;
+    /** 路由通道探测结果（测试连接通过后自动追加一次）。 */
+    routingProbe: RoutingProbeResult | null;
     /** LocalToken field (e.g. Codex ~/.codex/auth.json) */
     token: string;
     credsDirty: boolean;
@@ -190,6 +194,7 @@
       accessKey: "",
       secretKey: "",
       routeApiKey: "",
+      routingProbe: null,
       token: "",
       credsDirty: false,
       testing: false,
@@ -356,6 +361,38 @@
     f.testResult = result;
     if (result.ok) {
       f.credsDirty = true;
+      // 路由通道探测（免费 /models）：监控与推理分离的 Provider（火山等）
+      // 上，监控通过不代表推理接口可达——两条通道分别显示。
+      const creds = buildCredentials(f);
+      const baseUrl = ROUTER_BASE_PRESETS[f.meta.provider_kind] ?? "";
+      const noKey =
+        creds.kind === "access_key_secret"
+          ? !creds.api_key
+          : creds.kind === "bearer_key"
+            ? !creds.api_key.trim()
+            : true;
+      if (noKey) {
+        f.routingProbe = {
+          ok: false,
+          status: null,
+          url: baseUrl,
+          error: "未配置路由用推理 Key",
+        };
+      } else if (baseUrl) {
+        const protocol = f.meta.provider_kind === "anthropic" ? "anthropic" : "openai";
+        try {
+          f.routingProbe = await testRoutingChannel(protocol, baseUrl, creds);
+        } catch (e) {
+          f.routingProbe = {
+            ok: false,
+            status: null,
+            url: baseUrl,
+            error: String(e),
+          };
+        }
+      } else {
+        f.routingProbe = null;
+      }
     }
   }
 
@@ -1355,6 +1392,22 @@ async function handleMinimize() {
                   {#if selectedForm.testResult}
                     <div class="account__test {testResultClass(selectedForm.testResult)}">
                       {formatTestResult(selectedForm.testResult)}
+                    </div>
+                  {/if}
+                  {#if selectedForm.routingProbe}
+                    {@const p = selectedForm.routingProbe}
+                    <div
+                      class="account__test"
+                      class:test-ok={p.ok}
+                      class:test-fail={!p.ok && p.status !== 404}
+                    >
+                      {#if p.ok}
+                        路由通道 ✓ 可达{p.models ? ` · ${p.models} 个模型` : ""}
+                      {:else if p.status === 404}
+                        路由通道 ？ 上游未实现 /models，无法免费探测（转发以实际为准）
+                      {:else}
+                        路由通道 ✗ {p.error ?? "不可达"}——该账户无法作为路由线路
+                      {/if}
                     </div>
                   {/if}
                   {#if selectedForm.error}

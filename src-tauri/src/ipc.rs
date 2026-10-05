@@ -1310,6 +1310,31 @@ pub async fn get_credentials(
     Ok(state.settings.load_credentials(&provider_id))
 }
 
+/// 路由通道探测：用表单里的凭据对上游推理端点发一次免费探测（GET /v1/models）。
+/// 与 test_provider 的监控通道互补——火山等监控/推理分离的 Provider 上，
+/// 监控通过不代表推理接口可达。无路由 Key 时返回 ok=false + 原因（不算错误）。
+#[tauri::command]
+pub async fn test_routing_channel(
+    state: State<'_, AppState>,
+    protocol: crate::router::config::RouterProtocol,
+    base_url: String,
+    creds: Credentials,
+) -> Result<crate::router::RoutingProbeResult, String> {
+    let Some(api_key) = crate::router::routing_api_key_of(Some(&creds)) else {
+        return Ok(crate::router::RoutingProbeResult {
+            ok: false,
+            status: None,
+            url: crate::router::forward::upstream_url(&base_url, "/v1/models"),
+            error: Some("该凭据没有可用于路由的推理 API Key".to_string()),
+            models: None,
+        });
+    };
+    Ok(state
+        .router
+        .probe_routing_channel(protocol, &base_url, &api_key)
+        .await)
+}
+
 /// Saves credentials for a provider to the OS credential store and refreshes
 /// the in-memory credential cache so the next poll picks them up.
 ///

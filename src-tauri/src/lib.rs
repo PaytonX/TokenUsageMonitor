@@ -838,6 +838,7 @@ pub fn run() {
             ipc::save_credentials,
             ipc::delete_credentials,
             ipc::get_credentials,
+            ipc::test_routing_channel,
             ipc::upsert_account,
             ipc::remove_account,
             ipc::test_provider,
