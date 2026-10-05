@@ -376,10 +376,28 @@
           f.token = stored.token;
         }
       }
-    } catch {
-      /* 回填失败不阻塞修改：表单保持为空，用户可全量重填。 */
+    } catch (e) {
+      // 静默吞掉会让「没有回读」变成无头案：把原因亮出来。
+      f.error = "回读已存凭据失败（可直接全量重填后保存）：" + String(e);
     }
     f.credsDirty = true;
+  }
+
+  /** 取消凭据编辑：丢弃未保存的修改，回到「已保存」摘要态。
+   *  已存值不受影响；下次「修改」会重新从凭据管理器回填。 */
+  function cancelCredentialsEdit(f: AccountForm) {
+    f.error = null;
+    f.testResult = null;
+    if (f.hasCredentials) {
+      f.credsDirty = false;
+    } else {
+      f.apiKey = "";
+      f.accessKey = "";
+      f.secretKey = "";
+      f.routeApiKey = "";
+      f.token = "";
+      f.credsDirty = false;
+    }
   }
 
   async function saveCredentialsFor(f: AccountForm) {
@@ -1317,6 +1335,7 @@ async function handleMinimize() {
                       </button>
                       {#if selectedForm.hasCredentials}
                         <button class="btn btn--ghost" onclick={() => clearCredentialsFor(selectedForm)}>清除</button>
+                        <button class="btn btn--ghost" onclick={() => cancelCredentialsEdit(selectedForm)}>取消</button>
                       {/if}
                     </div>
                   {/if}
