@@ -55,6 +55,33 @@ pub fn rewrite_model_field(body: &[u8], model: &str) -> Result<Vec<u8>, String> 
     serde_json::to_vec(&v).map_err(|e| format!("序列化失败: {e}"))
 }
 
+/// 计算上游完整 URL：base_url + 协议路径，**带版本段自适应**。
+///
+/// 线路的 base_url 有的自带版本段（方舟 Plan 的 `.../api/plan/v3`、OpenAI 的
+/// `.../v1`），有的没有（`https://api.deepseek.com`）。无脑追加 `/v1/…` 会拼出
+/// `/api/plan/v3/v1/chat/completions` 这种 404 路径。规则：
+/// - base 末段是 `v<数字>`（v1/v3/…）→ 只拼资源路径（`/chat/completions`）；
+/// - 否则 → 拼完整协议路径（`/v1/chat/completions`）。
+pub fn upstream_url(base_url: &str, protocol_path: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let last = base.rsplit('/').next().unwrap_or("");
+    let versioned = last.len() >= 2
+        && last.starts_with('v')
+        && last[1..].bytes().all(|b| b.is_ascii_digit())
+        && base.contains('/');
+    if !versioned {
+        return format!("{base}{protocol_path}");
+    }
+    // 协议路径去掉版本段：/v1/chat/completions → /chat/completions
+    let trimmed = protocol_path.trim_start_matches('/');
+    match trimmed.split_once('/') {
+        Some((v, resource)) if v.starts_with('v') && v[1..].bytes().all(|b| b.is_ascii_digit()) => {
+            format!("{base}/{resource}")
+        }
+        _ => format!("{base}{protocol_path}"),
+    }
+}
+
 fn json_num(v: &serde_json::Value) -> Option<f64> {
     v.as_f64().filter(|f| f.is_finite() && *f >= 0.0)
 }
@@ -259,6 +286,36 @@ impl<S> Drop for ScanStream<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upstream_url_adapts_to_versioned_bases() {
+        use super::upstream_url;
+        // 方舟 Plan：base 自带 /v3 → 只拼资源路径（v1 是用户报告的 404 根因）。
+        assert_eq!(
+            upstream_url("https://ark.cn-beijing.volces.com/api/plan/v3", "/v1/chat/completions"),
+            "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions"
+        );
+        // OpenAI 官方：base 带 /v1 → 同样只拼资源路径。
+        assert_eq!(
+            upstream_url("https://api.openai.com/v1", "/v1/chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        // 裸域名：拼完整协议路径。
+        assert_eq!(
+            upstream_url("https://api.deepseek.com", "/v1/chat/completions"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        // 尾斜杠不产生双斜杠。
+        assert_eq!(
+            upstream_url("https://api.minimaxi.com/", "/v1/chat/completions"),
+            "https://api.minimaxi.com/v1/chat/completions"
+        );
+        // Anthropic 面：base 带版本段时资源路径为 /messages。
+        assert_eq!(
+            upstream_url("https://relay.example.com/v1", "/v1/messages"),
+            "https://relay.example.com/v1/messages"
+        );
+    }
 
     #[test]
     fn anthropic_headers_inject_x_api_key_and_default_version() {

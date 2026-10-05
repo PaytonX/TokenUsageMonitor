@@ -220,7 +220,7 @@ async fn route_request(
                 }
             }
         };
-        let url = format!("{}{}", cand.base_url.trim_end_matches('/'), protocol.proxy_path());
+        let url = forward::upstream_url(&cand.base_url, protocol.proxy_path());
         let upstream_headers = forward::build_upstream_headers(protocol, &api_key, &headers);
         let send = core
             .http
@@ -318,7 +318,7 @@ async fn proxy_models(State(core): State<Arc<RouterCore>>, headers: HeaderMap) -
         let Some(api_key) = core.api_key_of(&cand.account).await else {
             continue;
         };
-        let url = format!("{}/v1/models", cand.base_url.trim_end_matches('/'));
+        let url = forward::upstream_url(&cand.base_url, "/v1/models");
         let upstream_headers =
             forward::build_upstream_headers(RouterProtocol::OpenAi, &api_key, &headers);
         let send = core

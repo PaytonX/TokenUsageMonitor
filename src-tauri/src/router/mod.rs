@@ -453,7 +453,7 @@ impl RouterCore {
             .api_key_of(account)
             .await
             .ok_or_else(|| "该账户没有可用的 API Key 凭据（先在「账户与额度」里保存凭据）".to_string())?;
-        let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+        let url = forward::upstream_url(base_url, "/v1/models");
         let headers = forward::build_upstream_headers(protocol, &api_key, &HeaderMap::default());
         let resp = self
             .http

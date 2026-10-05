@@ -450,6 +450,72 @@ async fn non_v1_path_alias_works_and_fallback_gives_hint() {
 }
 
 #[tokio::test]
+async fn versioned_base_url_does_not_double_the_version_segment() {
+    // 用户报告的 404 根因：方舟 Plan base = .../api/plan/v3（自带版本段），
+    // 路由器不能再插 /v1。mock 挂在完整路径 /api/plan/v3/chat/completions 上，
+    // 模拟方舟 Plan 的真实端点形态（base_url 自带版本段 + 资源路径）。
+    let mock = Arc::new(MockState::new(false));
+    let upstream_root = spawn_mock(
+        axum::Router::new()
+            .route("/api/plan/v3/chat/completions", post(chat_ok))
+            .with_state(mock.clone()),
+    )
+    .await;
+    let routes_toml = format!(
+        "[[router.routes]]
+id = \"vd\"
+name = \"ark plan\"
+protocol = \"openai\"
+token = \"tok-vd\"
+
+[[router.routes.candidates]]
+account = \"acct-1\"
+model = \"deepseek-v4-flash\"
+base_url = \"{upstream_root}/api/plan/v3\"
+"
+    );
+    let (_core, storage, port, _dir) = spawn_router("versioned", true, &routes_toml).await;
+
+    let resp = post_chat(port, "tok-vd", "x").send().await.unwrap();
+    assert_eq!(resp.status(), 200, "base 自带版本段时不得出现 /v3/v1/ 双版本 404");
+    assert_eq!(
+        mock.last_model.lock().unwrap().as_deref(),
+        Some("deepseek-v4-flash")
+    );
+    let rows = storage.load_usage_daily(Some("provider"), 7).unwrap();
+    assert!(rows.iter().any(|r| r.source == "router:acct-1"), "记账正常");
+}
+
+#[tokio::test]
+async fn upstream_404_fails_over_to_next_candidate() {
+    // 主线路 404（路径/模型在该线路上不存在）→ 换备用线路，而不是透传 404。
+    async fn always_404() -> Response {
+        (StatusCode::NOT_FOUND, "no such path").into_response()
+    }
+    let upstream_404 = spawn_mock(axum::Router::new().route(
+        "/v1/chat/completions",
+        post(always_404),
+    ))
+    .await;
+    let mock = Arc::new(MockState::new(false));
+    let upstream_ok = spawn_mock(
+        axum::Router::new()
+            .route("/v1/chat/completions", post(chat_ok))
+            .with_state(mock.clone()),
+    )
+    .await;
+    let (_core, _storage, port, _dir) =
+        spawn_router("fail404", true, &openai_route(&upstream_404, Some(&upstream_ok))).await;
+
+    let resp = post_chat(port, "tok-openai", "x").send().await.unwrap();
+    assert_eq!(resp.status(), 200, "主线路 404 应换备用线路");
+    assert_eq!(
+        mock.last_model.lock().unwrap().as_deref(),
+        Some("model-2")
+    );
+}
+
+#[tokio::test]
 async fn empty_candidate_model_passes_client_model_through() {
     let mock = Arc::new(MockState::new(false));
     let upstream = spawn_mock(

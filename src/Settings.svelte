@@ -485,6 +485,10 @@
     xai: "https://api.x.ai",
     minimax: "https://api.minimaxi.com",
     minimax_api: "https://api.minimaxi.com",
+    // 方舟 AgentPlan 的推理端点在 /api/plan/v3 下（查询用量的 volcengineapi.com
+    // 是另一个 host）；路由器会自适应版本段，最终请求 .../v3/chat/completions。
+    volcengine: "https://ark.cn-beijing.volces.com/api/plan/v3",
+    volcengine_api: "https://ark.cn-beijing.volces.com/api/plan/v3",
   };
 
   let routeSeq = 0;

@@ -180,12 +180,18 @@ impl UpstreamOutcome {
 }
 
 /// HTTP 状态码 → 结果分类（Retry-After 由服务器层补充解析）。
+///
+/// 404 归为连接类（ServerError）：模型/路径在某条线路上不存在是该**线路自己
+/// 的配置问题**（base_url 版本段拼错、线路模型名上游没有），换下一条线路正是
+/// 正确处理；走熔断计数而非配额长冷却——用户修好配置后 60 秒内即可恢复，
+/// 而不是白等 5 分钟的配额冷却。
 pub fn classify_status(status: u16) -> UpstreamOutcome {
     match status {
         429 | 402 => UpstreamOutcome::QuotaError {
             retry_after_secs: None,
         },
         401 | 403 => UpstreamOutcome::AuthError,
+        404 => UpstreamOutcome::ServerError,
         s if (500..600).contains(&s) => UpstreamOutcome::ServerError,
         _ => UpstreamOutcome::ClientError,
     }
@@ -673,7 +679,9 @@ mod tests {
         assert!(classify_status(500).retryable());
         assert!(classify_status(529).retryable(), "anthropic overloaded");
         assert!(!classify_status(400).retryable());
-        assert!(!classify_status(404).retryable());
+        // 404 = 路径/模型在该线路上不存在 → 线路配置问题，应换线而非透传。
+        assert!(classify_status(404).retryable());
+        assert!(matches!(classify_status(404), UpstreamOutcome::ServerError));
         assert!(matches!(
             classify_status(429),
             UpstreamOutcome::QuotaError { retry_after_secs: None }
