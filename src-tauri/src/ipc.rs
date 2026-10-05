@@ -1297,6 +1297,19 @@ pub async fn remove_account(
     Ok(())
 }
 
+/// Reads the stored credentials for a provider so the Settings UI can prefill
+/// the form when the user clicks 「修改」. Secrets never leave this machine
+/// (OS credential store → local UI, masked inputs); without this round-trip
+/// the write-only fields would force users to re-enter every value just to
+/// change one (e.g. adding TokenRouter's optional routing API key).
+#[tauri::command]
+pub async fn get_credentials(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<Option<Credentials>, String> {
+    Ok(state.settings.load_credentials(&provider_id))
+}
+
 /// Saves credentials for a provider to the OS credential store and refreshes
 /// the in-memory credential cache so the next poll picks them up.
 ///

@@ -6,6 +6,7 @@
     getSettings,
     saveSettings,
     saveCredentials,
+    getCredentials,
     deleteCredentials,
     testProvider,
     testProxy,
@@ -356,6 +357,29 @@
     if (result.ok) {
       f.credsDirty = true;
     }
+  }
+
+  /** 「修改」已保存的凭据：从凭据管理器回填已存值到表单（密码态掩码显示）。
+   *  没有这一步，密钥只写不读——用户只想补一个 TokenRouter 的可选路由 Key，
+   *  却被迫重填 AK/SK，漏填旧字段还会在保存时把已存值清空。 */
+  async function modifyCredentialsFor(f: AccountForm) {
+    try {
+      const stored = await getCredentials(f.meta.instance_id);
+      if (stored) {
+        if (stored.kind === "bearer_key") {
+          f.apiKey = stored.api_key;
+        } else if (stored.kind === "access_key_secret") {
+          f.accessKey = stored.access_key;
+          f.secretKey = stored.secret_key;
+          f.routeApiKey = stored.api_key ?? "";
+        } else if (stored.kind === "local_token") {
+          f.token = stored.token;
+        }
+      }
+    } catch {
+      /* 回填失败不阻塞修改：表单保持为空，用户可全量重填。 */
+    }
+    f.credsDirty = true;
   }
 
   async function saveCredentialsFor(f: AccountForm) {
@@ -1201,7 +1225,7 @@ async function handleMinimize() {
                   {#if selectedForm.hasCredentials && !selectedForm.credsDirty}
                     <div class="account__stored">
                       <span class="account__badge account__badge--ok">已保存</span>
-                      <button class="btn btn--ghost" onclick={() => (selectedForm.credsDirty = true)}>修改</button>
+                      <button class="btn btn--ghost" onclick={() => modifyCredentialsFor(selectedForm)}>修改</button>
                       <button class="btn btn--ghost" onclick={() => clearCredentialsFor(selectedForm)}>清除</button>
                     </div>
                   {:else}

@@ -165,6 +165,14 @@ export async function saveSettings(settings: Settings): Promise<void> {
   await invoke<void>("save_settings", { newSettings: settings });
 }
 
+/** 读取某账户已保存的凭据（「修改」时回填表单）。仅本机 UI 使用，
+ *  输入框以密码态掩码显示；未保存过 = null。 */
+export async function getCredentials(
+  providerId: string,
+): Promise<Credentials | null> {
+  return invoke<Credentials | null>("get_credentials", { providerId });
+}
+
 export async function saveCredentials(
   providerId: string,
   creds: Credentials,
