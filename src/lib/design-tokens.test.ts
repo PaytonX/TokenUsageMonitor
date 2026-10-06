@@ -72,7 +72,7 @@ const FORBIDDEN_PX: ColorRule[] = [
   { re: /border-radius:\s*(4|8|12|16|999)px\b/, exempt: [], why: "token 值圆角禁止裸 px：4→var(--tum-radius-xs) / 8→sm / 12→md / 16→lg / 999→pill" },
 ];
 
-/** 文件迭代 + 注释剥离 + 豁免判定 + 命中格式只实现这一份，hex/rgba 两个测试共用。 */
+/** 文件迭代 + 注释剥离 + 豁免判定 + 命中格式只实现这一份，hex/rgba/px 三个测试共用。 */
 function collectHits(rules: ColorRule[]): string[] {
   const hits: string[] = [];
   for (const { path, rel } of FILES) {

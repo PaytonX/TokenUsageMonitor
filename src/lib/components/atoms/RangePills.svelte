@@ -84,6 +84,11 @@
     color: var(--tum-text-primary);
   }
 
+  .pills__btn:focus-visible {
+    outline: 2px solid var(--tum-accent);
+    outline-offset: 2px;
+  }
+
   .pills__btn.is-active {
     background: var(
       --pills-active-bg,
