@@ -5,6 +5,7 @@
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getLocalTools } from "../api";
+  import { TOOL_SERIES } from "../series-palette";
   import type { LocalDay, LocalToolReport, LocalToolsPayload } from "../types";
   import { hexToRgb } from "../types";
   import PillsOrSelect from "./PillsOrSelect.svelte";
@@ -16,12 +17,6 @@
     { key: "30d", label: "近 30 天", days: 30 },
     { key: "90d", label: "近 90 天", days: 90 },
   ];
-
-  const BANDS = [
-    { key: "input", label: "输入", color: "#76a9ff" },
-    { key: "cache_read", label: "缓存", color: "#ffcc66" },
-    { key: "output", label: "输出", color: "#4cc2ff" },
-  ] as const;
 
   let status: "loading" | "ready" | "empty" = $state("loading");
   let payload: LocalToolsPayload | null = $state(null as LocalToolsPayload | null);
@@ -178,9 +173,9 @@
           <div class="tw__day" title={`${d.date} · 输入 ${fmtTokens(d.input)} / 缓存 ${fmtTokens(d.cache_read)} / 输出 ${fmtTokens(d.output)}`}>
             <div class="tw__col">
               {#if d.total > 0}
-                <div class="tw__seg" style={`height:${(d.input / maxTotal) * 100}%;${bandStyle(BANDS[0].color)}`}></div>
-                <div class="tw__seg" style={`height:${(d.cache_read / maxTotal) * 100}%;${bandStyle(BANDS[1].color)}`}></div>
-                <div class="tw__seg" style={`height:${(d.output / maxTotal) * 100}%;${bandStyle(BANDS[2].color)}`}></div>
+                <div class="tw__seg" style={`height:${(d.input / maxTotal) * 100}%;${bandStyle(TOOL_SERIES[0].color)}`}></div>
+                <div class="tw__seg" style={`height:${(d.cache_read / maxTotal) * 100}%;${bandStyle(TOOL_SERIES[1].color)}`}></div>
+                <div class="tw__seg" style={`height:${(d.output / maxTotal) * 100}%;${bandStyle(TOOL_SERIES[2].color)}`}></div>
               {:else}
                 <div class="tw__seg tw__seg--zero"></div>
               {/if}
@@ -192,7 +187,7 @@
     </div>
 
     <div class="tw__legend">
-      {#each BANDS as b (b.key)}
+      {#each TOOL_SERIES as b (b.key)}
         <span class="tw__key"><ColorSwatch color={b.color} size={9} />{b.label}</span>
       {/each}
       <span class="tw__legend-hint">放大本窗口可获得更粗的柱与更多细节</span>

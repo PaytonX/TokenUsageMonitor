@@ -6,6 +6,7 @@
   import { readAggMode, readPref, writePref } from "../prefs";
   import { buildAggregateToolsPayload, stackColors, staleDetailDevices } from "../device-agg";
   import { dimOthers } from "../trend-data";
+  import { TOOL_SERIES } from "../series-palette";
   import type { LocalDay, LocalToolReport, LocalToolsPayload } from "../types";
   import PillsOrSelect from "./PillsOrSelect.svelte";
   import TrendLineChart from "./TrendLineChart.svelte";
@@ -242,12 +243,6 @@
     if (v >= 1_000) return `${(v / 1e3).toFixed(1)}K`;
     return `${v}`;
   }
-
-  const BANDS = [
-    { key: "input", label: "输入", color: "#76a9ff" },
-    { key: "cache_read", label: "缓存", color: "#ffcc66" },
-    { key: "output", label: "输出", color: "#4cc2ff" },
-  ] as const;
 </script>
 
 <div class="tool" data-tauri-drag-region={false}>
@@ -322,9 +317,9 @@
     </div>
 
     <div class="tool__breakdown">
-      <span class="tool__bd"><ColorSwatch color={BANDS[0].color} size={7} />输入 {fmtTokens(rangeInput)}</span>
-      <span class="tool__bd"><ColorSwatch color={BANDS[1].color} size={7} />缓存 {fmtTokens(rangeCache)}</span>
-      <span class="tool__bd"><ColorSwatch color={BANDS[2].color} size={7} />输出 {fmtTokens(rangeOutput)}</span>
+      <span class="tool__bd"><ColorSwatch color={TOOL_SERIES[0].color} size={7} />输入 {fmtTokens(rangeInput)}</span>
+      <span class="tool__bd"><ColorSwatch color={TOOL_SERIES[1].color} size={7} />缓存 {fmtTokens(rangeCache)}</span>
+      <span class="tool__bd"><ColorSwatch color={TOOL_SERIES[2].color} size={7} />输出 {fmtTokens(rangeOutput)}</span>
     </div>
 
     <div class="tool__chart">
