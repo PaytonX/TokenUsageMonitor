@@ -21,7 +21,9 @@ function listSvelte(dir: string): string[] {
   return out;
 }
 
-/** 统一以 src 相对路径（正斜杠）标识文件：排除与豁免都按精确路径匹配。 */
+/** 统一以 src 相对路径（正斜杠）标识文件：排除与豁免都按精确路径匹配。
+ *  Settings.svelte 在这里被整体排除——各规则 exempt 里的 "Settings.svelte"
+ *  实际不会独立生效（该文件根本不进扫描），仅作意图标注。 */
 const FILES = listSvelte(SRC)
   .map((f) => ({ path: f, rel: f.slice(SRC.length + 1).replace(/\\/g, "/") }))
   .filter((file) => file.rel !== "Settings.svelte");
@@ -60,9 +62,15 @@ const FORBIDDEN_HEX: ColorRule[] = [
 ];
 
 /** 禁用 rgb()/rgba() 字面量（同色相换了形态逃避 hex 规则的）。
- *  正则匹配：无空格 / 多空格 / 大小写 / 无 alpha 的 rgb() 形态都拦得住。 */
+ *  正则匹配：无空格 / 多空格 / 大小写 / 无 alpha 的 rgb() 形态都拦得住。
+ *  注意 rgb(138,143,152)（兜底灰）是合规写法，不在禁用之列。 */
 const FORBIDDEN_RGBA: ColorRule[] = [
   { re: /rgba?\(\s*232\s*,\s*234\s*,\s*240/i, exempt: [], why: "外来文字色 rgba 形态，按 alpha 映射到 text-muted/text-secondary" },
+  { re: /rgba?\(\s*255\s*,\s*122\s*,\s*110/i, exempt: [], why: "#ff7a6e 的 rgba 形态，改用 --tum-crit(--stroke)" },
+  { re: /rgba?\(\s*255\s*,\s*199\s*,\s*122/i, exempt: [], why: "#ffc77a 的 rgba 形态，改用 --tum-warn(--fill)" },
+  { re: /rgba?\(\s*35\s*,\s*38\s*,\s*45/i, exempt: [], why: "#23262d 的 rgba 形态，改用 var(--tum-bg-solid)" },
+  { re: /rgba?\(\s*52\s*,\s*211\s*,\s*153/i, exempt: [], why: "#34d399 的 rgba 形态，改用 var(--tum-ok)" },
+  { re: /rgba?\(\s*248\s*,\s*113\s*,\s*113/i, exempt: [], why: "#f87171 的 rgba 形态，改用 var(--tum-crit)" },
 ];
 
 /** 值保持型 px 规则：只禁恰好等于令牌值的裸 px；8/9/12/14/15/17/10.5px 等离散值

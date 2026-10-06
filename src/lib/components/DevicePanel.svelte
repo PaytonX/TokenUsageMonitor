@@ -2,6 +2,7 @@
   // 设备页（B5 设备视图 / B8 多端同步 hub）。从本地 hub 拉取设备列表：本机恒在首位，
   // 其余为已上报到 hub 的其它实例。hub 模式由设置控制（hub/agent/off）。
   import { addRemoteDevice, getHubDevices, onToolsUpdated, removeHubDevice } from "../api";
+  import { deviceColor } from "../device-agg";
   import type { HubDevice } from "../types";
   import TrendLineChart from "./TrendLineChart.svelte";
   import { PanelHeader, Stat, ColorSwatch } from "./atoms";
@@ -143,12 +144,6 @@
   //    正常不会重复，防上游口径变化）。
   // 跨设备同日用量是不同机器的真实消耗，按加法合并——不是重复。
   // 注意：date 是各上报方的本地日期，跨时区组网时同一天可能有 ±1 偏差。
-  const DEV_COLORS = ["#4cc2ff", "#f2b35b", "#5fd4a2", "#f27b9b", "#b58cf5", "#6fd1d1"];
-  function colorForDevice(id: string): string {
-    let h = 0;
-    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
-    return DEV_COLORS[Math.abs(h) % DEV_COLORS.length];
-  }
 
   interface AggDay {
     date: string;
@@ -206,7 +201,7 @@
         id: d.device_id,
         name: d.hostname,
         total: [...days.values()].reduce((s, v) => s + v, 0),
-        color: colorForDevice(d.device_id),
+        color: deviceColor(d.device_id),
       });
     }
     return out.sort((a, b) => b.total - a.total);

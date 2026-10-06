@@ -88,8 +88,9 @@
   }
   function segStyle(id: string): string {
     const c = colorOf(id);
-    // 高亮时 colorOf 返回的已是 rgba(...)（压暗过的），不能再包一层——否则
-    // hexToRgb 解析失败会全部回落到同一个系统蓝，压暗效果被抹掉。
+    // 高亮时 colorOf 返回的已是 rgba(...)（压暗过的，如 rgba(r,g,b,0.22)），不能
+    // 再包一层 0.85——否则会静默覆盖压暗 alpha，高亮失效。（hexToRgb 现已能解析
+    // rgba()，此守卫的职责是保住压暗 alpha，而非防解析失败。）
     if (c.startsWith("rgba(")) return `background: ${c}`;
     const rgb = hexToRgb(c) ?? "76,194,255";
     return `background: rgba(${rgb}, 0.85)`;

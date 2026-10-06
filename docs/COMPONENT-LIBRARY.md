@@ -236,9 +236,13 @@ src/lib/components/
 
 1. **HeatmapGrid.svelte** ──── 内含 `__stat b + __stat span` 与 `__legend-dot` 的内联色块，预计可节省 ~30 ~ 50 行；本轮未动，下一顺手做。
 2. **CalendarSection.svelte** ──── 包含 `__head / __legend / __key` 三件套，与原子高度同构；颜色 hex 已在 2026-10-06 收敛（仅剩结构迁移），但日历有自定义日期格逻辑，建议作为单独任务审视。
-4. **App.svelte** ──── 顶部胶囊条（`pill-breathe`）与 PulseDot 是同一语言的两次实现，未来可以收敛到 PulseDot；本轮不动。
-5. **Settings.svelte** ──── 体积最大（140KB），重复最多（`pane__title / section__title / rt-card__title` 等都走大写 + 弱化），但因为字号 / 圆角 / 间距与 token 体系差别大（全用 11.5 / 12.5 / 9px 这种 token 外的尺寸），建议单独审视后再决定是否统一；本轮不动。
-6. **窗口统计行 tw__stats** ──── 两个窗口头部的 `本区间 <b>…</b>` 手写统计行与 `<Stat>` 原子同构，未来可换用（会改头部视觉，需单独确认）。
-7. **token 外遗留尺寸** ──── 8/9/12/14/15/17px 字号与 0.02-0.14 微 alpha 白面为已记录遗留（Settings.svelte 整体豁免除外），新代码不得模仿；design-tokens lint 已拦截 token 值裸写。
+3. **App.svelte** ──── 顶部胶囊条（`pill-breathe`）与 PulseDot 是同一语言的两次实现，未来可以收敛到 PulseDot；本轮不动。
+4. **Settings.svelte** ──── 体积最大（140KB），重复最多（`pane__title / section__title / rt-card__title` 等都走大写 + 弱化），但因为字号 / 圆角 / 间距与 token 体系差别大（全用 11.5 / 12.5 / 9px 这种 token 外的尺寸），建议单独审视后再决定是否统一；本轮不动。
+5. **窗口统计行 tw__stats** ──── 两个窗口头部的 `本区间 <b>…</b>` 手写统计行与 `<Stat>` 原子同构，未来可换用（会改头部视觉，需单独确认）。
+6. **token 外遗留尺寸** ──── 8/9/12/14/15/17px 字号与 0.02-0.14 微 alpha 白面为已记录遗留（Settings.svelte 整体豁免除外），新代码不得模仿；design-tokens lint 已拦截 token 值裸写。
+7. **rgb 解析器三份实现** ──── `hexToRgb`（types.ts）/ `hexToRgbTriplet`（calendar-linkage.ts）/ `rgbOf`（model-provider.ts）失败语义各不相同（返回 null / 回落强调色 / NaN 盲切），各自有单测锁定但互不一致。下次触碰时可在 types.ts 导出统一的严格解析核心，三者保留各自语义做薄封装（约 30 分钟，无循环依赖风险）。
+8. **双窗口玻璃材质手工同步** ──── TrendWindow / ToolWindow 各持 ~21 条相同窗口壳 CSS（含 `blur(16px)` 与 `rgba(20,22,26,.82)`），与 DetailCard 的 `--tum-blur-card` 不同源；未来材质调整需要改两处，长期可抽窗口壳组件或入 token。
 
 迁移前先 `svelte-check` 跑通，再 `vitest run` 确认无回归，最后 `vite build` 确认产物大小不退化。
+
+> **执行记录（2026-10-06）**：设计令牌合规清理一批落地——状态色与中性色全部收敛到令牌（含 rgba 形态禁令）、双窗口标题区接入 PanelHeader/PillsOrSelect、值保持型 px 字面量清零并设 lint 永久门禁、RangePills 补键盘焦点、DetailCard 兑现玻璃模糊、TOOL_SERIES/deviceColor 收敛为共享常量。dashboard 产物 81.22 kB → 79.02 kB；完整清单见 `docs/superpowers/plans/2026-10-06-design-token-conformance.md` 的「执行记录」。

@@ -693,3 +693,29 @@ peek 把手无代码改动，跳过（其样式由 Tauri 窗口几何驱动，�
 1. **覆盖度**：审计报告的修复优先级 1-4 全部有对应任务（1→Task 1、2→Task 2/3、3→Task 5/9、4→Task 4/7）；Settings/HeatmapGrid/CalendarSection 结构迁移明确划出范围并有文档落点。审计中"tooltip 数字非等宽"一条经复核不成立（`.tl__tip` 容器已有 `var(--tum-font-mono)`），已从计划剔除。
 2. **无占位**：所有替换均给出前/后代码或精确映射表；两处"先读再抄"（ToolPanel 的 PillsOrSelect 约定、`.tl__tip-swatch` 现有 CSS）是刻意的防漂移步骤，不是缺信息。
 3. **类型一致性**：`TOOL_SERIES` 在 Task 8 定义并被 ToolPanel/ToolWindow 同名引用；lint 的 `FORBIDDEN_HEX / FONT_SIZE_PX / RADIUS_PX` 在 Task 1/3/4/6 增量扩展，豁免结构一致。
+
+---
+
+## 执行记录（2026-10-06）
+
+全部任务完成，共 20 个提交（02939f4…收尾批），每任务经过规格合规 + 代码质量两级审查（Task 7/8 为控制者直接核验的 6 行级机械改动）。
+
+| 任务 | 提交 | 备注 |
+|------|------|------|
+| Task 0 基线 | 02939f4 / 2284e34 | 存量原子迁移落盘；基线 dashboard 81.22 kB、54→43 测试 |
+| Task 1 lint+状态点 | 0147c53 / 6279969 | +@types/node devDep；质量加固（模块锚定/精确豁免/哨兵） |
+| Task 2 状态表面 token | 6141bc1 | warn-fill/-stroke、crit-stroke |
+| Task 3 DevicePanel 状态色 | f9d7317 | 10 处替换，偏色红/琥珀清除 |
+| Task 4 中性色收敛 | ae071f4 / 6063f68 / 9517343 / 4650d86 | 发现并修复 hexToRgb/hexToRgbTriplet/rgbOf 三个解析器盲区（均加单测锁） |
+| Task 5 双窗口原子化 | 7f9415e / 57be204 | 哨兵 "" 对齐 ToolPanel；PillsOrSelect 补 label prop |
+| Task 6 px 门禁 | dbeea6c | 12 文件值保持型清零；JS 体积零变化 |
+| Task 7 焦点态 | 2297cd3 | RangePills :focus-visible |
+| Task 8 系列色 | e8606fe | TOOL_SERIES 单一来源 |
+| Task 8.5 玻璃模糊 | 2290209 | blur(var(--tum-blur-card)) + rgba(24,26,30,0.78)；无头 Edge CDP 实机验证 |
+| Task 9 文档同步 | 79a3b14 / 5c5b1e7 | 附录A 补齐（与 tokens.css 逐名核等）、§3 对齐、迁移表/遗留清单更新 |
+| Task 10 终验 | — | dashboard 79.02 kB（−2.2 kB）；54/54 测试；四窗目检 + 玻璃实机截图 ✓ |
+| 终审收尾 | 本批 | deviceColor 收敛（消灭 DEV_COLORS 双份与死导出）、segStyle 注释纠偏、rgba 家族禁令补全（5 个三色组）、§8 执行记录 |
+
+终审结论：**可发布**。遗留项全部记录于 COMPONENT-LIBRARY §8（Settings 整体换肤、HeatmapGrid/CalendarSection 结构迁移、pill-breathe 收敛、rgb 解析器统一、双窗口玻璃壳抽取）。
+
+环境副作用备忘：8.5 验证时的无头 Edge 启动复用了既有 Edge 进程，清理执行了 `taskkill /IM msedge.exe`（可能关闭了用户当时打开的 Edge 窗口）；dev server（5173）为复用遗留实例，未新建。
