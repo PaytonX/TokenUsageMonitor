@@ -5,8 +5,11 @@
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const SRC = join(process.cwd(), "src");
+// 锚定到本模块上两级（src/），vitest 从任意 cwd 启动都能扫对。
+// fileURLToPath 会保留 URL 尾部的分隔符，这里去掉，保证 rel = f.slice(SRC.length + 1) 成立。
+const SRC = fileURLToPath(new URL("../", import.meta.url)).replace(/[\\/]+$/, "");
 
 function listSvelte(dir: string): string[] {
   const out: string[] = [];
@@ -18,7 +21,10 @@ function listSvelte(dir: string): string[] {
   return out;
 }
 
-const FILES = listSvelte(SRC).filter((f) => !f.endsWith("Settings.svelte"));
+/** 统一以 src 相对路径（正斜杠）标识文件：排除与豁免都按精确路径匹配。 */
+const FILES = listSvelte(SRC)
+  .map((f) => ({ path: f, rel: f.slice(SRC.length + 1).replace(/\\/g, "/") }))
+  .filter((file) => file.rel !== "Settings.svelte");
 
 /** 去掉注释再匹配，避免文档示例误报（如 ColorSwatch 顶部的用法注释）。 */
 function stripComments(src: string): string {
@@ -38,21 +44,25 @@ const FORBIDDEN_HEX: Array<{ hex: string; exempt: string[]; why: string }> = [
   // 旧版 success/crit 别名色（组件库文档 §5 明令禁止）
   { hex: "#34d399", exempt: ["Settings.svelte"], why: "旧 success 绿，改用 --tum-ok" },
   { hex: "#f87171", exempt: ["Settings.svelte"], why: "旧 crit 红，改用 --tum-crit" },
-  // 琥珀只允许：Settings 品牌点（遗留）、ColorSwatch 文档注释
-  { hex: "#fbbf24", exempt: ["Settings.svelte", "lib/components/atoms/ColorSwatch.svelte"], why: "琥珀仅限品牌点/热力图今日描边" },
+  // 琥珀只允许：Settings 品牌点（遗留）。ColorSwatch 顶部的用法示例在 HTML 注释里，
+  // stripComments 已将其剔除，无需文件级豁免（文件级豁免会静默放行未来的真实使用）。
+  { hex: "#fbbf24", exempt: ["Settings.svelte"], why: "琥珀仅限品牌点/热力图今日描边" },
 ];
 
 describe("design token lint", () => {
   it("svelte 源码不含禁用 hex（注释除外）", () => {
     const hits: string[] = [];
-    for (const f of FILES) {
-      const rel = f.slice(SRC.length + 1).replace(/\\/g, "/");
-      const code = stripComments(readFileSync(f, "utf8"));
+    for (const { path, rel } of FILES) {
+      const code = stripComments(readFileSync(path, "utf8"));
       for (const rule of FORBIDDEN_HEX) {
         if (rule.exempt.includes(rel)) continue;
         if (hasHex(code, rule.hex)) hits.push(`${rel}: ${rule.hex} (${rule.why})`);
       }
     }
     expect(hits, hits.join("\n")).toEqual([]);
+  });
+
+  it("扫描覆盖了足够多的 svelte 文件", () => {
+    expect(FILES.length, `仅扫描到 ${FILES.length} 个 svelte 文件，疑似目录扫描失败`).toBeGreaterThan(10);
   });
 });
