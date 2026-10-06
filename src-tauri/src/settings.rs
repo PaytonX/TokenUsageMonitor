@@ -116,6 +116,10 @@ pub struct Settings {
     /// Accepts `http://host:port` or `socks5://host:port`; `None` uses the default client.
     #[serde(default)]
     pub proxy_url: Option<String>,
+    /// 启动时联网检查 GitHub Releases 新版本。默认关闭——本项目以"本机数据
+    /// 不外发"为卖点，联网行为必须逐项显式开启，更新检查也不例外。
+    #[serde(default)]
+    pub check_updates_on_start: bool,
     /// TokenRouter 本地路由代理配置（路由表/端口/阈值）。见 `router/` 模块
     /// 与 docs/superpowers/specs/2026-10-04-token-router-design.md。
     #[serde(default)]
@@ -209,6 +213,7 @@ impl Default for Settings {
             hub_token_configured: false,
             rate_overrides: HashMap::new(),
             proxy_url: None,
+            check_updates_on_start: false,
             router: crate::router::config::RouterSettings::default(),
         }
     }

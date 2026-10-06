@@ -310,9 +310,26 @@ export interface Settings {
   /** Optional outbound proxy (http/https/socks5). Null/empty/blank = direct.
    * Changing this rebuilds the shared HTTP client and the provider registry. */
   proxy_url?: string | null;
+  /** 启动时联网检查 GitHub Releases 新版本。默认关闭，显式开启后才联网。 */
+  check_updates_on_start?: boolean;
   /** TokenRouter 本地路由代理配置。镜像 Rust `router::config::RouterSettings`；
    * 旧 dev-mock / 测试夹具可能缺省，读取端用 `??` 兜底。 */
   router?: RouterSettings;
+}
+
+/** 镜像 Rust `app_meta::AppMeta`：版本号与仓库地址。 */
+export interface AppMeta {
+  version: string;
+  repo_url: string;
+}
+
+/** 镜像 Rust `app_meta::UpdateInfo`：更新检查结果。 */
+export interface UpdateInfo {
+  current: string;
+  latest: string | null;
+  has_update: boolean;
+  url: string | null;
+  published_at: string | null;
 }
 
 /** TokenRouter 路由面协议。同协议转发：一条路由链上的候选必须同协议。 */

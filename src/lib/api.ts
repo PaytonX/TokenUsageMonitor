@@ -377,3 +377,20 @@ export function onRatesUpdated(
 ): Promise<UnlistenFn> {
   return listen<RatesSnapshot>("rates-updated", (e) => cb(e.payload));
 }
+
+import type { AppMeta, UpdateInfo } from "./types";
+
+/** 应用元信息：版本号 + GitHub 仓库地址（"关于"页渲染用）。 */
+export async function getAppMeta(): Promise<AppMeta> {
+  return invoke<AppMeta>("get_app_meta");
+}
+
+/** 在系统浏览器打开一个后端白名单内的 https 链接（仅 github.com）。 */
+export async function openUrl(url: string): Promise<void> {
+  return invoke<void>("open_url", { url });
+}
+
+/** 联网检查 GitHub Releases 是否有新版本（复用共享 HTTP client 与代理设置）。 */
+export async function checkAppUpdate(): Promise<UpdateInfo> {
+  return invoke<UpdateInfo>("check_app_update");
+}

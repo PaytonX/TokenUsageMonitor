@@ -17,6 +17,9 @@
     closeSettings,
     forceRefresh,
     getDeviceReport,
+    getAppMeta,
+    openUrl,
+    checkAppUpdate,
     getExchangeRates,
     refreshExchangeRates,
     getRouterStatus,
@@ -35,6 +38,7 @@
     type TestResult,
     type ProxyTestResult,
     type RatesSnapshot,
+    type UpdateInfo,
     type RouterSettings,
     type RouterStatus,
     defaultRouterSettings,
@@ -153,6 +157,12 @@
   /** 可覆盖币种（USD 恒为 1，不提供覆盖输入）。 */
   const OVERRIDE_CODES = CURRENCIES.filter((c) => c.code !== "USD");
   let appVersion = $state("");
+  // 关于页：仓库地址（后端单处常量下发）+ 更新检查状态。
+  let repoUrl = $state("");
+  let checkUpdatesOnStart = $state(false);
+  let updateInfo = $state<UpdateInfo | null>(null);
+  let updateChecking = $state(false);
+  let updateError = $state<string | null>(null);
   let saving = $state(false);
   let savedFlash = $state(false);
   let busy = $state<string | null>(null);
@@ -246,6 +256,11 @@
       getDeviceReport()
         .then((d) => (appVersion = d.version))
         .catch(() => {});
+      // 仓库地址与更新检查设置（关于页）。
+      getAppMeta()
+        .then((m) => (repoUrl = m.repo_url))
+        .catch(() => {});
+      checkUpdatesOnStart = s.check_updates_on_start ?? false;
     } catch (e) {
       genericError = String(e);
     }
@@ -811,6 +826,39 @@
     }
   }
 
+  /** 手动检查 GitHub Releases 新版本；结果内联展示，错误走内联提示。 */
+  async function handleUpdateCheck() {
+    updateChecking = true;
+    updateError = null;
+    try {
+      updateInfo = await checkAppUpdate();
+    } catch (e) {
+      updateError = String(e);
+    } finally {
+      updateChecking = false;
+    }
+  }
+
+  /** 仓库直达：URL 由后端常量下发，open_url 命令里再做一次白名单校验。 */
+  async function handleOpenRepo() {
+    if (!repoUrl) return;
+    try {
+      await openUrl(repoUrl);
+      genericError = null;
+    } catch (e) {
+      genericError = String(e);
+    }
+  }
+
+  async function handleOpenUpdateUrl(url: string) {
+    try {
+      await openUrl(url);
+      genericError = null;
+    } catch (e) {
+      genericError = String(e);
+    }
+  }
+
   async function persistSettings(): Promise<boolean> {
     if (!settings) return true;
     genericError = null;
@@ -837,6 +885,7 @@
         // backend would mint a secret on every hub start, undoing a
         // deliberately cleared field.
         hub_token_configured: true,
+        check_updates_on_start: checkUpdatesOnStart,
         rate_overrides: buildRateOverrides(),
         proxy_url: proxyEnabled && proxyUrl.trim() ? proxyUrl.trim() : null,
         // 本机工具数据目录：空串条目剔除（允许保留一个空输入框）。
@@ -2088,6 +2137,50 @@ async function handleMinimize() {
           </div>
 
           <div class="section">
+            <h3 class="section__title">项目主页与更新</h3>
+            <p class="hint">
+              {#if repoUrl}
+                <button type="button" class="link-btn" onclick={handleOpenRepo}>{repoUrl}</button>
+              {:else}
+                GitHub 仓库
+              {/if}
+              —— 提 Issue / PR 与获取新版本都在这里。
+            </p>
+            <div class="account__actions">
+              <button class="btn btn--ghost" disabled={updateChecking} onclick={handleUpdateCheck}>
+                {updateChecking ? "检查中…" : "检查更新"}
+              </button>
+            </div>
+            {#if updateError}
+              <p class="hint about-update__error">检查失败：{updateError}</p>
+            {:else if updateInfo}
+              {#if updateInfo.has_update}
+                <p class="hint">
+                  发现新版本 <b>{updateInfo.latest}</b>（当前 v{updateInfo.current}）。
+                  {#if updateInfo.url}
+                    <button type="button" class="link-btn" onclick={() => updateInfo?.url && handleOpenUpdateUrl(updateInfo.url)}>
+                      前往 Releases 页下载
+                    </button>
+                  {/if}
+                </p>
+              {:else if updateInfo.latest}
+                <p class="hint">已是最新版本（v{updateInfo.current}）。</p>
+              {:else}
+                <p class="hint">仓库还没有发布任何版本。</p>
+              {/if}
+            {/if}
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={checkUpdatesOnStart}
+                onchange={(e) => (checkUpdatesOnStart = (e.currentTarget as HTMLInputElement).checked)}
+              />
+              <span class="toggle__track"><span class="toggle__thumb"></span></span>
+            </label>
+            <span class="behavior-hint">启动时自动检查更新（仅访问 api.github.com，随"保存设置"生效）</span>
+          </div>
+
+          <div class="section">
             <h3 class="section__title">开源致谢</h3>
             <p class="hint">本项目建立在以下优秀开源项目之上，衷心感谢各项目与维护者的贡献：</p>
             <ul class="about-list">
@@ -2389,6 +2482,22 @@ async function handleMinimize() {
     border-radius: 999px;
     padding: 1px 8px;
     vertical-align: middle;
+  }
+
+  /* 关于页：仓库直达 / Releases 链接按钮（视觉是链接，行为走 open_url 白名单）。 */
+  .link-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--tum-accent, #4cc2ff);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .about-update__error {
+    color: #ff6b6b;
   }
 
   /* --- Interval / select ------------------------------------------------ */

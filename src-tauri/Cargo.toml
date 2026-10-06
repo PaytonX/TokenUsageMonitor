@@ -3,6 +3,8 @@ name = "token-usage-monitor"
 version = "0.1.0"
 description = "Lightweight transparent desktop widget for AI token usage monitoring"
 authors = ["TokenUsageMonitor"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/OWNER/TokenUsageMonitor"
 edition = "2021"
 rust-version = "1.77"
 
@@ -59,6 +61,9 @@ getrandom = "0.3"
 # Errors
 thiserror = "1"
 anyhow = "1"
+
+# Semver comparison for the GitHub Releases update check
+semver = "1"
 
 # Async trait
 async-trait = "0.1"

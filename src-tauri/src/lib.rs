@@ -9,6 +9,7 @@
 //! - Tauri plugins + IPC command handlers
 //! - Periodic scheduler that emits `usage-updated` events
 
+pub mod app_meta;
 pub mod dock;
 pub mod exchange;
 pub mod export;
@@ -324,6 +325,34 @@ pub fn run() {
                 let s = settings_store.read_blocking();
                 if s.autostart {
                     let _ = app.autolaunch().enable();
+                }
+            }
+
+            // 启动时更新检查：默认关闭；用户显式开启后每次启动查一次 GitHub
+            // Releases，发现新版本走系统通知提示。失败一律静默——更新检查
+            // 永远不能影响启动，也没有重试的必要（下次启动自然会再查）。
+            {
+                let (check_on, proxy) = {
+                    let s = settings_store.read_blocking();
+                    (s.check_updates_on_start, s.proxy_url.clone())
+                };
+                if check_on {
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let Ok(client) = crate::build_http_client(proxy.as_deref()) else {
+                            return;
+                        };
+                        if let Ok(info) = app_meta::fetch_latest_release(&client).await {
+                            if info.has_update {
+                                let ver = info.latest.unwrap_or_else(|| "?".into());
+                                let body = match info.url {
+                                    Some(u) => format!("最新版本 {ver}，点击查看：{u}"),
+                                    None => format!("最新版本 {ver}，可在设置 → 关于与诊断 中检查。"),
+                                };
+                                notify::deliver(&handle, "TokenUsageMonitor 有新版本", &body);
+                            }
+                        }
+                    });
                 }
             }
 
@@ -856,6 +885,9 @@ pub fn run() {
             ipc::set_autostart,
             ipc::get_router_status,
             ipc::fetch_upstream_models,
+            app_meta::get_app_meta,
+            app_meta::open_url,
+            app_meta::check_app_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
