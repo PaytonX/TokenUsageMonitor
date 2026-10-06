@@ -276,7 +276,26 @@ git commit -m "fix(device): 状态色收敛到 warn/crit 令牌，去除裸 hex 
   { hex: "#23262d", exempt: [], why: "外来弹层底色，改用 var(--tum-bg-solid)" },
 ```
 
-预期 FAIL 列出上述 5 个文件的命中点。
+并新增 rgba 家族规则（Task 3 质量审查发现的漏网形态：DevicePanel 11 处 `rgba(232, 234, 240, α)` 与 #e8eaf0 同色相）：
+
+```ts
+/** 禁用 rgba 字面量（同色相换了形态逃避 hex 规则的）。 */
+const FORBIDDEN_RGBA: Array<{ pattern: string; exempt: string[]; why: string }> = [
+  { pattern: "rgba(232, 234, 240", exempt: [], why: "外来文字色 rgba 形态，按 alpha 映射到 text-muted/text-secondary" },
+];
+```
+
+（测试体里对每条 pattern 做一次 `content.includes(pattern)` 检查，豁免逻辑与 hex 相同。）
+
+预期 FAIL 列出上述 5 个文件 + DevicePanel 的命中点。
+
+**DevicePanel rgba(232,234,240,α) 映射表**（感知量化到最近 token，渲染差异 ΔL≈8-15%，标签文字上不可感知）：
+
+| alpha | 现值行 | 改为 |
+|-------|--------|------|
+| 0.5 / 0.55 / 0.6 | :618 / :424,530 / :635,646 | `var(--tum-text-muted)` |
+| 0.65 / 0.7 / 0.72 / 0.75 | :557 / :493 / :503 / :443,591 | `var(--tum-text-secondary)` |
+| 0.28（border-color） | :494 | `var(--tum-border-strong)` |
 
 - [ ] **Step 2: 兜底灰统一写法**
 
