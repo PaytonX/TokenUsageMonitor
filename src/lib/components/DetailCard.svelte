@@ -339,7 +339,14 @@
     gap: 6px;
     border-radius: var(--tum-radius-md);
     border: 1px solid var(--tum-border-strong);
-    background: rgba(36, 38, 42, 0.95);
+    /* 玻璃外壳（2026-10-06 原型拍板）：径向强调色微光 + 半透明深底 + 背景模糊，
+       对齐 tum-glass 语言；backdrop-filter 只采样窗内内容（透明窗对窗下桌面无效，
+       属预期）。参数：blur 走 --tum-blur-card，底色 α0.78。 */
+    background:
+      radial-gradient(120% 120% at 0% 0%, rgba(76, 194, 255, 0.07), transparent 42%),
+      rgba(24, 26, 30, 0.78);
+    backdrop-filter: blur(var(--tum-blur-card));
+    -webkit-backdrop-filter: blur(var(--tum-blur-card));
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
   }
 
