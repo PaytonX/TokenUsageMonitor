@@ -47,6 +47,12 @@
   --tum-danger: var(--tum-crit);
   --tum-danger-fill: rgba(255, 95, 86, 0.10);
 
+  /* warn/crit 面描边/填充（对齐 accent 的 fill 0.12 / stroke 0.45 惯例）。
+     供告警横幅、危险确认钮 hover 等表面使用，避免再自配 rgba。 */
+  --tum-warn-fill: rgba(255, 200, 61, 0.12);
+  --tum-warn-stroke: rgba(255, 200, 61, 0.45);
+  --tum-crit-stroke: rgba(255, 95, 86, 0.45);
+
   /* Legacy phosphor amber - brand dot + heatmap-today only */
   --tum-amber: #fbbf24;
   --tum-amber-glow: rgba(251, 191, 36, 0.35);
