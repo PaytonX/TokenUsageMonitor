@@ -130,6 +130,7 @@ transition: all 0.15s ease；
 ### 4.5 状态点（PulseDot）与错误条
 - 品牌/状态点：`width/height 6-8px` 圆形 + `box-shadow 0 0 8px 同色 glow`（呼吸感）。
 - 错误提示条：`danger-fill` 底 + **左侧 2px 竖线** + 圆点，弱化整块警示框。
+- 实底按钮/品牌 logo 上的 `#fff` 白字是允许例外（如 DevicePanel 危险确认钮、ProviderLogo）。
 
 ### 4.6 呼吸/告警动效（crit）
 ```css
@@ -174,7 +175,7 @@ transition: all 0.15s ease；
 
 ## 附录 A：完整设计令牌（可直接拷贝）
 
-以下为 TokenUsageMonitor 全局样式，自包含、无外部依赖。贴入新项目的全局 CSS 即获得整套设计系统。
+以下为 TokenUsageMonitor 全局样式（与 `src/styles/tokens.css` 同步，含全局基础与减弱动效降级块），自包含、无外部依赖。贴入新项目的全局 CSS 即获得整套设计系统。
 
 ```css
 :root {
@@ -208,6 +209,11 @@ transition: all 0.15s ease；
   --tum-grad-ok: linear-gradient(90deg, #4cc2ff, #6ccb5f);
   --tum-grad-warn: linear-gradient(90deg, #e8b53d, #ffc83d);
   --tum-grad-crit: linear-gradient(90deg, #e05248, #ff5f56);
+
+  /* warn/crit 表面（fill 0.12 / stroke 0.45，对齐 accent 惯例） */
+  --tum-warn-fill: rgba(255, 200, 61, 0.12);
+  --tum-warn-stroke: rgba(255, 200, 61, 0.45);
+  --tum-crit-stroke: rgba(255, 95, 86, 0.45);
 
   /* 状态别名（兼容） */
   --tum-success: var(--tum-ok);
@@ -245,6 +251,17 @@ transition: all 0.15s ease；
 
   /* 悬浮层模糊 */
   --tum-blur-card: 24px;
+
+  /* 贴边胶囊/把手表面：透明窗里 backdrop-filter 采不到桌面，用高不透明深色保证对比度 */
+  --tum-glass: rgba(22, 25, 31, 0.92);
+
+  /* 动画曲线：状态切换用 spring，收起滑出用 dock-exit，环形用 ring */
+  --tum-ease-spring: cubic-bezier(0.33, 1, 0.68, 1);
+  --tum-ease-dock-exit: cubic-bezier(0.32, 0, 0.67, 0);
+  --tum-ease-ring: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* 兼容保留（当前无组件引用） */
+  --tum-scanline: none;
 }
 
 /* 全局基础 */
@@ -257,9 +274,12 @@ html, body {
   font-size: var(--tum-font-size-base);
   color: var(--tum-text-primary);
   user-select: none;
+  -webkit-user-select: none;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
+
+#app { height: 100vh; width: 100vw; }
 
 /* 数字统一等宽表格数字，防更新抖动 */
 .tum-numeric, input[type="number"], .tum-mono {
@@ -277,6 +297,15 @@ html, body {
   border-radius: var(--tum-radius-lg);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+}
+
+/* 系统开启「减弱动态效果」时所有过渡/动画瞬时完成，交互与显隐功能保持不变 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }
 
 /* 账户强调色注入：通过内联 CSS 变量覆盖 */

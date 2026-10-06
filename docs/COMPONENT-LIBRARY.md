@@ -173,7 +173,7 @@ src/lib/components/
 | `MiniPanel` | 账户迷你条列表 | `snapshots`, `countdown`, `accentFor` |
 | `ResetCountdown` | 重置倒计时 | `resetAt`, `label` |
 | `ProviderLogo` | 品牌 logo | `kind`, `size`, `accent` |
-| `PillsOrSelect` | 胶囊 / 下拉自适应 | `items`, `value`, `onChange`, `dotFor` |
+| `PillsOrSelect` | 胶囊 / 下拉自适应 | `items`, `value`, `onPick(id)`, `dotFor`, `brandFor`, `label`（aria-label，默认"选择"） |
 | `ProgressRing` | SVG 环形进度 | `value`, `tone`, `size`, `accent`, `breathe` |
 
 ---
@@ -211,6 +211,7 @@ src/lib/components/
 - [ ] **动画** 复用既有 `breath --tum-ease-*` 曲线；时长走 200ms（状态切换）/ 600ms（环形）/ 1.6s（呼吸）/ 2.6s（闲置呼吸）；
 - [ ] **键盘可达** 交互元素加 `:focus-visible { outline: 2px var(--tum-accent); outline-offset: 2px; }`；
 - [ ] **Reduced motion** 已被 `tokens.css` 全局处理，不要在新 CSS 里再加 `prefers-reduced-motion`。
+- [ ] **令牌门禁** `npx vitest run src/lib/design-tokens.test.ts` 是硬门禁：禁用 hex / 裸 token 值 px（字号 10/11/13px、圆角 4/8/12/16/999px）/ rgba 外来家族会被拦截；豁免必须在规则里写明原因。
 
 ---
 
@@ -224,6 +225,8 @@ src/lib/components/
 | DevicePanel.svelte | 691 | 621 | −70 (−10%) | PanelHeader + Stat + ColorSwatch |
 | ToolWindow.svelte | 457 | 397 | −60 (−13%) | RangePills + ColorSwatch |
 | TrendWindow.svelte | 438 | 347 | −91 (−21%) | RangePills + ColorSwatch |
+| TrendWindow.svelte | 自写 tw__head/tw__title | PanelHeader（+ .tw__stats 保留） | −约 20 行 | PanelHeader |
+| ToolWindow.svelte | 自写 tw__head/tw__title/tw__pickers | PanelHeader + PillsOrSelect（哨兵 "" 对齐 ToolPanel） | −约 55 行 | PanelHeader + PillsOrSelect |
 
 合计移除 **−593 行**重复 CSS（5 个原子 ~250 行）。`dashboard` 入口产物从 84.51 kB → 81.22 kB（−3.29 kB / −3.9%）。
 
@@ -232,8 +235,10 @@ src/lib/components/
 候选（按 ROI 排序）：
 
 1. **HeatmapGrid.svelte** ──── 内含 `__stat b + __stat span` 与 `__legend-dot` 的内联色块，预计可节省 ~30 ~ 50 行；本轮未动，下一顺手做。
-2. **CalendarSection.svelte** ──── 包含 `__head / __legend / __key` 三件套，与原子高度同构；但日历有自定义日期格逻辑，建议作为单独任务审视。
+2. **CalendarSection.svelte** ──── 包含 `__head / __legend / __key` 三件套，与原子高度同构；颜色 hex 已在 2026-10-06 收敛（仅剩结构迁移），但日历有自定义日期格逻辑，建议作为单独任务审视。
 4. **App.svelte** ──── 顶部胶囊条（`pill-breathe`）与 PulseDot 是同一语言的两次实现，未来可以收敛到 PulseDot；本轮不动。
 5. **Settings.svelte** ──── 体积最大（140KB），重复最多（`pane__title / section__title / rt-card__title` 等都走大写 + 弱化），但因为字号 / 圆角 / 间距与 token 体系差别大（全用 11.5 / 12.5 / 9px 这种 token 外的尺寸），建议单独审视后再决定是否统一；本轮不动。
+6. **窗口统计行 tw__stats** ──── 两个窗口头部的 `本区间 <b>…</b>` 手写统计行与 `<Stat>` 原子同构，未来可换用（会改头部视觉，需单独确认）。
+7. **token 外遗留尺寸** ──── 8/9/12/14/15/17px 字号与 0.02-0.14 微 alpha 白面为已记录遗留（Settings.svelte 整体豁免除外），新代码不得模仿；design-tokens lint 已拦截 token 值裸写。
 
 迁移前先 `svelte-check` 跑通，再 `vitest run` 确认无回归，最后 `vite build` 确认产物大小不退化。
