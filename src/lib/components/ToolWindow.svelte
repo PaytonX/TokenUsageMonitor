@@ -7,6 +7,7 @@
   import { getLocalTools } from "../api";
   import type { LocalDay, LocalToolReport, LocalToolsPayload } from "../types";
   import { hexToRgb } from "../types";
+  import { PanelHeader, RangePills, ColorSwatch } from "./atoms";
 
   type RangeKey = "7d" | "30d" | "90d";
   const RANGES: { key: RangeKey; label: string; days: number }[] = [
@@ -164,16 +165,12 @@
         >{t.name}</button>
       {/each}
     </div>
-    <div class="tw__ranges" role="group" aria-label="时间区间">
-      {#each RANGES as r (r.key)}
-        <button
-          type="button"
-          class="tw__range"
-          class:is-active={range === r.key}
-          onclick={() => (range = r.key)}
-        >{r.label}</button>
-      {/each}
-    </div>
+    <RangePills
+      options={RANGES}
+      value={range}
+      onChange={(k) => (range = k)}
+      label="时间区间"
+    />
     <span class="tw__stats">本区间 <b>{fmtTokens(rangeTotal)}</b></span>
   </header>
 
@@ -203,7 +200,7 @@
 
     <div class="tw__legend">
       {#each BANDS as b (b.key)}
-        <span class="tw__key"><i class="tw__swatch" style={`background:${b.color}`}></i>{b.label}</span>
+        <span class="tw__key"><ColorSwatch color={b.color} size={9} />{b.label}</span>
       {/each}
       <span class="tw__legend-hint">放大本窗口可获得更粗的柱与更多细节</span>
     </div>
@@ -301,8 +298,7 @@
     text-transform: uppercase;
   }
 
-  .tw__pickers,
-  .tw__ranges {
+  .tw__pickers {
     display: flex;
     gap: 2px;
     padding: 2px;
@@ -311,8 +307,7 @@
     background: rgba(255, 255, 255, 0.04);
   }
 
-  .tw__picker,
-  .tw__range {
+  .tw__picker {
     border: none;
     background: transparent;
     color: var(--tum-text-muted);
@@ -324,13 +319,11 @@
     transition: background 0.2s ease, color 0.2s ease;
   }
 
-  .tw__picker:hover,
-  .tw__range:hover {
+  .tw__picker:hover {
     color: var(--tum-text-primary);
   }
 
-  .tw__picker.is-active,
-  .tw__range.is-active {
+  .tw__picker.is-active {
     background: rgba(76, 194, 255, 0.18);
     color: var(--tum-text-primary);
   }
@@ -428,13 +421,6 @@
     font-family: var(--tum-font-mono);
     font-size: 11px;
     color: var(--tum-text-secondary);
-  }
-
-  .tw__swatch {
-    width: 9px;
-    height: 9px;
-    border-radius: 2px;
-    display: inline-block;
   }
 
   .tw__legend-hint {

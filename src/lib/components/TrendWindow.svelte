@@ -15,6 +15,7 @@
   } from "../trend-data";
   import { hexToRgb } from "../types";
   import CalendarSection from "./CalendarSection.svelte";
+  import { RangePills, ColorSwatch } from "./atoms";
 
   let status: "loading" | "ready" | "empty" = $state("loading");
   let seriesIds: string[] = $state([]);
@@ -137,16 +138,12 @@
   </div>
   <header class="tw__head">
     <span class="tw__title">用量趋势</span>
-    <div class="tw__ranges" role="group" aria-label="时间区间">
-      {#each RANGES as r (r.key)}
-        <button
-          type="button"
-          class="tw__range"
-          class:is-active={range === r.key}
-          onclick={() => (range = r.key)}
-        >{r.label}</button>
-      {/each}
-    </div>
+    <RangePills
+      options={RANGES}
+      value={range}
+      onChange={(k) => (range = k)}
+      label="时间区间"
+    />
     <span class="tw__stats">
       累计 <b>{formatCompact(rangeTotal)}</b> · 连续 <b>{streak}</b> 天
     </span>
@@ -180,7 +177,7 @@
     <div class="tw__legend">
       {#each seriesIds as id (id)}
         <span class="tw__key">
-          <i class="tw__swatch" style={`background:${colorOf(id)}`}></i>
+          <ColorSwatch color={colorOf(id)} size={9} />
           <span>{nameOf(id)}</span>
         </span>
       {/each}
@@ -285,36 +282,6 @@
     text-transform: uppercase;
   }
 
-  .tw__ranges {
-    display: flex;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--tum-border);
-    border-radius: var(--tum-radius-pill);
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .tw__range {
-    border: none;
-    background: transparent;
-    color: var(--tum-text-muted);
-    font-size: 11px;
-    font-family: var(--tum-font);
-    padding: 3px 12px;
-    border-radius: var(--tum-radius-pill);
-    cursor: pointer;
-    transition: background 0.2s ease, color 0.2s ease;
-  }
-
-  .tw__range:hover {
-    color: var(--tum-text-primary);
-  }
-
-  .tw__range.is-active {
-    background: rgba(76, 194, 255, 0.18);
-    color: var(--tum-text-primary);
-  }
-
   .tw__stats {
     flex: 1;
     font-family: var(--tum-font-mono);
@@ -409,13 +376,6 @@
     font-family: var(--tum-font-mono);
     font-size: 11px;
     color: var(--tum-text-secondary);
-  }
-
-  .tw__swatch {
-    width: 9px;
-    height: 9px;
-    border-radius: 2px;
-    display: inline-block;
   }
 
   .tw__legend-hint {

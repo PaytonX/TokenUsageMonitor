@@ -9,6 +9,12 @@
   import { displayCurrency, formatCost, normalizeCurrency, toUsd } from "../currency";
   import type { Currency } from "../currency";
   import TrendLineChart from "./TrendLineChart.svelte";
+  import {
+    PanelHeader,
+    RangePills,
+    ColorSwatch,
+    Stat,
+  } from "./atoms";
 
   interface Props {
     accent?: string;
@@ -335,15 +341,20 @@
 </script>
 
 <div class="mp">
-  <div class="mp__head">
-    <span class="mp__title">{aggMode ? "全端模型用量" : "模型用量"}</span>
-    <div class="mp__head-right" role="group" aria-label="时间区间">
-      {#each RANGES as r (r.key)}
-        <button type="button" class="mp__range" class:is-active={range === r.key} onclick={() => { range = r.key; writePref("tum.model.range", r.key); }}>{r.label}</button>
-      {/each}
-      <button type="button" class="mp__refresh" title={aggMode ? "刷新多端数据" : "重新扫描本地日志"} onclick={() => void load(true)}>↻</button>
-    </div>
-  </div>
+  <PanelHeader title={aggMode ? "全端模型用量" : "模型用量"}>
+    <RangePills
+      options={RANGES}
+      value={range}
+      accent={accent}
+      onChange={(k) => { range = k; writePref("tum.model.range", k); }}
+    />
+    <button
+      type="button"
+      class="mp__refresh"
+      title={aggMode ? "刷新多端数据" : "重新扫描本地日志"}
+      onclick={() => void load(true)}
+    >↻</button>
+  </PanelHeader>
 
   {#if aggMode && staleDevs.length > 0 && (modelList.length === 0)}
     <div class="mp__empty mp__empty--err">
@@ -424,10 +435,10 @@
 
     {#if active}
       <div class="mp__stats">
-        <span class="mp__stat"><b>{fmtTokens(rangeTotal)}</b><span>近 {rangeDays} 天</span></span>
-        <span class="mp__stat"><b>{fmtTokens(active.total)}</b><span>累计 tokens</span></span>
+        <Stat value={fmtTokens(rangeTotal)} label="近 {rangeDays} 天" />
+        <Stat value={fmtTokens(active.total)} label="累计 tokens" />
         {#if active.costUsd > 0}
-          <span class="mp__stat"><b>{fmtCost(active)}</b><span>{costLabel(active)}</span></span>
+          <Stat value={fmtCost(active)} label={costLabel(active)} />
         {/if}
       </div>
       <div class="mp__chart">
@@ -449,48 +460,6 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
-  }
-
-  .mp__head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    flex: none;
-  }
-
-  .mp__head-right {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .mp__title {
-    font-size: var(--tum-font-size-xs);
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-    color: var(--tum-text-muted);
-    font-family: var(--tum-font-mono);
-  }
-
-  .mp__range {
-    border: none;
-    background: transparent;
-    color: var(--tum-text-muted);
-    font-size: 10px;
-    font-family: var(--tum-font);
-    padding: 2px 8px;
-    border-radius: var(--tum-radius-pill);
-    cursor: pointer;
-    transition: background 0.2s ease, color 0.2s ease;
-  }
-  .mp__range:hover {
-    color: var(--tum-text-primary);
-  }
-  .mp__range.is-active {
-    background: rgba(76, 194, 255, 0.18);
-    color: var(--tum-text-primary);
   }
 
   .mp__refresh {
@@ -520,21 +489,6 @@
     gap: 14px;
     flex-wrap: wrap;
     flex: none;
-  }
-  .mp__stat {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 5px;
-    font-family: var(--tum-font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-  .mp__stat b {
-    color: var(--tum-text-primary);
-    font-size: var(--tum-font-size-base);
-  }
-  .mp__stat span {
-    color: var(--tum-text-muted);
-    font-size: 10px;
   }
 
   .mp__chart {

@@ -9,6 +9,7 @@
   import type { LocalDay, LocalToolReport, LocalToolsPayload } from "../types";
   import PillsOrSelect from "./PillsOrSelect.svelte";
   import TrendLineChart from "./TrendLineChart.svelte";
+  import { PanelHeader, RangePills, ZoomButton, Stat, ColorSwatch } from "./atoms";
 
   /** 「全部工具」聚合视图的虚拟 id（不对应任何真实工具）。 */
   const ALL_TOOLS_ID = "__all__";
@@ -250,36 +251,23 @@
 </script>
 
 <div class="tool" data-tauri-drag-region={false}>
-  <div class="tool__head">
-    <span class="tool__title">{aggMode ? "全端工具" : "本机工具"}</span>
-    <div class="tool__head-right" role="group" aria-label="时间区间">
-      {#each RANGES as r (r.key)}
-        <button
-          type="button"
-          class="tool__range"
-          class:is-active={range === r.key}
-          onclick={() => {
-            range = r.key;
-            writePref("tum.tool.range", r.key);
-          }}
-        >{r.label}</button>
-      {/each}
-      <button
-        type="button"
-        class="tool__refresh"
-        title={aggMode ? "刷新多端数据" : "重新扫描本地日志"}
-        onclick={() => void load(true)}
-      >↻</button>
-      {#if !aggMode}
-        <button
-          type="button"
-          class="tool__zoom"
-          title="放大为独立窗口"
-          onclick={() => void openToolWindow()}
-        >⤢</button>
-      {/if}
-    </div>
-  </div>
+  <PanelHeader title={aggMode ? "全端工具" : "本机工具"}>
+    <RangePills
+      options={RANGES}
+      value={range}
+      accent={accent}
+      onChange={(k) => { range = k; writePref("tum.tool.range", k); }}
+    />
+    <button
+      type="button"
+      class="tool__refresh"
+      title={aggMode ? "刷新多端数据" : "重新扫描本地日志"}
+      onclick={() => void load(true)}
+    >↻</button>
+    {#if !aggMode}
+      <ZoomButton title="放大为独立窗口" onclick={() => void openToolWindow()} />
+    {/if}
+  </PanelHeader>
 
   {#if aggMode && staleDevs.length > 0 && (payload?.tools.length ?? 0) === 0}
     <div class="tool__empty tool__empty--err">
@@ -327,15 +315,15 @@
       />
     {/if}
     <div class="tool__stats">
-      <span class="tool__stat"><b>{fmtTokens(view.total_tokens)}</b><span>累计 tokens</span></span>
-      <span class="tool__stat"><b>{view.session_count}</b><span>会话</span></span>
-      <span class="tool__stat"><b>{view.project_count}</b><span>项目</span></span>
+      <Stat value={fmtTokens(view.total_tokens)} label="累计 tokens" />
+      <Stat value={view.session_count} label="会话" />
+      <Stat value={view.project_count} label="项目" />
     </div>
 
     <div class="tool__breakdown">
-      <span class="tool__bd"><i style={`background:${BANDS[0].color}`}></i>输入 {fmtTokens(rangeInput)}</span>
-      <span class="tool__bd"><i style={`background:${BANDS[1].color}`}></i>缓存 {fmtTokens(rangeCache)}</span>
-      <span class="tool__bd"><i style={`background:${BANDS[2].color}`}></i>输出 {fmtTokens(rangeOutput)}</span>
+      <span class="tool__bd"><ColorSwatch color={BANDS[0].color} size={7} />输入 {fmtTokens(rangeInput)}</span>
+      <span class="tool__bd"><ColorSwatch color={BANDS[1].color} size={7} />缓存 {fmtTokens(rangeCache)}</span>
+      <span class="tool__bd"><ColorSwatch color={BANDS[2].color} size={7} />输出 {fmtTokens(rangeOutput)}</span>
     </div>
 
     <div class="tool__chart">
@@ -359,50 +347,6 @@
     overflow: hidden;
   }
 
-  .tool__head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    flex: none;
-  }
-
-  .tool__head-right {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .tool__title {
-    font-size: var(--tum-font-size-xs);
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-    color: var(--tum-text-muted);
-    font-family: var(--tum-font-mono);
-  }
-
-  .tool__range {
-    border: none;
-    background: transparent;
-    color: var(--tum-text-muted);
-    font-size: 10px;
-    font-family: var(--tum-font);
-    padding: 2px 8px;
-    border-radius: var(--tum-radius-pill);
-    cursor: pointer;
-    transition: background 0.2s ease, color 0.2s ease;
-  }
-
-  .tool__range:hover {
-    color: var(--tum-text-primary);
-  }
-
-  .tool__range.is-active {
-    background: rgba(76, 194, 255, 0.18);
-    color: var(--tum-text-primary);
-  }
-
   .tool__refresh {
     flex: none;
     width: 18px;
@@ -421,29 +365,6 @@
   }
 
   .tool__refresh:hover {
-    color: var(--tum-accent);
-    border-color: var(--tum-accent-stroke);
-    background: var(--tum-accent-fill);
-  }
-
-  .tool__zoom {
-    flex: none;
-    width: 18px;
-    height: 18px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--tum-border);
-    border-radius: var(--tum-radius-xs);
-    background: var(--tum-surface);
-    color: var(--tum-text-muted);
-    font-size: 11px;
-    line-height: 1;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .tool__zoom:hover {
     color: var(--tum-accent);
     border-color: var(--tum-accent-stroke);
     background: var(--tum-accent-fill);
@@ -488,24 +409,6 @@
     flex: none;
   }
 
-  .tool__stat {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 5px;
-    font-family: var(--tum-font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .tool__stat b {
-    color: var(--tum-text-primary);
-    font-size: var(--tum-font-size-base);
-  }
-
-  .tool__stat span {
-    color: var(--tum-text-muted);
-    font-size: 10px;
-  }
-
   .tool__breakdown {
     display: flex;
     gap: 12px;
@@ -520,13 +423,6 @@
     font-family: var(--tum-font-mono);
     font-size: 10px;
     color: var(--tum-text-secondary);
-  }
-
-  .tool__bd i {
-    width: 7px;
-    height: 7px;
-    border-radius: 2px;
-    display: inline-block;
   }
 
   .tool__chart {

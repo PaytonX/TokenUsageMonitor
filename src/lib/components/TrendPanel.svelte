@@ -16,6 +16,13 @@
   } from "../trend-data";
   import TrendLineChart from "./TrendLineChart.svelte";
   import CalendarSection from "./CalendarSection.svelte";
+  import {
+    PanelHeader,
+    RangePills,
+    ZoomButton,
+    Stat,
+    ColorSwatch,
+  } from "./atoms";
 
   interface Props {
     /** 总量线 / 面积颜色（系统强调色）。 */
@@ -123,38 +130,25 @@
 </script>
 
 <div class="trend" data-tauri-drag-region={false}>
-  <div class="trend__head">
-    <span class="trend__title">{aggMode ? "全端趋势看板" : "趋势看板 · 本机工具"}</span>
-    <div class="trend__head-right" role="group" aria-label="时间区间">
-      {#each RANGES as r (r.key)}
-        <button
-          type="button"
-          class="trend__range"
-          class:is-active={range === r.key}
-          onclick={(e) => {
-            e.stopPropagation();
-            range = r.key;
-            writePref("tum.trend.range", r.key);
-          }}
-        >{r.label}</button>
-      {/each}
-      {#if !aggMode}
-        <button
-          type="button"
-          class="trend__zoom"
-          title="放大为独立窗口"
-          onclick={(e) => {
-            e.stopPropagation();
-            void openTrendWindow();
-          }}
-        >⤢</button>
-      {/if}
-    </div>
-  </div>
+  <PanelHeader
+    title={aggMode ? "全端趋势看板" : "趋势看板 · 本机工具"}
+  >
+    <RangePills
+      options={RANGES}
+      value={range}
+      onChange={(k) => {
+        range = k;
+        writePref("tum.trend.range", k);
+      }}
+    />
+    {#if !aggMode}
+      <ZoomButton onclick={() => void openTrendWindow()} />
+    {/if}
+  </PanelHeader>
 
   <div class="trend__stats">
-    <span class="trend__stat"><b>{formatCompact(rangeTotal)}</b><span>{aggMode ? "全端累计" : "本机累计"}</span></span>
-    <span class="trend__stat"><b>{streak} 天</b><span>连续活跃</span></span>
+    <Stat value={formatCompact(rangeTotal)} label={aggMode ? "全端累计" : "本机累计"} />
+    <Stat value={streak} label="连续活跃" suffix="天" />
   </div>
 
   <div class="trend__chart">
@@ -170,7 +164,7 @@
   <div class="trend__legend">
     {#each activeIds as id (id)}
       <span class="trend__key">
-        <i class="trend__swatch" style={`background:${activeColors[id] ?? "#8a8f98"}`}></i>
+        <ColorSwatch color={activeColors[id] ?? "rgb(138,143,152)"} size={8} />
         <span>{labelOf(id)}</span>
       </span>
     {/each}
@@ -203,96 +197,11 @@
     position: relative;
   }
 
-  .trend__head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    flex: none;
-  }
-
-  .trend__head-right {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .trend__title {
-    font-size: var(--tum-font-size-xs);
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-    color: var(--tum-text-muted);
-    font-family: var(--tum-font-mono);
-  }
-
-  .trend__range {
-    border: none;
-    background: transparent;
-    color: var(--tum-text-muted);
-    font-size: 10px;
-    font-family: var(--tum-font);
-    padding: 2px 8px;
-    border-radius: var(--tum-radius-pill);
-    cursor: pointer;
-    transition: background 0.2s ease, color 0.2s ease;
-  }
-
-  .trend__range:hover {
-    color: var(--tum-text-primary);
-  }
-
-  .trend__range.is-active {
-    background: rgba(76, 194, 255, 0.18);
-    color: var(--tum-text-primary);
-  }
-
-  .trend__zoom {
-    flex: none;
-    width: 18px;
-    height: 18px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--tum-border);
-    border-radius: var(--tum-radius-xs);
-    background: var(--tum-surface);
-    color: var(--tum-text-muted);
-    font-size: 11px;
-    line-height: 1;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .trend__zoom:hover {
-    color: var(--tum-accent);
-    border-color: var(--tum-accent-stroke);
-    background: var(--tum-accent-fill);
-  }
-
   .trend__stats {
     display: flex;
     gap: 18px;
     flex-wrap: wrap;
     flex: none;
-  }
-
-  .trend__stat {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 6px;
-    font-family: var(--tum-font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .trend__stat b {
-    color: var(--tum-text-primary);
-    font-size: var(--tum-font-size-base);
-  }
-
-  .trend__stat span {
-    color: var(--tum-text-muted);
-    font-size: 10px;
   }
 
   .trend__chart {
@@ -316,12 +225,5 @@
     font-family: var(--tum-font-mono);
     font-size: 9px;
     color: var(--tum-text-secondary);
-  }
-
-  .trend__swatch {
-    width: 8px;
-    height: 8px;
-    border-radius: 2px;
-    display: inline-block;
   }
 </style>

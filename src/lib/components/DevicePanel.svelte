@@ -4,6 +4,7 @@
   import { addRemoteDevice, getHubDevices, onToolsUpdated, removeHubDevice } from "../api";
   import type { HubDevice } from "../types";
   import TrendLineChart from "./TrendLineChart.svelte";
+  import { PanelHeader, Stat, ColorSwatch } from "./atoms";
 
   interface Props {
     /** 兼容旧调用：本地 Provider 数（已被每设备 provider_count 取代，保留无副作用）。 */
@@ -213,10 +214,9 @@
 </script>
 
 <div class="dev" data-tauri-drag-region={false}>
-  <div class="dev__head">
-    <span class="dev__title">设备 · 多端同步</span>
+  <PanelHeader title="设备 · 多端同步">
     <button type="button" class="dev__refresh" title="刷新" onclick={() => void load()}>↻</button>
-  </div>
+  </PanelHeader>
 
   {#if loading && devices.length === 0}
     <div class="dev__empty">正在加载设备…</div>
@@ -236,9 +236,9 @@
           <span class="dev__agg-sub">{devices.length} 台设备 · 近 90 天 · 按设备去重</span>
         </div>
         <div class="dev__stats dev__agg-stats">
-          <span class="dev__stat"><b>{fmtTokens(aggTotal)}</b><span>全端合计</span></span>
-          <span class="dev__stat"><b>{fmtTokens(aggToday)}</b><span>今日全端</span></span>
-          <span class="dev__stat"><b>{devices.length}</b><span>设备</span></span>
+          <Stat value={fmtTokens(aggTotal)} label="全端合计" />
+          <Stat value={fmtTokens(aggToday)} label="今日全端" />
+          <Stat value={devices.length} label="设备" />
         </div>
         {#if aggDays.length > 0}
           <div class="dev__chart dev__agg-chart">
@@ -254,7 +254,7 @@
           <div class="dev__agg-legend">
             {#each aggLegend as l (l.id)}
               <span class="dev__agg-item" title="{l.name} · {fmtTokens(l.total)} tokens">
-                <span class="dev__agg-dot" style="background: {l.color};"></span>
+                <ColorSwatch color={l.color} shape="round" />
                 <span class="dev__agg-name">{l.name}</span>
                 <span class="dev__agg-total tum-numeric">{fmtTokens(l.total)}</span>
               </span>
@@ -291,9 +291,9 @@
             {#if i > 0}<span>PPID {d.device_id}</span>{/if}
           </div>
           <div class="dev__stats">
-            <span class="dev__stat"><b>{fmtTokens(d.tool_tokens)}</b><span>工具 tokens</span></span>
-            <span class="dev__stat"><b>{d.provider_count}</b><span>Provider</span></span>
-            <span class="dev__stat"><b>{d.tool_count}</b><span>本地工具</span></span>
+            <Stat value={fmtTokens(d.tool_tokens)} label="工具 tokens" />
+            <Stat value={d.provider_count} label="Provider" />
+            <Stat value={d.tool_count} label="本地工具" />
           </div>
           {#if d.daily.length > 0}
             <div class="dev__chart">
@@ -374,26 +374,21 @@
     border-radius: 2px;
   }
 
-  .dev__head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 10px;
-  }
-  .dev__title {
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.2px;
-  }
-  .dev__refresh {
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
-    color: inherit;
-    border-radius: 8px;
+.dev__refresh {
+    flex: none;
     width: 26px;
     height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
+    border-radius: 8px;
+    background: var(--tum-surface-hover, rgba(255, 255, 255, 0.06));
+    color: inherit;
     font-size: 14px;
+    line-height: 1;
     cursor: pointer;
+    transition: background 0.15s ease;
   }
   .dev__refresh:hover {
     background: rgba(255, 255, 255, 0.12);
@@ -446,12 +441,6 @@
     gap: 5px;
     font-size: 11px;
     color: rgba(232, 234, 240, 0.75);
-  }
-  .dev__agg-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex: none;
   }
   .dev__agg-name {
     max-width: 130px;
@@ -517,24 +506,6 @@
     display: flex;
     gap: 10px;
     margin-top: 10px;
-  }
-  .dev__stat {
-    flex: 1 1 0;
-    min-width: 0;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.1));
-    border-radius: 10px;
-    padding: 10px;
-    text-align: center;
-  }
-  .dev__stat b {
-    display: block;
-    font-size: 15px;
-    font-weight: 700;
-  }
-  .dev__stat span {
-    font-size: 11px;
-    color: rgba(232, 234, 240, 0.62);
   }
   .dev__chart {
     margin-top: 10px;
