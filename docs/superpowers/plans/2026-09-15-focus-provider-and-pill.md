@@ -35,7 +35,7 @@
 Rust 编译需要 LLVM-MinGW 链接器在 PATH（见 `src-tauri/.cargo/config.toml` 注释），每个 Rust 终端会话先执行一次：
 
 ```powershell
-$env:PATH = "C:\Users\xiong\AppData\Local\Microsoft\WinGet\Packages\MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\llvm-mingw-20260616-ucrt-x86_64\bin;" + $env:PATH
+$env:PATH = "<llvm-mingw-20260616-ucrt-x86_64 解压目录>\bin;" + $env:PATH
 ```
 
 - Rust 测试（在 `src-tauri/` 下）：`cargo test`（完成后预期 8 个测试：signing 3 + clamp 5）
@@ -106,7 +106,7 @@ mod clamp_tests {
 - [ ] **Step 2: 运行确认失败（红）**
 
 ```powershell
-$env:PATH = "C:\Users\xiong\AppData\Local\Microsoft\WinGet\Packages\MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\llvm-mingw-20260616-ucrt-x86_64\bin;" + $env:PATH
+$env:PATH = "<llvm-mingw-20260616-ucrt-x86_64 解压目录>\bin;" + $env:PATH
 cd src-tauri
 cargo test clamp
 ```
@@ -813,7 +813,7 @@ git commit -m "feat: 迷你胶囊形态、拖拽手势与靠边淡出" -- src/Ap
 - [ ] **Step 1: Rust 全量测试**
 
 ```powershell
-$env:PATH = "C:\Users\xiong\AppData\Local\Microsoft\WinGet\Packages\MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\llvm-mingw-20260616-ucrt-x86_64\bin;" + $env:PATH
+$env:PATH = "<llvm-mingw-20260616-ucrt-x86_64 解压目录>\bin;" + $env:PATH
 cd src-tauri
 cargo test
 ```

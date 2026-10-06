@@ -24,3 +24,8 @@ coverage/
 .zcode/
 .zcodeignore
 .mimosa/
+
+# 其他本地 AI 工具目录（非项目文件）
+.trae/
+.imgtest/
+

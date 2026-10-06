@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>UI capture harness</title>
+    <style>
+      /* Renders the real app at its true Tauri window geometry.
+         src-tauri/tauri.conf.json -> windows[0] = 400 x 680, transparent,
+         always-on-top, not resizable. The app fills 100vw/100vh, so putting it
+         in an iframe of exactly that size reproduces the real window.
+         `zoom: 2` makes Chromium re-rasterise at 2x instead of stretching a
+         1x bitmap, which keeps the 10-11px UI text crisp for the hero image. */
+      html, body { margin: 0; padding: 0; background: #1a1b1e; width: 800px; }
+      #stage { width: 800px; height: 1360px; overflow: hidden; background: #1a1b1e; }
+      #stage iframe {
+        width: 400px;
+        height: 680px;
+        border: 0;
+        display: block;
+        zoom: 2;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"><iframe src="/index.html" title="TokenUsageMonitor"></iframe></div>
+  </body>
+</html>

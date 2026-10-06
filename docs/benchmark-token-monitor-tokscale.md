@@ -267,4 +267,4 @@ pub struct PricingEntry { input_per_1m: f64, output_per_1m: f64, currency: &'sta
 1. **直接引 tokscale**：打包体积（vendored 二进制）与平台兼容性需评估；其 rustls/rusqlite 特性与我们构建链需联调。
 2. **成本估算准确度**：`Estimated` 成本受模型价表覆盖与别名影响，须用 `cost_source` 明确标注不可当真值。
 3. **多源/多币种**：汇率与价格需可离线、可覆盖，避免网络依赖破坏本机监控。
-4. **本地采集合规**：读本地工具日志不读消息内容（toksacle 明确"不读消息内容"），仅取 usage/元数据，保护隐私。
+4. **本地采集合规**：读本地工具日志不读消息内容（tokscale 明确"不读消息内容"），仅取 usage/元数据，保护隐私。

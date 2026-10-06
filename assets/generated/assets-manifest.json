@@ -1,0 +1,202 @@
+{
+  "generatedAt": "2026-10-05T23:24:00+08:00",
+  "deckTitle": "TokenUsageMonitor 宣传头图",
+  "designTokens": {
+    "source": "docs/FRONTEND-DESIGN-STYLE.md",
+    "accent": "#4cc2ff",
+    "textPrimary": "#e6e8ea",
+    "textSecondary": "#b3b9c0",
+    "ink": "#1a1b1e"
+  },
+  "productFacts": {
+    "window": "src-tauri/tauri.conf.json -> app.windows[0]",
+    "size": "400 x 680",
+    "aspect": 0.588,
+    "flags": ["transparent", "alwaysOnTop", "decorations:false", "resizable:false", "skipTaskbar"],
+    "note": "这是一个竖长条紧凑挂件，不是宽屏看板。任何宣传图若把界面画成横向大屏都属于失实。"
+  },
+  "recommended": "token-usage-monitor-hero-ui-artB.png",
+  "recommendationNote": "16:9 用 artB 版（氛围 + 真实界面俱佳）；若要求底图完全可控、不含任何生成内容，改用程序化底图版 token-usage-monitor-hero-ui.png。",
+  "items": [
+    {
+      "file": "token-usage-monitor-hero-ui-artB.png",
+      "role": "cover",
+      "recommended": true,
+      "aspectRatio": "16:9",
+      "resolution": "2K",
+      "stylePreset": "tech-dark",
+      "sourceOfTruth": "real-app-screenshot on model-generated backdrop",
+      "prompt": "Backdrop = token-usage-monitor-hero-02.jpg (model-generated data landscape), reframed to 16:9 with a left scrim for copy contrast. Panel = pixel-exact real app at true 400x680.",
+      "textManifest": [
+        "AI TOKEN USAGE MONITOR",
+        "TokenUsageMonitor",
+        "多 Provider 聚合的 AI Token 用量透明看板",
+        "用量热力图",
+        "透明置顶常驻",
+        "安装包约 10MB",
+        "TAURI 2 · SVELTE 5 · RUST · WINDOWS"
+      ],
+      "widthPx": 2752,
+      "heightPx": 1536,
+      "textOverlaySafe": [],
+      "notes": "首图（推荐）。真实挂件悬浮在 B 图的热力图地平面上，三根用量光柱保留在右侧不被遮挡。挂件与源截图逐像素一致（max delta 0）。对比度：标题 15.4:1、副标题 9.7:1、页脚 7.8:1。"
+    },
+    {
+      "file": "token-usage-monitor-hero-ui-21x9-artB.png",
+      "role": "cover",
+      "aspectRatio": "21:9",
+      "resolution": "2K",
+      "stylePreset": "tech-dark",
+      "sourceOfTruth": "real-app-screenshot on model-generated backdrop",
+      "prompt": "Backdrop = art B reframed to a native-width 21:9 band (plane + light columns preserved), left scrim for copy. Panel = pixel-exact real app at true 400x680.",
+      "textManifest": [
+        "AI TOKEN USAGE MONITOR",
+        "TokenUsageMonitor",
+        "多 Provider 聚合的 AI Token 用量透明看板",
+        "用量热力图",
+        "透明置顶常驻",
+        "安装包约 10MB",
+        "TAURI 2 · SVELTE 5 · RUST · WINDOWS"
+      ],
+      "widthPx": 3840,
+      "heightPx": 1646,
+      "textOverlaySafe": [],
+      "notes": "超宽幅氛围版。左文案 / 中挂件 / 右光柱地平面三段式。挂件 max delta 0。对比度：标题 15.7:1、副标题 9.8:1、页脚 7.7:1。"
+    },
+    {
+      "file": "token-usage-monitor-hero-ui.png",
+      "role": "cover",
+      "recommended": true,
+      "aspectRatio": "16:9",
+      "resolution": "2K",
+      "stylePreset": "tech-dark",
+      "sourceOfTruth": "real-app-screenshot",
+      "prompt": "No model-generated art. Panel is a pixel-exact screenshot of the running app at true 400x680 geometry. Backdrop is procedural (gradient + accent bloom + dot grid + vignette).",
+      "textManifest": [
+        "AI TOKEN USAGE MONITOR",
+        "TokenUsageMonitor",
+        "多 Provider 聚合的 AI Token 用量透明看板",
+        "用量热力图",
+        "透明置顶常驻",
+        "安装包约 10MB",
+        "TAURI 2 · SVELTE 5 · RUST · WINDOWS"
+      ],
+      "widthPx": 2752,
+      "heightPx": 1536,
+      "textOverlaySafe": [],
+      "notes": "首图。挂件 800x1360 = 400x680 @2x，1:1 嵌入无缩放，与源截图逐像素一致（max delta 0）。文案由 Pillow 用项目设计令牌合成。对比度：标题 15.2:1、眉标 7.8:1、副标题 9.7:1、页脚 7.3:1。"
+    },
+    {
+      "file": "token-usage-monitor-hero-ui-21x9.png",
+      "role": "cover",
+      "aspectRatio": "21:9",
+      "resolution": "2K",
+      "stylePreset": "tech-dark",
+      "sourceOfTruth": "real-app-screenshot",
+      "prompt": "No model-generated art. True-size 400x680 widget on the right plus a magnified crop of the MiniMax provider card from the same capture.",
+      "textManifest": [
+        "AI TOKEN USAGE MONITOR",
+        "TokenUsageMonitor",
+        "多 Provider 聚合的 AI Token 用量透明看板",
+        "用量热力图",
+        "透明置顶常驻",
+        "安装包约 10MB",
+        "TAURI 2 · SVELTE 5 · RUST · WINDOWS"
+      ],
+      "widthPx": 3840,
+      "heightPx": 1646,
+      "textOverlaySafe": [],
+      "notes": "超宽幅（21:9），适合视频封面 / 社交预览图 / 落地页顶栏。右侧挂件为真实尺寸 1:1；中部细节为同一张截图的裁切放大（约 1.7x），像素仍来自真实渲染，无模型绘制。"
+    },
+    {
+      "file": "ui-widget-2x.png",
+      "role": "background",
+      "aspectRatio": "400:680",
+      "sourceOfTruth": "real-app-screenshot",
+      "prompt": "Raw capture of the real app. ui-harness.html embeds the app in a 400x680 iframe with `zoom: 2`, so Chromium re-rasterises at 2x instead of stretching a 1x bitmap.",
+      "widthPx": 800,
+      "heightPx": 1360,
+      "textOverlaySafe": null,
+      "notes": "再生素材。UI 改动后重开 harness 截一次即可刷新头图，无需重新出图。改窗口尺寸要同步改 tauri.conf.json 与 ui-harness.html 的 iframe 尺寸。"
+    },
+    {
+      "file": "ui-harness.html",
+      "role": "background",
+      "sourceOfTruth": "capture-harness",
+      "prompt": null,
+      "textManifest": [],
+      "textOverlaySafe": null,
+      "notes": "取景台。通过 vite dev server 访问 http://localhost:5173/assets/generated/ui-harness.html。依赖 src/lib/dev-mock.ts 在无 Tauri 运行时时桩化 IPC。"
+    },
+    {
+      "file": "token-usage-monitor-hero.png",
+      "role": "cover",
+      "aspectRatio": "16:9",
+      "resolution": "2K",
+      "sourceOfTruth": "model-generated-concept-art",
+      "supersededBy": "token-usage-monitor-hero-ui.png",
+      "prompt": "A floating translucent glass dashboard panel rendered as a 3D product visualization, Windows 11 acrylic and Mica design language...",
+      "textManifest": [
+        "AI TOKEN USAGE MONITOR",
+        "TokenUsageMonitor",
+        "多 Provider 聚合的 AI Token 用量透明看板",
+        "用量热力图",
+        "透明置顶常驻",
+        "安装包约 10MB",
+        "TAURI 2 · SVELTE 5 · RUST · WINDOWS"
+      ],
+      "widthPx": 2752,
+      "heightPx": 1536,
+      "textOverlaySafe": [],
+      "notes": "概念版（模型生成）。视觉好看，但面板是被臆造的宽屏形态，与真实 400x680 挂件不符——对外发布建议改用真实界面版。留作风格参考。"
+    },
+    {
+      "file": "token-usage-monitor-hero-b.png",
+      "role": "cover",
+      "aspectRatio": "16:9",
+      "resolution": "2K",
+      "sourceOfTruth": "model-generated-concept-art",
+      "supersededBy": "token-usage-monitor-hero-ui.png",
+      "prompt": "A wide cinematic view of a dark luminous data landscape, a vast plane of thousands of small rounded glass tiles forming a usage heatmap...",
+      "textManifest": [
+        "AI TOKEN USAGE MONITOR",
+        "TokenUsageMonitor",
+        "多 Provider 聚合的 AI Token 用量透明看板",
+        "用量热力图",
+        "透明置顶常驻",
+        "安装包约 10MB",
+        "TAURI 2 · SVELTE 5 · RUST · WINDOWS"
+      ],
+      "widthPx": 2752,
+      "heightPx": 1536,
+      "textOverlaySafe": [],
+      "notes": "概念版 B（模型生成，抽象底图）。同样不含真实界面，可作无字背景。"
+    },
+    {
+      "file": "token-usage-monitor-hero-01.jpg",
+      "role": "background",
+      "aspectRatio": "16:9",
+      "resolution": "2K",
+      "sourceOfTruth": "model-generated-concept-art",
+      "prompt": "A floating translucent glass dashboard panel rendered as a 3D product visualization... 画面内允许出现的文字：无",
+      "textManifest": [],
+      "widthPx": 2752,
+      "heightPx": 1536,
+      "textOverlaySafe": "left 45%",
+      "notes": "概念版 A 底图（无字）。"
+    },
+    {
+      "file": "token-usage-monitor-hero-02.jpg",
+      "role": "background",
+      "aspectRatio": "16:9",
+      "resolution": "2K",
+      "sourceOfTruth": "model-generated-concept-art",
+      "prompt": "A wide cinematic view of a dark luminous data landscape... 画面内允许出现的文字：无",
+      "textManifest": [],
+      "widthPx": 2752,
+      "heightPx": 1536,
+      "textOverlaySafe": "left 45%",
+      "notes": "概念版 B 底图（无字）。"
+    }
+  ]
+}
