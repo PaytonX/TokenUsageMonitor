@@ -81,7 +81,7 @@
   });
 
   function colorOf(id: string): string {
-    return dimOthers(seriesColors, highlightKey)[id] ?? "#8a8f98";
+    return dimOthers(seriesColors, highlightKey)[id] ?? "rgb(138,143,152)";
   }
   function nameOf(id: string): string {
     return seriesNames[id] ?? id;

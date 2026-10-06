@@ -51,6 +51,14 @@ const FORBIDDEN_HEX: Array<{ hex: string; exempt: string[]; why: string }> = [
   { hex: "#ffc77a", exempt: [], why: "偏色琥珀，改用 --tum-warn" },
   { hex: "#ff5f56", exempt: ["Settings.svelte"], why: "裸 crit 值，改用 var(--tum-crit)" },
   { hex: "#6ccb5f", exempt: ["Settings.svelte"], why: "裸 ok 值，改用 var(--tum-ok)" },
+  { hex: "#8a8f98", exempt: [], why: "图例兜底灰一律写 rgb(138,143,152)" },
+  { hex: "#e8eaf0", exempt: [], why: "外来文字色，改用 var(--tum-text-primary)" },
+  { hex: "#23262d", exempt: [], why: "外来弹层底色，改用 var(--tum-bg-solid)" },
+];
+
+/** 禁用 rgba 字面量（同色相换了形态逃避 hex 规则的）。 */
+const FORBIDDEN_RGBA: Array<{ pattern: string; exempt: string[]; why: string }> = [
+  { pattern: "rgba(232, 234, 240", exempt: [], why: "外来文字色 rgba 形态，按 alpha 映射到 text-muted/text-secondary" },
 ];
 
 describe("design token lint", () => {
@@ -61,6 +69,18 @@ describe("design token lint", () => {
       for (const rule of FORBIDDEN_HEX) {
         if (rule.exempt.includes(rel)) continue;
         if (hasHex(code, rule.hex)) hits.push(`${rel}: ${rule.hex} (${rule.why})`);
+      }
+    }
+    expect(hits, hits.join("\n")).toEqual([]);
+  });
+
+  it("svelte 源码不含禁用 rgba 字面量（注释除外）", () => {
+    const hits: string[] = [];
+    for (const { path, rel } of FILES) {
+      const code = stripComments(readFileSync(path, "utf8"));
+      for (const rule of FORBIDDEN_RGBA) {
+        if (rule.exempt.includes(rel)) continue;
+        if (code.includes(rule.pattern)) hits.push(`${rel}: ${rule.pattern} (${rule.why})`);
       }
     }
     expect(hits, hits.join("\n")).toEqual([]);

@@ -533,12 +533,18 @@ export function providerShortName(providerId: string, displayName: string): stri
 }
 
 /** Parse a "#RRGGBB" hex color into a "r,g,b" CSS triplet (so callers can use
- * `rgba(var(--x-rgb), a)`). Returns null when the string isn't 6-digit hex. */
+ * `rgba(var(--x-rgb), a)`). Also accepts the design-token 合规的 `rgb(r,g,b)` /
+ * `rgba(r,g,b,a)` 写法（如图例兜底灰 rgb(138,143,152)）——只取三元组，调用方
+ * 由此对两种写法行为一致。其余返回 null。 */
 export function hexToRgb(hex: string): string | null {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex.trim());
-  if (!m) return null;
-  const n = parseInt(m[1], 16);
-  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+  const s = hex.trim();
+  const m = /^#([0-9a-f]{6})$/i.exec(s);
+  if (m) {
+    const n = parseInt(m[1], 16);
+    return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+  }
+  const rgb = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,[^)]*)?\)$/i.exec(s);
+  return rgb ? `${+rgb[1]},${+rgb[2]},${+rgb[3]}` : null;
 }
 
 /** Helper to format a usage value with the right unit suffix. */

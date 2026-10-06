@@ -421,7 +421,7 @@
   .dev__agg-sub {
     font-size: 10px;
     font-family: var(--tum-font-mono);
-    color: rgba(232, 234, 240, 0.55);
+    color: var(--tum-text-muted);
   }
   .dev__agg-stats {
     margin-top: 10px;
@@ -440,7 +440,7 @@
     align-items: center;
     gap: 5px;
     font-size: 11px;
-    color: rgba(232, 234, 240, 0.75);
+    color: var(--tum-text-secondary);
   }
   .dev__agg-name {
     max-width: 130px;
@@ -490,8 +490,8 @@
     opacity: 0.9;
   }
   .dev__badge--remote {
-    color: rgba(232, 234, 240, 0.7);
-    border-color: rgba(232, 234, 240, 0.28);
+    color: var(--tum-text-secondary);
+    border-color: var(--tum-border-strong);
     font-weight: 600;
   }
   .dev__meta {
@@ -500,7 +500,7 @@
     gap: 6px 12px;
     margin-top: 8px;
     font-size: 12px;
-    color: rgba(232, 234, 240, 0.72);
+    color: var(--tum-text-secondary);
   }
   .dev__stats {
     display: flex;
@@ -527,7 +527,7 @@
     border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
     border-radius: 50%;
     background: transparent;
-    color: rgba(232, 234, 240, 0.55);
+    color: var(--tum-text-muted);
     font-size: 11px;
     line-height: 1;
     cursor: pointer;
@@ -554,7 +554,7 @@
     border: 1px dashed var(--tum-border-strong, rgba(255, 255, 255, 0.14));
     border-radius: 8px;
     background: transparent;
-    color: rgba(232, 234, 240, 0.65);
+    color: var(--tum-text-secondary);
     font-size: 11px;
     padding: 4px 10px;
     cursor: pointer;
@@ -588,7 +588,7 @@
     border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
     border-radius: 8px;
     background: transparent;
-    color: rgba(232, 234, 240, 0.75);
+    color: var(--tum-text-secondary);
     font-size: 11px;
     padding: 4px 10px;
     cursor: pointer;
@@ -615,7 +615,7 @@
     margin: 0;
     font-size: 10px;
     line-height: 1.6;
-    color: rgba(232, 234, 240, 0.5);
+    color: var(--tum-text-muted);
   }
 
   .dev__sync {
@@ -632,7 +632,7 @@
     margin: 6px 0 0;
     font-size: 12px;
     line-height: 1.6;
-    color: rgba(232, 234, 240, 0.6);
+    color: var(--tum-text-muted);
   }
   .dev__sync-desc code {
     background: rgba(255, 255, 255, 0.08);
@@ -643,7 +643,7 @@
     padding: 20px;
     text-align: center;
     font-size: 13px;
-    color: rgba(232, 234, 240, 0.6);
+    color: var(--tum-text-muted);
   }
   .dev__empty--err {
     color: var(--tum-crit);

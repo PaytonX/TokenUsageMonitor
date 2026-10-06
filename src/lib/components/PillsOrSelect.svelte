@@ -2,6 +2,7 @@
   // 药丸 / 下拉自适应选择器：条目 ≤3 时用胶囊按钮铺开；>3 时改原生下拉，
   // 避免多个选中项挤压面板空间。用于模型、工具、Provider 等选择。
   import { hexToRgb } from "../types";
+  import ColorSwatch from "./atoms/ColorSwatch.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
 
   export interface ChoiceItem {
@@ -72,7 +73,7 @@
         {#if active && brand?.kind}
           <ProviderLogo kind={brand.kind} size={14} />
         {:else if dotFor}
-          <i class="ps__dot" style={`background:${dotFor(it.id) ?? "#8a8f98"}`}></i>
+          <ColorSwatch color={dotFor(it.id) ?? "rgb(138,143,152)"} size={8} shape="round" />
         {/if}
         {it.label}
         {#if active && brand?.experimental}
@@ -95,7 +96,7 @@
     padding: 3px 8px;
     font-family: var(--tum-font);
     font-size: 11px;
-    color: #e8eaf0;
+    color: var(--tum-text-primary);
     background: rgba(45, 50, 60, 0.96);
     border: 1px solid var(--tum-border-strong);
     border-radius: var(--tum-radius-sm);
@@ -105,11 +106,11 @@
   .ps:focus-visible {
     border-color: var(--tum-accent);
   }
-  /* 原生下拉选项：显式给深色底 + 亮色文字，避免"深底深字"看不清，仅靠悬停
-     反差才能辨认。 */
+  /* 原生下拉选项：显式给不透明深色底 + 亮色文字，避免"深底深字"看不清；
+     option 需要不透明底，故用 bg-solid 而非半透明 token。 */
   .ps option {
-    background-color: #23262d;
-    color: #e8eaf0;
+    background-color: var(--tum-bg-solid);
+    color: var(--tum-text-primary);
   }
 
   .ps__pills {
@@ -146,13 +147,6 @@
     font-weight: 600;
   }
 
-  .ps__dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-    flex: none;
-  }
   .ps__exp {
     font-size: 10px;
     font-weight: 600;

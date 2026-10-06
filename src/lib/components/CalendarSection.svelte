@@ -161,7 +161,7 @@
   .cal-sec__sel {
     font-family: var(--tum-font);
     font-size: 10px;
-    color: #e8eaf0;
+    color: var(--tum-text-primary);
     background: rgba(45, 50, 60, 0.96);
     border: 1px solid var(--tum-border-strong);
     border-radius: var(--tum-radius-sm);
@@ -176,8 +176,8 @@
   }
 
   .cal-sec__sel option {
-    background-color: #23262d;
-    color: #e8eaf0;
+    background-color: var(--tum-bg-solid);
+    color: var(--tum-text-primary);
   }
 
   .cal-sec__range {

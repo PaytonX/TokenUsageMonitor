@@ -123,7 +123,7 @@
   let burns = $state<Record<string, BurnInfo | null>>({});
   let actives = $state<Record<string, boolean>>({});
   let mode = $state<Mode>("dashboard");
-  const FOCUS_FALLBACK_COLOR = "#8a8f98";
+  const FOCUS_FALLBACK_COLOR = "rgb(138,143,152)";
   const FOCUS_KEY = "tum.focus";
 
   // Global focus: "all" (aggregate min) or one provider_id. Drives the

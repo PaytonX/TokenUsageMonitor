@@ -3,6 +3,7 @@
   // 天数均匀分布，x 轴刻度按区间稀疏（tickEvery）显示，长区间不截断、不重叠。
   // 悬停显示十字辅助线 + 当日总量与各 provider 明细。
   import type { TrendDay } from "../trend-data";
+  import ColorSwatch from "./atoms/ColorSwatch.svelte";
 
   interface Props {
     days: TrendDay[];
@@ -55,7 +56,7 @@
     return ids.map((id) => ({
       id,
       values: days.map((d) => d.parts.find((p) => p.id === id)?.value ?? 0),
-      color: colors[id] ?? "#8a8f98",
+      color: colors[id] ?? "rgb(138,143,152)",
     }));
   });
 
@@ -192,7 +193,7 @@
         {#each hover.parts as p (p.id)}
           <div class="tl__tip-row">
             <span class="tl__tip-k">
-              <i class="tl__tip-swatch" style={`background:${colors[p.id] ?? '#8a8f98'}`}></i>
+              <ColorSwatch color={colors[p.id] ?? "rgb(138,143,152)"} size={8} class="tl__tip-swatch" />
               {names[p.id] ?? p.id}
             </span>
             <b>{p.value.toLocaleString()}</b>
@@ -298,13 +299,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .tl__tip-swatch {
-    width: 7px;
-    height: 7px;
-    border-radius: 2px;
-    flex: none;
   }
 
   .tl__empty {
