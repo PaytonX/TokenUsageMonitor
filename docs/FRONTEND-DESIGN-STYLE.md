@@ -91,7 +91,7 @@ border-radius: var(--tum-radius-lg);
 backdrop-filter: blur(16px);
 ```
 
-- **悬浮浮层**（详情卡）用 `--tum-blur-card: 24px` 更强的模糊，层级更高。
+- **悬浮浮层**（详情卡）用 `--tum-blur-card: 24px` 更强的模糊，层级更高；blur 只采样窗内内容（透明窗对窗下桌面无效，属预期），表面 = 径向强调色微光 + `rgba(24,26,30,0.78)`（2026-10-06 原型拍板稿，参数在 `DetailCard.svelte` 的 `.detail`）。
 - 卡片本体不模糊，靠 `--tum-surface` 半透明白面，叠在透明窗口上依然通透。
 - 透明窗口 + 圆角 = **真正可见的圆角**（角落无底色）。
 
