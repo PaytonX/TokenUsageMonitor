@@ -1382,13 +1382,13 @@
     margin-right: 2px;
   }
   .router-dot--on {
-    background: #34d399;
+    background: var(--tum-ok);
   }
   .router-dot--warn {
-    background: #fbbf24;
+    background: var(--tum-warn);
   }
   .router-dot--err {
-    background: #f87171;
+    background: var(--tum-crit);
   }
 
   .shell__cards {
