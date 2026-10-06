@@ -534,13 +534,13 @@
     transition: all 0.15s ease;
   }
   .dev__remove:hover {
-    color: #ff7a6e;
-    border-color: rgba(255, 122, 110, 0.5);
+    color: var(--tum-crit);
+    border-color: var(--tum-crit-stroke);
   }
   .dev__remove--confirm {
     color: #fff;
-    background: var(--tum-danger, #ff5f56);
-    border-color: var(--tum-danger, #ff5f56);
+    background: var(--tum-danger);
+    border-color: var(--tum-danger);
   }
 
   .dev__add {
@@ -604,12 +604,12 @@
   }
   .dev__add-err {
     font-size: 11px;
-    color: #ff7a6e;
+    color: var(--tum-crit);
     word-break: break-all;
   }
   .dev__add-ok {
     font-size: 11px;
-    color: var(--tum-ok, #6ccb5f);
+    color: var(--tum-ok);
   }
   .dev__add-hint {
     margin: 0;
@@ -646,15 +646,15 @@
     color: rgba(232, 234, 240, 0.6);
   }
   .dev__empty--err {
-    color: #ff7a6e;
+    color: var(--tum-crit);
   }
   .dev__warn {
     margin-bottom: 10px;
     padding: 8px 10px;
     border-radius: 8px;
-    background: rgba(255, 170, 60, 0.12);
-    border: 1px solid rgba(255, 170, 60, 0.35);
-    color: #ffc77a;
+    background: var(--tum-warn-fill);
+    border: 1px solid var(--tum-warn-stroke);
+    color: var(--tum-warn);
     font-size: 12px;
     line-height: 1.5;
     word-break: break-all;

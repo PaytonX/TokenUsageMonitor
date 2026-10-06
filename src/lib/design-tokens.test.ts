@@ -47,6 +47,10 @@ const FORBIDDEN_HEX: Array<{ hex: string; exempt: string[]; why: string }> = [
   // 琥珀只允许：Settings 品牌点（遗留）。ColorSwatch 顶部的用法示例在 HTML 注释里，
   // stripComments 已将其剔除，无需文件级豁免（文件级豁免会静默放行未来的真实使用）。
   { hex: "#fbbf24", exempt: ["Settings.svelte"], why: "琥珀仅限品牌点/热力图今日描边" },
+  { hex: "#ff7a6e", exempt: [], why: "偏色红，改用 --tum-crit" },
+  { hex: "#ffc77a", exempt: [], why: "偏色琥珀，改用 --tum-warn" },
+  { hex: "#ff5f56", exempt: ["Settings.svelte"], why: "裸 crit 值，改用 var(--tum-crit)" },
+  { hex: "#6ccb5f", exempt: ["Settings.svelte"], why: "裸 ok 值，改用 var(--tum-ok)" },
 ];
 
 describe("design token lint", () => {
