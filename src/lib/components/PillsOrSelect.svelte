@@ -98,7 +98,7 @@
     max-width: 100%;
     padding: 3px 8px;
     font-family: var(--tum-font);
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     color: var(--tum-text-primary);
     background: rgba(45, 50, 60, 0.96);
     border: 1px solid var(--tum-border-strong);
@@ -130,10 +130,10 @@
     border: 1px solid var(--tum-border);
     background: transparent;
     color: var(--tum-text-muted);
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     font-family: var(--tum-font);
     padding: 0 10px;
-    border-radius: 11px;
+    border-radius: var(--tum-radius-pill);
     cursor: pointer;
     transition: all 0.15s ease;
   }
@@ -151,7 +151,7 @@
   }
 
   .ps__exp {
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     font-weight: 600;
     border-radius: 6px;
     padding: 1px 5px;

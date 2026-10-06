@@ -473,7 +473,7 @@
     border-radius: var(--tum-radius-xs);
     background: var(--tum-surface);
     color: var(--tum-text-muted);
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     line-height: 1;
     cursor: pointer;
     transition: all 0.15s ease;
@@ -567,7 +567,7 @@
     color: var(--tum-text-primary);
   }
   .ring__center-label {
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     color: var(--tum-text-secondary);
     max-width: 74px;
     overflow: hidden;
@@ -591,15 +591,15 @@
     border-radius: 6px;
     background: transparent;
     color: var(--tum-text-secondary);
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     text-align: left;
     cursor: pointer;
   }
   .ring-legend__item:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--tum-surface);
   }
   .ring-legend__item--active {
-    background: rgba(255, 255, 255, 0.09);
+    background: var(--tum-border);
     color: var(--tum-text-primary);
   }
   .ring-legend__item--other {

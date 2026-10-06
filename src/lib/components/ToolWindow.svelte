@@ -238,7 +238,7 @@
 
   .tw__bar-title {
     font-family: var(--tum-font-mono);
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     color: var(--tum-text-muted);
     letter-spacing: 0.6px;
     text-transform: uppercase;
@@ -255,12 +255,12 @@
     border: none;
     background: transparent;
     color: var(--tum-text-muted);
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     line-height: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border-radius: 4px;
+    border-radius: var(--tum-radius-xs);
     cursor: pointer;
     transition: background 0.15s ease, color 0.15s ease;
   }
@@ -335,7 +335,7 @@
   }
 
   .tw__seg--zero {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--tum-surface);
     height: 3px;
   }
 
@@ -344,7 +344,7 @@
     height: 14px;
     line-height: 14px;
     font-family: var(--tum-font-mono);
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     color: var(--tum-text-muted);
     white-space: nowrap;
   }
@@ -366,14 +366,14 @@
     align-items: center;
     gap: 5px;
     font-family: var(--tum-font-mono);
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     color: var(--tum-text-secondary);
   }
 
   .tw__legend-hint {
     margin-left: auto;
     font-family: var(--tum-font-mono);
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     color: var(--tum-text-muted);
   }
 

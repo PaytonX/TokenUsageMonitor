@@ -370,7 +370,7 @@
     width: 4px;
   }
   .dev::-webkit-scrollbar-thumb {
-    background: var(--tum-border-strong, rgba(255, 255, 255, 0.12));
+    background: var(--tum-border-strong);
     border-radius: 2px;
   }
 
@@ -381,9 +381,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
-    border-radius: 8px;
-    background: var(--tum-surface-hover, rgba(255, 255, 255, 0.06));
+    border: 1px solid var(--tum-border-strong);
+    border-radius: var(--tum-radius-sm);
+    background: var(--tum-surface-hover);
     color: inherit;
     font-size: 14px;
     line-height: 1;
@@ -391,7 +391,7 @@
     transition: background 0.15s ease;
   }
   .dev__refresh:hover {
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--tum-border-strong);
   }
   .dev__list {
     display: flex;
@@ -401,9 +401,9 @@
 
   /* —— 全端汇总 —— */
   .dev__agg {
-    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
-    background: linear-gradient(135deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
-    border-radius: 12px;
+    border: 1px solid var(--tum-border-strong);
+    background: linear-gradient(135deg, var(--tum-surface), rgba(255, 255, 255, 0.02));
+    border-radius: var(--tum-radius-md);
     padding: 12px 14px;
     margin-bottom: 10px;
   }
@@ -419,7 +419,7 @@
     letter-spacing: 0.2px;
   }
   .dev__agg-sub {
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     font-family: var(--tum-font-mono);
     color: var(--tum-text-muted);
   }
@@ -439,7 +439,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     color: var(--tum-text-secondary);
   }
   .dev__agg-name {
@@ -451,12 +451,12 @@
   .dev__agg-total {
     font-family: var(--tum-font-mono);
     font-variant-numeric: tabular-nums;
-    color: var(--tum-text-primary, #e6e8ea);
+    color: var(--tum-text-primary);
   }
   .dev__card {
-    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
-    background: linear-gradient(135deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
-    border-radius: 12px;
+    border: 1px solid var(--tum-border-strong);
+    background: linear-gradient(135deg, var(--tum-surface), rgba(255, 255, 255, 0.02));
+    border-radius: var(--tum-radius-md);
     padding: 12px 14px;
     position: relative;
     overflow: hidden;
@@ -481,11 +481,11 @@
     font-weight: 700;
   }
   .dev__badge {
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     font-weight: 700;
     color: var(--dev-accent);
     border: 1px solid var(--dev-accent);
-    border-radius: 999px;
+    border-radius: var(--tum-radius-pill);
     padding: 1px 8px;
     opacity: 0.9;
   }
@@ -524,11 +524,11 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--tum-border-strong);
     border-radius: 50%;
     background: transparent;
     color: var(--tum-text-muted);
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     line-height: 1;
     cursor: pointer;
     transition: all 0.15s ease;
@@ -551,18 +551,18 @@
   }
   .dev__add-btn {
     align-self: flex-start;
-    border: 1px dashed var(--tum-border-strong, rgba(255, 255, 255, 0.14));
-    border-radius: 8px;
+    border: 1px dashed var(--tum-border-strong);
+    border-radius: var(--tum-radius-sm);
     background: transparent;
     color: var(--tum-text-secondary);
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     padding: 4px 10px;
     cursor: pointer;
     transition: all 0.15s ease;
   }
   .dev__add-btn:hover {
-    color: var(--tum-text-primary, #e6e8ea);
-    border-color: var(--tum-accent-stroke, rgba(76, 194, 255, 0.45));
+    color: var(--tum-text-primary);
+    border-color: var(--tum-accent-stroke);
   }
   .dev__add-form {
     display: flex;
@@ -571,61 +571,61 @@
   .dev__add-input {
     flex: 1;
     min-width: 0;
-    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.05);
-    color: var(--tum-text-primary, #e6e8ea);
-    font-size: 11px;
+    border: 1px solid var(--tum-border-strong);
+    border-radius: var(--tum-radius-sm);
+    background: var(--tum-surface);
+    color: var(--tum-text-primary);
+    font-size: var(--tum-font-size-sm);
     font-family: var(--tum-font-mono);
     padding: 5px 8px;
     outline: none;
   }
   .dev__add-input:focus {
-    border-color: var(--tum-accent-stroke, rgba(76, 194, 255, 0.45));
+    border-color: var(--tum-accent-stroke);
   }
   .dev__add-form button {
     flex: none;
-    border: 1px solid var(--tum-border-strong, rgba(255, 255, 255, 0.12));
-    border-radius: 8px;
+    border: 1px solid var(--tum-border-strong);
+    border-radius: var(--tum-radius-sm);
     background: transparent;
     color: var(--tum-text-secondary);
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     padding: 4px 10px;
     cursor: pointer;
   }
   .dev__add-form .btn-add-ok {
-    background: var(--tum-accent-fill, rgba(76, 194, 255, 0.12));
-    border-color: var(--tum-accent-stroke, rgba(76, 194, 255, 0.45));
-    color: var(--tum-text-primary, #e6e8ea);
+    background: var(--tum-accent-fill);
+    border-color: var(--tum-accent-stroke);
+    color: var(--tum-text-primary);
   }
   .dev__add-form button:disabled {
     opacity: 0.5;
     cursor: default;
   }
   .dev__add-err {
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     color: var(--tum-crit);
     word-break: break-all;
   }
   .dev__add-ok {
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     color: var(--tum-ok);
   }
   .dev__add-hint {
     margin: 0;
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     line-height: 1.6;
     color: var(--tum-text-muted);
   }
 
   .dev__sync {
     margin-top: 14px;
-    border: 1px dashed var(--tum-border-strong, rgba(255, 255, 255, 0.14));
-    border-radius: 12px;
+    border: 1px dashed var(--tum-border-strong);
+    border-radius: var(--tum-radius-md);
     padding: 12px 14px;
   }
   .dev__sync-title {
-    font-size: 13px;
+    font-size: var(--tum-font-size-base);
     font-weight: 600;
   }
   .dev__sync-desc {
@@ -635,14 +635,14 @@
     color: var(--tum-text-muted);
   }
   .dev__sync-desc code {
-    background: rgba(255, 255, 255, 0.08);
-    border-radius: 4px;
+    background: var(--tum-surface-hover);
+    border-radius: var(--tum-radius-xs);
     padding: 0 4px;
   }
   .dev__empty {
     padding: 20px;
     text-align: center;
-    font-size: 13px;
+    font-size: var(--tum-font-size-base);
     color: var(--tum-text-muted);
   }
   .dev__empty--err {
@@ -651,7 +651,7 @@
   .dev__warn {
     margin-bottom: 10px;
     padding: 8px 10px;
-    border-radius: 8px;
+    border-radius: var(--tum-radius-sm);
     background: var(--tum-warn-fill);
     border: 1px solid var(--tum-warn-stroke);
     color: var(--tum-warn);

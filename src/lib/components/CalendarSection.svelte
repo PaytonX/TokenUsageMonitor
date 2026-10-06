@@ -160,7 +160,7 @@
 
   .cal-sec__sel {
     font-family: var(--tum-font);
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     color: var(--tum-text-primary);
     background: rgba(45, 50, 60, 0.96);
     border: 1px solid var(--tum-border-strong);
@@ -181,7 +181,7 @@
   }
 
   .cal-sec__range {
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     color: var(--tum-text-muted);
     font-family: var(--tum-font-mono);
   }
@@ -203,7 +203,7 @@
     border-radius: var(--tum-radius-pill);
     background: transparent;
     color: var(--tum-text-muted);
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     font-family: var(--tum-font);
     cursor: pointer;
     transition: all 0.15s ease;
@@ -233,7 +233,7 @@
   }
 
   .cal-sec__pill-label {
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     color: var(--tum-text-muted);
     flex: none;
   }

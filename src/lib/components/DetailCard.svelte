@@ -545,6 +545,6 @@
 
   .detail__bar--zero {
     height: 2px !important;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--tum-surface-hover);
   }
 </style>

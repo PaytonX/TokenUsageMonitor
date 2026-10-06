@@ -371,9 +371,9 @@
     font-size: var(--tum-font-size-xs);
     font-weight: 600;
     /* 品牌色 22% 底由内联 style 注入（色源 = 账户强调色 ?? 品牌色，与 .ps__exp
-       同口径）；hex 解析失败时退回白色 8%。圆角 6（spec 决策 12）。 */
+       同口径）；hex 解析失败时退回 --tum-surface-hover。圆角 6（spec 决策 12）。 */
     color: var(--acct-accent, var(--tum-accent));
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--tum-surface-hover);
     border: none;
     padding: 1px 5px;
     border-radius: 6px;

@@ -567,7 +567,7 @@
   const badgeStyle = $derived.by(() => {
     const rgb = hexToRgb(focusedColor);
     if (!rgb) {
-      return "background: rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,.2); color:var(--tum-text-primary);";
+      return "background: var(--tum-surface-hover); border:1px solid rgba(255,255,255,.2); color:var(--tum-text-primary);";
     }
     return [
       `background: rgba(${rgb}, 0.16)`,
@@ -1343,7 +1343,7 @@
     flex-shrink: 0;
     overflow: hidden;
     border: 1px solid var(--tum-border-strong);
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--tum-surface);
   }
 
   .shell__btn {
@@ -1354,7 +1354,7 @@
     color: var(--tum-text-secondary);
     border-radius: var(--tum-radius-sm);
     cursor: pointer;
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     line-height: 1;
     transition: all 0.15s ease;
     display: inline-flex;
@@ -1378,7 +1378,7 @@
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    background: var(--tum-text-muted, #8b949e);
+    background: var(--tum-text-muted);
     margin-right: 2px;
   }
   .router-dot--on {
@@ -1469,7 +1469,7 @@
     border: none;
     background: transparent;
     color: var(--tum-text-muted);
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     font-family: var(--tum-font);
     padding: 3px 10px;
     border-radius: var(--tum-radius-pill);
@@ -1613,11 +1613,11 @@
     flex-shrink: 0;
     overflow: hidden;
     border: 1px solid var(--tum-border-strong);
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--tum-surface);
   }
 
   .pill__percent {
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     font-family: var(--tum-font-mono);
     color: var(--tum-text-primary);
     letter-spacing: 0.3px;
@@ -1641,7 +1641,7 @@
     min-width: 0;
     height: 22px;
     padding: 0 6px;
-    border-radius: 11px;
+    border-radius: var(--tum-radius-pill);
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1666,7 +1666,7 @@
     border-radius: 50%;
     background: transparent;
     color: var(--tum-text-muted);
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     line-height: 1;
     cursor: pointer;
     opacity: 0;

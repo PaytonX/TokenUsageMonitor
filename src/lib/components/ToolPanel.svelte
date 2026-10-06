@@ -359,7 +359,7 @@
     border-radius: var(--tum-radius-xs);
     background: var(--tum-surface);
     color: var(--tum-text-muted);
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     line-height: 1;
     cursor: pointer;
     transition: all 0.15s ease;
@@ -384,7 +384,7 @@
     margin-bottom: 6px;
   }
   .tool__stack-title {
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     font-weight: 600;
     color: var(--tum-text-primary);
   }
@@ -422,7 +422,7 @@
     align-items: center;
     gap: 4px;
     font-family: var(--tum-font-mono);
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     color: var(--tum-text-secondary);
   }
 

@@ -116,7 +116,7 @@
     flex: none;
     text-align: right;
     font-family: var(--tum-font-mono);
-    font-size: 10px;
+    font-size: var(--tum-font-size-xs);
     font-variant-numeric: tabular-nums;
     color: var(--tum-text-muted);
   }

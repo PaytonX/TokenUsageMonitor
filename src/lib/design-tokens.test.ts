@@ -65,6 +65,13 @@ const FORBIDDEN_RGBA: ColorRule[] = [
   { re: /rgba?\(\s*232\s*,\s*234\s*,\s*240/i, exempt: [], why: "外来文字色 rgba 形态，按 alpha 映射到 text-muted/text-secondary" },
 ];
 
+/** 值保持型 px 规则：只禁恰好等于令牌值的裸 px；8/9/12/14/15/17/10.5px 等离散值
+ *  是有意保留的遗留尺寸，\b 词边界 + 精确数值保证不误伤（110px / 10.5px 均不匹配）。 */
+const FORBIDDEN_PX: ColorRule[] = [
+  { re: /font-size:\s*(10|11|13)px\b/, exempt: [], why: "token 值字号禁止裸 px：10→var(--tum-font-size-xs) / 11→sm / 13→base" },
+  { re: /border-radius:\s*(4|8|12|16|999)px\b/, exempt: [], why: "token 值圆角禁止裸 px：4→var(--tum-radius-xs) / 8→sm / 12→md / 16→lg / 999→pill" },
+];
+
 /** 文件迭代 + 注释剥离 + 豁免判定 + 命中格式只实现这一份，hex/rgba 两个测试共用。 */
 function collectHits(rules: ColorRule[]): string[] {
   const hits: string[] = [];
@@ -89,6 +96,11 @@ describe("design token lint", () => {
 
   it("svelte 源码不含禁用 rgba 字面量（注释除外）", () => {
     const hits = collectHits(FORBIDDEN_RGBA);
+    expect(hits, hits.join("\n")).toEqual([]);
+  });
+
+  it("svelte 源码不含 token 值的裸 px 字号/圆角（注释除外）", () => {
+    const hits = collectHits(FORBIDDEN_PX);
     expect(hits, hits.join("\n")).toEqual([]);
   });
 
