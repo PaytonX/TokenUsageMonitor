@@ -21,12 +21,15 @@
     items,
     value,
     onPick,
+    label = "选择",
     dotFor,
     brandFor,
   }: {
     items: ChoiceItem[];
     value: string | null;
     onPick: (id: string) => void;
+    /** 可选：读屏标签（aria-label），两种形态（药丸/下拉）共用。 */
+    label?: string;
     /** 可选：为每个条目渲染一个小圆点（如 Provider 强调色）。 */
     dotFor?: (id: string) => string | undefined;
     /** 可选：选中项的徽章视觉（品牌 16% 底 / 45% 描边 / 纯色文字 + 品牌 glyph）。 */
@@ -53,13 +56,13 @@
 </script>
 
 {#if useSelect}
-  <select class="ps" value={value ?? ""} onchange={onSel} aria-label="选择">
+  <select class="ps" value={value ?? ""} onchange={onSel} aria-label={label}>
     {#each items as it (it.id)}
       <option value={it.id}>{it.label}</option>
     {/each}
   </select>
 {:else}
-  <div class="ps__pills" role="group" aria-label="选择">
+  <div class="ps__pills" role="group" aria-label={label}>
     {#each items as it (it.id)}
       {@const brand = brandFor?.(it.id) ?? null}
       {@const active = it.id === value}

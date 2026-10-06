@@ -150,6 +150,7 @@
   </div>
   <PanelHeader title="工具用量" label="工具用量窗口">
     <PillsOrSelect
+      label="选择工具"
       items={[
         { id: "", label: "全部工具" },
         ...(payload?.tools ?? []).map((t) => ({ id: t.id, label: t.name })),
