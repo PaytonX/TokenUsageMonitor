@@ -7,6 +7,7 @@
   import { getLocalTools } from "../api";
   import type { LocalDay, LocalToolReport, LocalToolsPayload } from "../types";
   import { hexToRgb } from "../types";
+  import PillsOrSelect from "./PillsOrSelect.svelte";
   import { PanelHeader, RangePills, ColorSwatch } from "./atoms";
 
   type RangeKey = "7d" | "30d" | "90d";
@@ -147,24 +148,15 @@
       <button type="button" class="tw__bar-btn tw__bar-btn--close" aria-label="关闭" onclick={close} onpointerdown={(e) => e.stopPropagation()}>✕</button>
     </div>
   </div>
-  <header class="tw__head">
-    <span class="tw__title">工具用量</span>
-    <div class="tw__pickers" role="group" aria-label="选择工具">
-      <button
-        type="button"
-        class="tw__picker"
-        class:is-active={activeId === null}
-        onclick={() => (activeId = null)}
-      >全部工具</button>
-      {#each payload?.tools ?? [] as t (t.id)}
-        <button
-          type="button"
-          class="tw__picker"
-          class:is-active={t.id === activeId}
-          onclick={() => (activeId = t.id)}
-        >{t.name}</button>
-      {/each}
-    </div>
+  <PanelHeader title="工具用量" label="工具用量窗口">
+    <PillsOrSelect
+      items={[
+        { id: "", label: "全部工具" },
+        ...(payload?.tools ?? []).map((t) => ({ id: t.id, label: t.name })),
+      ]}
+      value={activeId ?? ""}
+      onPick={(id) => (activeId = id === "" ? null : id)}
+    />
     <RangePills
       options={RANGES}
       value={range}
@@ -172,7 +164,7 @@
       label="时间区间"
     />
     <span class="tw__stats">本区间 <b>{fmtTokens(rangeTotal)}</b></span>
-  </header>
+  </PanelHeader>
 
   {#if status === "empty"}
     <div class="tw__empty">暂无本地工具用量数据</div>
@@ -226,14 +218,6 @@
     color: var(--tum-text-primary);
     font-family: var(--tum-font);
     overflow: hidden;
-  }
-
-  .tw__head {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex: none;
-    flex-wrap: wrap;
   }
 
   /* 自绘主题标题栏（无边框窗口）：拖动区 + 最小化/最大化/关闭，暗色玻璃与令牌 */
@@ -290,48 +274,10 @@
     color: var(--tum-danger);
   }
 
-  .tw__title {
-    font-family: var(--tum-font-mono);
-    font-size: var(--tum-font-size-sm);
-    font-weight: 600;
-    letter-spacing: 0.6px;
-    text-transform: uppercase;
-  }
-
-  .tw__pickers {
-    display: flex;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--tum-border);
-    border-radius: var(--tum-radius-pill);
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .tw__picker {
-    border: none;
-    background: transparent;
-    color: var(--tum-text-muted);
-    font-size: 11px;
-    font-family: var(--tum-font);
-    padding: 3px 10px;
-    border-radius: var(--tum-radius-pill);
-    cursor: pointer;
-    transition: background 0.2s ease, color 0.2s ease;
-  }
-
-  .tw__picker:hover {
-    color: var(--tum-text-primary);
-  }
-
-  .tw__picker.is-active {
-    background: rgba(76, 194, 255, 0.18);
-    color: var(--tum-text-primary);
-  }
-
   .tw__stats {
     flex: 1;
     font-family: var(--tum-font-mono);
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     color: var(--tum-text-muted);
   }
 

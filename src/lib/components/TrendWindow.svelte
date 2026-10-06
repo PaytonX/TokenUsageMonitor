@@ -15,7 +15,7 @@
   } from "../trend-data";
   import { hexToRgb } from "../types";
   import CalendarSection from "./CalendarSection.svelte";
-  import { RangePills, ColorSwatch } from "./atoms";
+  import { PanelHeader, RangePills, ColorSwatch } from "./atoms";
 
   let status: "loading" | "ready" | "empty" = $state("loading");
   let seriesIds: string[] = $state([]);
@@ -136,8 +136,7 @@
       <button type="button" class="tw__bar-btn tw__bar-btn--close" aria-label="关闭" onclick={close} onpointerdown={(e) => e.stopPropagation()}>✕</button>
     </div>
   </div>
-  <header class="tw__head">
-    <span class="tw__title">用量趋势</span>
+  <PanelHeader title="用量趋势" label="用量趋势窗口">
     <RangePills
       options={RANGES}
       value={range}
@@ -147,7 +146,7 @@
     <span class="tw__stats">
       累计 <b>{formatCompact(rangeTotal)}</b> · 连续 <b>{streak}</b> 天
     </span>
-  </header>
+  </PanelHeader>
 
   {#if status === "empty"}
     <div class="tw__empty">暂无用量数据，请先在主面板配置 Provider</div>
@@ -212,14 +211,6 @@
     overflow: hidden;
   }
 
-  .tw__head {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex: none;
-    flex-wrap: wrap;
-  }
-
   /* 自绘主题标题栏（无边框窗口）：拖动区 + 最小化/最大化/关闭，暗色玻璃与令牌 */
   .tw__bar {
     display: flex;
@@ -274,18 +265,10 @@
     color: var(--tum-danger);
   }
 
-  .tw__title {
-    font-family: var(--tum-font-mono);
-    font-size: var(--tum-font-size-sm);
-    font-weight: 600;
-    letter-spacing: 0.6px;
-    text-transform: uppercase;
-  }
-
   .tw__stats {
     flex: 1;
     font-family: var(--tum-font-mono);
-    font-size: 11px;
+    font-size: var(--tum-font-size-sm);
     color: var(--tum-text-muted);
   }
 
