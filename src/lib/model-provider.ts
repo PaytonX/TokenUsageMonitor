@@ -116,7 +116,11 @@ export function providerColor(key: string): string {
   return brandColorOf(key) ?? UNREGISTERED_PALETTE[hashOf(key) % UNREGISTERED_PALETTE.length];
 }
 
+/** 颜色 → `[r,g,b]`。hex 形态直接切片；rgb()/rgba() 形态（brand-glyphs 兜底灰
+ *  rgb(138,143,152)）用正则取三元组，避免 colorDistance 被 NaN 毒化。 */
 function rgbOf(hex: string): [number, number, number] {
+  const m = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,[^)]*)?\)$/i.exec(hex.trim());
+  if (m) return [+m[1], +m[2], +m[3]];
   return [
     parseInt(hex.slice(1, 3), 16),
     parseInt(hex.slice(3, 5), 16),

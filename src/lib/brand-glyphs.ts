@@ -57,7 +57,9 @@ export const BRAND_GLYPHS: Record<string, BrandGlyph> = {
   // codex 暂归 openai 色（spec §3.3），实验性支持见 EXPERIMENTAL_KINDS。
   codex: { color: "#10a37f" },
   // 本机采集来源：保留首字母 tile（INITIAL_OVERRIDES 里的「本」）。
-  local: { color: "#8a8f98" },
+  // 颜色用 rgb() 写法（组件库文档 §6 规定，与 #8a8f98 同值）；
+  // hexToRgb / hexToRgbTriplet / rgbOf 均已兼容 rgb() 形态。
+  local: { color: "rgb(138,143,152)" },
 };
 
 /** codex / opencode 目前为实验性支持（端点未公开文档或计费口径不稳定）：

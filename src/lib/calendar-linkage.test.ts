@@ -453,6 +453,11 @@ describe("hexToRgbTriplet", () => {
     expect(hexToRgbTriplet("#fff")).toEqual([76, 194, 255]);
   });
 
+  it("rgb()/rgba() 形态同样取三元组（brand-glyphs 兜底灰 rgb 写法）", () => {
+    expect(hexToRgbTriplet("rgb(138,143,152)")).toEqual([138, 143, 152]);
+    expect(hexToRgbTriplet("rgba(138, 143, 152, 0.22)")).toEqual([138, 143, 152]);
+  });
+
   it("非法输入回落到强调色，不返回 NaN", () => {
     for (const bad of ["", "not-a-color", "#12345", "5b8cff", "#gggggg"]) {
       const rgb = hexToRgbTriplet(bad);

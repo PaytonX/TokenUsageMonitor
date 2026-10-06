@@ -348,14 +348,19 @@ export function paintCell(args: {
   };
 }
 
-/** `#RRGGBB` → `[r,g,b]`；非法输入回落到强调色。 */
+/** `#RRGGBB` / `rgb(r,g,b)` / `rgba(r,g,b,a)` → `[r,g,b]`（rgb 形态为 brand-glyphs
+ *  兜底灰 rgb(138,143,152) 等 design-token 合规写法准备，与 hexToRgb 同规）；
+ *  非法输入回落到强调色。 */
 export function hexToRgbTriplet(hex: string): [number, number, number] {
-  if (/^#[0-9a-f]{6}$/i.test(hex)) {
+  const s = hex.trim();
+  if (/^#[0-9a-f]{6}$/i.test(s)) {
     return [
-      parseInt(hex.slice(1, 3), 16),
-      parseInt(hex.slice(3, 5), 16),
-      parseInt(hex.slice(5, 7), 16),
+      parseInt(s.slice(1, 3), 16),
+      parseInt(s.slice(3, 5), 16),
+      parseInt(s.slice(5, 7), 16),
     ];
   }
+  const m = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,[^)]*)?\)$/i.exec(s);
+  if (m) return [+m[1], +m[2], +m[3]];
   return ACCENT_RGB;
 }

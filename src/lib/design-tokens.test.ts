@@ -39,8 +39,11 @@ function hasHex(content: string, hex: string): boolean {
   return new RegExp(hex + "(?![0-9a-fA-F])", "i").test(content);
 }
 
+/** 颜色规则：hex 词边界，或 rgb()/rgba() 形态正则。豁免文件（相对 src）必须附原因。 */
+type ColorRule = { exempt: string[]; why: string } & ({ hex: string } | { re: RegExp });
+
 /** 禁用 hex → 豁免文件（相对 src）。豁免必须附原因。 */
-const FORBIDDEN_HEX: Array<{ hex: string; exempt: string[]; why: string }> = [
+const FORBIDDEN_HEX: ColorRule[] = [
   // 旧版 success/crit 别名色（组件库文档 §5 明令禁止）
   { hex: "#34d399", exempt: ["Settings.svelte"], why: "旧 success 绿，改用 --tum-ok" },
   { hex: "#f87171", exempt: ["Settings.svelte"], why: "旧 crit 红，改用 --tum-crit" },
@@ -56,33 +59,36 @@ const FORBIDDEN_HEX: Array<{ hex: string; exempt: string[]; why: string }> = [
   { hex: "#23262d", exempt: [], why: "外来弹层底色，改用 var(--tum-bg-solid)" },
 ];
 
-/** 禁用 rgba 字面量（同色相换了形态逃避 hex 规则的）。 */
-const FORBIDDEN_RGBA: Array<{ pattern: string; exempt: string[]; why: string }> = [
-  { pattern: "rgba(232, 234, 240", exempt: [], why: "外来文字色 rgba 形态，按 alpha 映射到 text-muted/text-secondary" },
+/** 禁用 rgb()/rgba() 字面量（同色相换了形态逃避 hex 规则的）。
+ *  正则匹配：无空格 / 多空格 / 大小写 / 无 alpha 的 rgb() 形态都拦得住。 */
+const FORBIDDEN_RGBA: ColorRule[] = [
+  { re: /rgba?\(\s*232\s*,\s*234\s*,\s*240/i, exempt: [], why: "外来文字色 rgba 形态，按 alpha 映射到 text-muted/text-secondary" },
 ];
+
+/** 文件迭代 + 注释剥离 + 豁免判定 + 命中格式只实现这一份，hex/rgba 两个测试共用。 */
+function collectHits(rules: ColorRule[]): string[] {
+  const hits: string[] = [];
+  for (const { path, rel } of FILES) {
+    const code = stripComments(readFileSync(path, "utf8"));
+    for (const rule of rules) {
+      if (rule.exempt.includes(rel)) continue;
+      const what = "hex" in rule ? rule.hex : rule.re.source;
+      if ("hex" in rule ? hasHex(code, rule.hex) : rule.re.test(code)) {
+        hits.push(`${rel}: ${what} (${rule.why})`);
+      }
+    }
+  }
+  return hits;
+}
 
 describe("design token lint", () => {
   it("svelte 源码不含禁用 hex（注释除外）", () => {
-    const hits: string[] = [];
-    for (const { path, rel } of FILES) {
-      const code = stripComments(readFileSync(path, "utf8"));
-      for (const rule of FORBIDDEN_HEX) {
-        if (rule.exempt.includes(rel)) continue;
-        if (hasHex(code, rule.hex)) hits.push(`${rel}: ${rule.hex} (${rule.why})`);
-      }
-    }
+    const hits = collectHits(FORBIDDEN_HEX);
     expect(hits, hits.join("\n")).toEqual([]);
   });
 
   it("svelte 源码不含禁用 rgba 字面量（注释除外）", () => {
-    const hits: string[] = [];
-    for (const { path, rel } of FILES) {
-      const code = stripComments(readFileSync(path, "utf8"));
-      for (const rule of FORBIDDEN_RGBA) {
-        if (rule.exempt.includes(rel)) continue;
-        if (code.includes(rule.pattern)) hits.push(`${rel}: ${rule.pattern} (${rule.why})`);
-      }
-    }
+    const hits = collectHits(FORBIDDEN_RGBA);
     expect(hits, hits.join("\n")).toEqual([]);
   });
 

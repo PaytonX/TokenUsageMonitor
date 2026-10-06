@@ -193,7 +193,7 @@
         {#each hover.parts as p (p.id)}
           <div class="tl__tip-row">
             <span class="tl__tip-k">
-              <ColorSwatch color={colors[p.id] ?? "rgb(138,143,152)"} size={8} class="tl__tip-swatch" />
+              <ColorSwatch color={colors[p.id] ?? "rgb(138,143,152)"} size={8} />
               {names[p.id] ?? p.id}
             </span>
             <b>{p.value.toLocaleString()}</b>
