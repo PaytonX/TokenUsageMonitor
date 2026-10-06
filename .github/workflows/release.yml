@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 打包并发布（NSIS + MSI）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: rustup show active-toolchain
+      - run: npm ci
+      # tauri:build 会以 custom-protocol 生产模式出包（NSIS 由 Tauri 自动下载）
+      - run: npm run tauri:build
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist-release | Out-Null
+          Copy-Item src-tauri/target/release/bundle/nsis/*.exe dist-release/
+          Copy-Item src-tauri/target/release/bundle/msi/*.msi dist-release/
+          Get-ChildItem dist-release
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-release/*
+          generate_release_notes: true

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  frontend:
+    name: 前端检查（vitest + svelte-check）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npx svelte-check
+
+  rust:
+    name: Rust 测试（GNU 工具链）
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      # rustup 会按 rust-toolchain.toml 自动安装 stable-x86_64-pc-windows-gnu。
+      - run: rustup show active-toolchain
+      # GitHub runner 预装了 MSYS2/MinGW-w64；本仓库链接走 rust-lld +
+      # self-contained 导入库（.cargo/config.toml），通常无需额外配置。
+      # 若 GNU 链接在 CI 上失败，可临时给 cargo 加
+      # `--target x86_64-pc-windows-msvc` 作为兜底验证逻辑正确性。
+      - name: cargo test
+        run: cargo test --locked
+        env:
+          # 集成测试只绑 127.0.0.1，无需额外系统权限
+          RUST_BACKTRACE: 1

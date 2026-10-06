@@ -2,6 +2,7 @@
   "name": "token-usage-monitor",
   "version": "0.1.0",
   "description": "Lightweight transparent desktop widget for AI token usage monitoring",
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

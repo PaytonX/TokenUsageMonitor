@@ -1,0 +1,17 @@
+TokenUsageMonitor is dual-licensed under your choice of:
+
+  * MIT License (LICENSE-MIT)
+  * Apache License, Version 2.0 (LICENSE-APACHE)
+
+You may use, modify, and distribute this software under the terms of
+either license, at your option.
+
+This follows the common convention in the Rust ecosystem
+(`MIT OR Apache-2.0` in SPDX notation). See the individual files for
+the full license texts.
+
+---
+
+本软件采用双许可证授权：你可以自行选择在 MIT 许可证（LICENSE-MIT）或
+Apache 许可证 2.0 版（LICENSE-APACHE）条款下使用、修改和分发本软件。
+完整许可文本见对应文件。
