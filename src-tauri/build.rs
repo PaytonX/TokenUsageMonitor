@@ -16,11 +16,36 @@ const RESOURCE_LIB_NAME: &str = "cargo_test_manifest_res";
 
 fn main() {
     tauri_build::build();
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
-        && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu")
-    {
-        embed_gnu_test_manifest();
+
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        match env::var("CARGO_CFG_TARGET_ENV").as_deref() {
+            Ok("msvc") => delayload_comctl32(),
+            Ok("gnu") => embed_gnu_test_manifest(),
+            _ => {}
+        }
     }
+}
+
+/// MSVC 目标的测试二进制缺 Common-Controls v6 manifest 的兜底。
+///
+/// tauri-build 只把 manifest 嵌进主程序（cargo:rustc-link-arg-bins），
+/// `cargo test` 生成的测试 harness 走的是另一条编译路径，拿不到这份资源。
+/// 缺了 `<dependency>` 节点时，Windows 加载器按普通搜索顺序把 `comctl32.dll`
+/// 解析到 System32 里的 v5.82，而不是 WinSxS 的 v6.x。v5.82 不导出
+/// `TaskDialogIndirect` / `SetWindowSubclass`，于是测试二进制在进入 `main`
+/// 之前就被拒绝启动：
+///
+///     error: test failed, to rerun pass `--test router_proxy`
+///     (exit code: 0xc0000139, STATUS_ENTRYPOINT_NOT_FOUND)
+///
+/// 与其像 GNU 分支那样另找一套资源编译工具链（依赖外部 windres/ar，CI 上并不
+/// 存在），MSVC 侧改用链接器原生的延迟导入：把 comctl32 从硬导入转为延迟导入，
+/// 链接器只为它生成一个存桩，首次真正调用该 DLL 的导出时才做符号解析。测试
+/// harness 从不触碰这些 GUI 入口点，于是失败不再发生；主程序本身带
+/// tauri-build 嵌入的 manifest，真要调用时仍走 Fusion 拿到 v6.x。
+fn delayload_comctl32() {
+    println!("cargo:rustc-link-arg=/DELAYLOAD:comctl32.dll");
+    println!("cargo:rustc-link-lib=delayimp");
 }
 
 fn out_dir() -> PathBuf {
