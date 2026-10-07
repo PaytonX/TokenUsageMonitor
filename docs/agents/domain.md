@@ -27,8 +27,8 @@ If either of these doesn't exist, **proceed silently**. Don't flag their absence
 
 Note that this repo already carries substantial prose documentation under `docs/`
 (`usage-ledger.md`, `logging.md`, `COMPONENT-LIBRARY.md`,
-`FRONTEND-DESIGN-STYLE.md`, `p2p-sync-research.md`, plus `docs/design/` and
-`docs/mockups/`). Read the relevant one when working in that area — it is not a
+`FRONTEND-DESIGN-STYLE.md`, `p2p-sync-research.md`, plus `docs/superpowers/specs/`
+and `docs/mockups/`). Read the relevant one when working in that area — it is not a
 substitute for `GLOSSARY.md`, but it is the authoritative detail behind it.
 
 ## Use the glossary's vocabulary

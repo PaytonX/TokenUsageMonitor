@@ -38,3 +38,8 @@ OPEN_SOURCE_RUNBOOK.md
 # 内部 issue 与临时排查脚本（AGENTS.md 约定的本地工作区，不随仓库发布）
 .scratch/
 
+# Agent 执行过程记录（任务拆解 / 验收记录 / 过程讨论），本地保留不对外发布。
+# docs/superpowers/specs/ 仍在仓库内：源码有 4 处注释引用它作为设计决策出处。
+docs/superpowers/plans/
+docs/design/
+

@@ -245,4 +245,4 @@ src/lib/components/
 
 迁移前先 `svelte-check` 跑通，再 `vitest run` 确认无回归，最后 `vite build` 确认产物大小不退化。
 
-> **执行记录（2026-10-06）**：设计令牌合规清理一批落地——状态色与中性色全部收敛到令牌（含 rgba 形态禁令）、双窗口标题区接入 PanelHeader/PillsOrSelect、值保持型 px 字面量清零并设 lint 永久门禁、RangePills 补键盘焦点、DetailCard 兑现玻璃模糊、TOOL_SERIES/deviceColor 收敛为共享常量。dashboard 产物 81.22 kB → 79.02 kB；完整清单见 `docs/superpowers/plans/2026-10-06-design-token-conformance.md` 的「执行记录」。
+> **执行记录（2026-10-06）**：设计令牌合规清理一批落地——状态色与中性色全部收敛到令牌（含 rgba 形态禁令）、双窗口标题区接入 PanelHeader/PillsOrSelect、值保持型 px 字面量清零并设 lint 永久门禁、RangePills 补键盘焦点、DetailCard 兑现玻璃模糊、TOOL_SERIES/deviceColor 收敛为共享常量。dashboard 产物 81.22 kB → 79.02 kB。
