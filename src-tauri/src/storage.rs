@@ -793,9 +793,21 @@ mod storage_unit_tests {
     use super::*;
     use crate::providers::UsageUnit;
 
+    /// 每个用例一份独立库文件。
+    ///
+    /// 早期实现只用进程 ID 命名，全模块共用同一个 .db，且每次调用都先
+    /// `remove_file` —— 并行执行时会把另一个用例正在用的库删掉，导致
+    /// `sum_usage_daily_today_sums_across_models` 偶发读到空库而失败
+    /// （单跑必过、整模块跑约 1/3 概率挂）。序号计数器保证每次调用拿到
+    /// 独占路径，删除动作不再影响其他用例。
     fn temp_storage() -> Storage {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("pulse_heatmap_unit_test_{}.db", std::process::id()));
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = dir.join(format!(
+            "pulse_heatmap_unit_test_{}_{seq}.db",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&path);
         Storage::open(&path).unwrap()
     }
