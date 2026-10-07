@@ -20,21 +20,36 @@ jobs:
       - run: npx svelte-check
 
   rust:
-    name: Rust 测试（GNU 工具链）
+    name: Rust 测试（MSVC 工具链）
     runs-on: windows-latest
     defaults:
       run:
         working-directory: src-tauri
+    env:
+      # 仓库根的 rust-toolchain.toml 钉的是 GNU 工具链，那是**本机开发**的选择：
+      # 它需要用户级 winget 安装 LLVM-MinGW，并手工硬链接 as.exe 供 dlltool 调用
+      # （见 src-tauri/.cargo/config.toml 顶部说明）。GitHub runner 上没有这套
+      # 环境，GNU 链接必然失败。
+      #
+      # CI 改用 runner 预装的 MSVC 工具链——windows-latest 自带 VS Build Tools，
+      # 不依赖任何本机手工搭建。RUSTUP_TOOLCHAIN 的优先级高于 rust-toolchain.toml，
+      # 因此只需在 CI 覆盖，本地开发流程完全不受影响。
+      RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-msvc
+      # 集成测试只绑 127.0.0.1，无需额外系统权限
+      RUST_BACKTRACE: 1
     steps:
       - uses: actions/checkout@v4
-      # rustup 会按 rust-toolchain.toml 自动安装 stable-x86_64-pc-windows-gnu。
-      - run: rustup show active-toolchain
-      # GitHub runner 预装了 MSYS2/MinGW-w64；本仓库链接走 rust-lld +
-      # self-contained 导入库（.cargo/config.toml），通常无需额外配置。
-      # 若 GNU 链接在 CI 上失败，可临时给 cargo 加
-      # `--target x86_64-pc-windows-msvc` 作为兜底验证逻辑正确性。
-      - name: cargo test
+
+      # 诊断步骤：失败时注解里能直接看到实际使用的工具链，省去一轮猜测
+      - name: 显示工具链
+        run: |
+          rustup show active-toolchain
+          rustc -vV
+
+      # 先只编译不运行：编译期错误与运行期错误（DLL 缺失等）在注解里是两种完全
+      # 不同的表现，拆开后定位不需要翻完整日志
+      - name: 编译测试二进制
+        run: cargo test --locked --no-run
+
+      - name: 运行测试
         run: cargo test --locked
-        env:
-          # 集成测试只绑 127.0.0.1，无需额外系统权限
-          RUST_BACKTRACE: 1
