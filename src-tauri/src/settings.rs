@@ -371,7 +371,13 @@ impl SettingsStore {
     /// Sync, non-async read of `dock`. Same rationale as `compact_mode_now`:
     /// startup positioning runs synchronously inside `setup`, which can't await.
     pub fn dock_now(&self) -> Option<crate::dock::DockAnchor> {
-        self.cache.try_read().ok().and_then(|s| s.dock)
+        // 下边缘收起已禁用：旧配置里持久化的 Bottom 锚点不再恢复，
+        // 启动时按浮动态回自由位置（见 dock.rs nearest_side 的说明）。
+        self.cache
+            .try_read()
+            .ok()
+            .and_then(|s| s.dock)
+            .filter(|a| a.side != crate::dock::DockSide::Bottom)
     }
 
     /// Sync, non-async read of the persisted free-floating position.

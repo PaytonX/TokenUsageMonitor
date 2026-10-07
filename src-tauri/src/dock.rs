@@ -156,11 +156,13 @@ pub fn nearest_side(
     threshold: f64,
     drag: Option<(f64, f64)>,
 ) -> Option<DockSide> {
+    // 下边缘收起已禁用（2026-10 用户拍板）：底部横条把手与任务栏的交互异常
+    // （胶囊贴底后把手/唤出不可用）。Bottom 仍是合法的持久化枚举值（旧配置
+    // 反序列化需要），只是不再作为贴边判定候选——贴底松手一律视为浮动。
     let cands = [
         (DockSide::Left, x - area_x),
         (DockSide::Right, (area_x + area_w) - (x + w)),
         (DockSide::Top, y - area_y),
-        (DockSide::Bottom, (area_y + area_h) - (y + h)),
     ];
     let min = cands
         .iter()
@@ -365,7 +367,14 @@ mod tests {
         assert_eq!(nearest_side(0.0, 300.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H, 40.0, None), Some(DockSide::Left));
         assert_eq!(nearest_side(1752.0, 300.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H, 40.0, None), Some(DockSide::Right));
         assert_eq!(nearest_side(600.0, 0.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H, 40.0, None), Some(DockSide::Top));
-        assert_eq!(nearest_side(600.0, 984.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H, 40.0, None), Some(DockSide::Bottom));
+    }
+
+    #[test]
+    fn bottom_edge_docking_is_disabled() {
+        // 下边缘收起已禁用：贴底松手一律 None（浮动），即使距离比其他边更近。
+        assert_eq!(nearest_side(600.0, 984.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H, 40.0, None), None);
+        // 底+左角点：Bottom 被排除后由唯一候选 Left 胜出（往下拖也不贴底）。
+        assert_eq!(nearest_side(0.0, 984.0, 168.0, 56.0, AREA_X, AREA_Y, AREA_W, AREA_H, 40.0, Some((3.0, 200.0))), Some(DockSide::Left));
     }
 
     #[test]
