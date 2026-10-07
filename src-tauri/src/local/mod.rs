@@ -37,6 +37,28 @@ use tokio::sync::Mutex;
 /// total instead of silently dropping them, without guessing a model.
 pub const UNCLASSIFIED_MODEL: &str = "未标记模型";
 
+/// 「经 TokenRouter」的哨兵模型名。**前端 `src/lib/router-attribution.ts` 有一份
+/// 镜像常量**，改这里必须同步改那边。
+///
+/// 工具侧只知道自己请求了一个叫「路由」的东西，看不到实际落到哪个上游模型
+/// （路由不改写客户端可见的模型名）。于是工具把这行打成哨兵，具体模型由
+/// TokenRouter 自己的记账行（`kind='router'`，`model` 为实际承载模型）给出，
+/// 前端按日做**替换**归因，而不是靠前缀匹配猜。
+pub const ROUTED_MODEL: &str = "__via_router__";
+
+/// 判定某个模型名是否为「经本地路由」的可验证占位符。
+///
+/// 判据必须是**具体的占位符**，不能拿"模型名为空"当路由信号：
+/// - MiniMax Code 把自定义 Provider 记成 `custom_provider:<id>/<variant>`
+/// - Codex 把指向本地路由的模型记成 `LocalRouter`
+///
+/// 空模型名是「上游没记模型」的未知态（见 [`UNCLASSIFIED_MODEL`]），与「走了
+/// 路由」是两回事，混用会在用户把工具切回直连时把全部流量误标成经路由。
+pub fn is_routed_placeholder(model: &str) -> bool {
+    let m = model.trim();
+    m.starts_with("custom_provider:") || m == "LocalRouter"
+}
+
 /// Scan every supported local tool in parallel (each tool owns independent I/O),
 /// then drop tools with no usage. Used by `get_local_tools` and the startup
 /// pre-warm so the first open of the tools view is instant.
@@ -311,6 +333,30 @@ mod tests {
     use super::*;
     use crate::storage::Storage;
     use std::collections::HashMap;
+
+    /// 路由占位符只认**具体形态**，不认「模型名为空」——空名是「上游没记模型」
+    /// 的未知态。用户把工具切回直连时，若靠空名判路由，全部直连流量都会被
+    /// 误标成经路由。
+    #[test]
+    fn routed_placeholder_only_matches_known_forms() {
+        assert!(is_routed_placeholder("custom_provider:localrouter/auto"));
+        assert!(is_routed_placeholder("custom_provider:openrouter/stealth/x"));
+        assert!(is_routed_placeholder("LocalRouter"));
+        assert!(is_routed_placeholder("  LocalRouter  "));
+        // 未知态，不是路由
+        assert!(!is_routed_placeholder(""));
+        assert!(!is_routed_placeholder(UNCLASSIFIED_MODEL));
+        assert!(!is_routed_placeholder("minimax/MiniMax-M3"));
+        assert!(!is_routed_placeholder("gpt-5"));
+    }
+
+    #[test]
+    fn routed_sentinel_is_distinct_from_unclassified() {
+        // 两者语义不同：前者「知道走了路由、模型待替换」，后者「不知道模型」。
+        // 混用会让未知态被错误地拿去做替换归因。
+        assert_ne!(ROUTED_MODEL, UNCLASSIFIED_MODEL);
+        assert!(!ROUTED_MODEL.contains(UNCLASSIFIED_MODEL));
+    }
 
     fn temp_db(tag: &str) -> (std::path::PathBuf, Storage) {
         let db = std::env::temp_dir().join(format!("tum_{}_{}.db", tag, std::process::id()));

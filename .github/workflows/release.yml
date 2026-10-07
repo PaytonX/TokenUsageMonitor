@@ -28,6 +28,26 @@ jobs:
           Copy-Item src-tauri/target/release/bundle/nsis/*.exe dist-release/
           Copy-Item src-tauri/target/release/bundle/msi/*.msi dist-release/
           Get-ChildItem dist-release
+      # 为每个安装包生成 SHA256 校验和，供下载方核对来源完整性。
+      # 清单需与安装包一起上传，且用 LF 行尾（保持与仓库 eol=lf 约定一致）。
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist-release -File |
+            Where-Object { $_.Extension -in '.exe', '.msi' } |
+            Sort-Object Name
+          if (-not $files) { throw 'no artifacts to checksum' }
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($f.Name)"
+          }
+          # 用 LF 写盘：Out-File 默认 CRLF，会让校验和在 Linux/macOS 上校验失败。
+          [System.IO.File]::WriteAllText(
+            (Join-Path (Get-Location) 'dist-release/SHA256SUMS.txt'),
+            ($lines -join "`n") + "`n",
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+          Get-Content dist-release/SHA256SUMS.txt
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:

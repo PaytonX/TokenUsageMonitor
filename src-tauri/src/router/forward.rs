@@ -46,6 +46,22 @@ pub fn build_upstream_headers(
     out
 }
 
+/// 从请求体读出**工具请求的**模型名。
+///
+/// 候选未指定模型时（`CandidateConfig::model` 为空）路由不改写 body、直接透传，
+/// 此时真正打到上游的就是这个值——记账要记它，记 `cand.model`（空串）会把
+/// 「透传」误记成「未知模型」。body 非 JSON 或无 `model` 字段时返回 `None`，
+/// 此时落空串（诚实单列，不猜）。
+pub fn request_model(body: &[u8]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let m = v.get("model")?.as_str()?.trim();
+    if m.is_empty() {
+        None
+    } else {
+        Some(m.to_string())
+    }
+}
+
 /// 把请求 body 的 `model` 字段重写为候选模型。body 必须是 JSON 对象。
 pub fn rewrite_model_field(body: &[u8], model: &str) -> Result<Vec<u8>, String> {
     let mut v: serde_json::Value =

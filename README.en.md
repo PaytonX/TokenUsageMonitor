@@ -164,8 +164,11 @@ Design and implementation drew inspiration from:
 
 - [qunqin24/Pulse](https://github.com/qunqin24/Pulse) — macOS edge quota
   monitor; the split-pane settings layout follows its design language
-- [Javis603/token-monitor](https://github.com/Javis603/token-monitor) and
-  [junhoyeo/tokscale](https://github.com/junhoyeo/tokscale) — references
+- [Javis603/token-monitor](https://github.com/Javis603/token-monitor) (MIT) —
+  provides the brand icon vectors used in
+  [`src/lib/brand-glyphs.ts`](src/lib/brand-glyphs.ts); its copyright and
+  permission notice is retained per the MIT terms
+- [junhoyeo/tokscale](https://github.com/junhoyeo/tokscale) — reference
   for local tool usage collection and ledger design
 - [Tauri](https://tauri.app), [Svelte](https://svelte.dev)
 

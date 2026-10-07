@@ -14,7 +14,8 @@
 
 use super::{day_from_epoch_ms, finalize_days, finalize_models, LocalToolReport};
 use rusqlite::{Connection, OpenFlags};
-use std::collections::{BTreeMap, HashSet};
+use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 const TOOL_ID: &str = "minimax-code";
@@ -74,7 +75,50 @@ fn open_ro(path: &PathBuf) -> Option<Connection> {
     Connection::open_with_flags(&url, flags).ok()
 }
 
-fn scan_table(conn: &Connection, qry: &str, agg: &mut Agg) {
+/// `local_runtime_sessions.extra_data_json` 里与模型归因相关的字段。上游运行时
+/// 始终记录本会话生效的模型名，这里只取这一个字段，其余一律容忍。
+#[derive(Debug, Clone, Deserialize, Default)]
+struct SessionExtra {
+    #[serde(default, rename = "effectiveModel")]
+    effective_model: String,
+}
+
+/// 建立 `session_id → effectiveModel` 映射。
+///
+/// 存在的理由：上游 2026-08 起不再往 token 账本写 `model`（实测近 10 天
+/// 13331/13516 行为空，`raw` 里也只有 token/cost、没有模型字段），但会话记录
+/// 里的 `effectiveModel` 一直在——按 `session_id` 关联即可恢复出绝大多数行的
+/// 模型名。旧版库没有 `local_runtime_sessions` 表（prepare 失败即返回空表），
+/// 此时行为与修复前完全一致。
+///
+/// 口径与 Hermes 扫描器一致（`hermes.rs` 同样按会话级 `model` 归属）：粒度是
+/// 会话而非单次请求，一个会话中途换模型时，其全部 token 归到会话最终的模型。
+fn read_session_models(conn: &Connection) -> HashMap<String, String> {
+    let Ok(mut stmt) = conn.prepare("SELECT session_id, extra_data_json FROM local_runtime_sessions")
+    else {
+        return HashMap::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))
+    else {
+        return HashMap::new();
+    };
+    let mut out = HashMap::new();
+    for (sid, extra) in rows.flatten() {
+        let Some(extra) = extra else {
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_str::<SessionExtra>(&extra) else {
+            continue;
+        };
+        let m = parsed.effective_model.trim();
+        if !m.is_empty() {
+            out.insert(sid, m.to_string());
+        }
+    }
+    out
+}
+
+fn scan_table(conn: &Connection, qry: &str, sessions: &HashMap<String, String>, agg: &mut Agg) {
     let Ok(mut stmt) = conn.prepare(qry) else {
         return;
     };
@@ -95,6 +139,22 @@ fn scan_table(conn: &Connection, qry: &str, agg: &mut Agg) {
             continue;
         }
         agg.rows += 1;
+        // 解析模型名的优先级：账本自身的 `model` 列 > 会话的 `effectiveModel` >
+        // 共享的"未标记模型"桶。账本列优先——它是逐请求的真实取值，优于会话
+        // 级推断；两者都拿不到才落未标记桶，使按模型合计仍与按日总量对账。
+        // 必须排在下面的 `sessions.insert` 之前：insert 会 move 掉 `session`。
+        let model = model
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .or_else(|| sessions.get(&session).cloned())
+            .unwrap_or_else(|| crate::local::UNCLASSIFIED_MODEL.to_string());
+        // 走了本地路由的行打成哨兵：MiniMax Code 只能看到 `custom_provider:*`
+        // 这个自定义 Provider 占位名，真实模型由路由自记账给出。
+        let model = if crate::local::is_routed_placeholder(&model) {
+            crate::local::ROUTED_MODEL.to_string()
+        } else {
+            model
+        };
         if !session.is_empty() {
             agg.sessions.insert(session);
         }
@@ -102,18 +162,14 @@ fn scan_table(conn: &Connection, qry: &str, agg: &mut Agg) {
         e.0 += input;
         e.1 += cache_read + cache_write;
         e.2 += output;
-        // 个别行源里没有模型（`model`/`raw` 均为空）——仍把 token 计入共享的
-        // "未标记模型" 桶，使模型页合计与趋势页(按日总量)对得上，且不伪造模型名。
-        let model = model
-            .filter(|m| !m.trim().is_empty())
-            .map(|m| m.trim().to_string())
-            .unwrap_or_else(|| crate::local::UNCLASSIFIED_MODEL.to_string());
         let m = agg.by_model.entry(model.clone()).or_default();
         let me = m.entry(date).or_insert((0.0, 0.0, 0.0));
         me.0 += input;
         me.1 += cache_read + cache_write;
         me.2 += output;
-        if model != crate::local::UNCLASSIFIED_MODEL {
+        // 哨兵与未标记都记不了成本（前者真实模型在路由侧，后者本就未知），
+        // 不能拿价目表按占位名估算——那会造出一个不存在的价格。
+        if model != crate::local::UNCLASSIFIED_MODEL && model != crate::local::ROUTED_MODEL {
             let c = agg.model_cost.entry(model).or_insert((0.0, "USD".to_string()));
             c.0 += cost;
         }
@@ -131,10 +187,13 @@ pub fn scan() -> LocalToolReport {
     };
 
     if let Some(conn) = open_ro(&v2_db()) {
-        scan_table(&conn, QRY_V2, &mut agg);
+        // 会话表与账本表同库，一次性建好映射再扫账本。
+        let sessions = read_session_models(&conn);
+        scan_table(&conn, QRY_V2, &sessions, &mut agg);
     }
     if let Some(conn) = open_ro(&legacy_db()) {
-        scan_table(&conn, QRY_LEGACY, &mut agg);
+        // 旧版库无会话表，模型只能取自账本自身的 `model` 列。
+        scan_table(&conn, QRY_LEGACY, &HashMap::new(), &mut agg);
     }
 
     let daily = finalize_days(agg.by_day.clone(), KEEP_DAYS);
@@ -186,7 +245,7 @@ mod tests {
             sessions: HashSet::new(),
             rows: 0,
         };
-        scan_table(&conn, QRY_V2, &mut agg);
+        scan_table(&conn, QRY_V2, &HashMap::new(), &mut agg);
 
         let unclassified = agg.by_model.get(crate::local::UNCLASSIFIED_MODEL).unwrap();
         let day = unclassified.values().next().unwrap();
@@ -200,5 +259,139 @@ mod tests {
         // Daily total reconciles all three rows.
         let total: f64 = agg.by_day.values().map(|d| d.0 + d.1 + d.2).sum();
         assert_eq!(total, 100.0 + 10.0 + 200.0 + 20.0 + 400.0 + 40.0);
+    }
+
+    #[test]
+    fn rows_without_ledger_model_recover_from_session() {
+        // 上游 2026-08 起账本不再写 model，但会话的 effectiveModel 仍在，
+        // 按 session_id 关联即可恢复；只有关联不上的才落未标记桶。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE local_runtime_sessions (
+                session_id TEXT, extra_data_json TEXT
+            );
+            CREATE TABLE local_runtime_token_usage (
+                id INTEGER, session_id TEXT, agent_name TEXT, framework_type TEXT, turn_id TEXT,
+                model TEXT, ts INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                reasoning_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+                cost_usd REAL, raw TEXT
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO local_runtime_sessions (session_id, extra_data_json)
+             VALUES ('s1', '{\"effectiveModel\":\"minimax/MiniMax-M3.1-Flash-Preview\"}'),
+                    ('s2', '{\"appMode\":\"coding\"}'),
+                    ('s4', 'not json at all')",
+            [],
+        )
+        .unwrap();
+        // s1 两行模型列为空但可从会话恢复；s2 无 effectiveModel；s3 会话已消失；
+        // s9 账本自带模型名。
+        conn.execute(
+            "INSERT INTO local_runtime_token_usage
+             (session_id, model, ts, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd)
+             VALUES ('s1', NULL, 1776500585000, 100, 10, 0, 0, 0.4),
+                    ('s1', '', 1776500585000, 200, 20, 0, 0, 0.6),
+                    ('s2', NULL, 1776500585000, 300, 30, 0, 0, 0.1),
+                    ('s3', NULL, 1776500585000, 400, 40, 0, 0, 0.2),
+                    ('s9', 'minimax/MiniMax-M3', 1776500585000, 500, 50, 0, 0, 0.5)",
+            [],
+        )
+        .unwrap();
+
+        let sessions = read_session_models(&conn);
+        assert_eq!(
+            sessions.get("s1").map(String::as_str),
+            Some("minimax/MiniMax-M3.1-Flash-Preview")
+        );
+        // 无 effectiveModel / JSON 损坏的会话都不入表
+        assert!(!sessions.contains_key("s2"));
+        assert!(!sessions.contains_key("s4"));
+
+        let mut agg = Agg {
+            by_day: BTreeMap::new(),
+            by_model: BTreeMap::new(),
+            model_cost: BTreeMap::new(),
+            sessions: HashSet::new(),
+            rows: 0,
+        };
+        scan_table(&conn, QRY_V2, &sessions, &mut agg);
+
+        // s1 的两行（NULL + 空串）都恢复成会话的模型名。
+        let recovered = agg
+            .by_model
+            .get("minimax/MiniMax-M3.1-Flash-Preview")
+            .expect("session model recovered");
+        let day = recovered.values().next().unwrap();
+        assert_eq!(day.0, 300.0);
+        assert_eq!(day.2, 30.0);
+        // 账本自带模型名的行不受会话覆盖。
+        assert!(agg.by_model.contains_key("minimax/MiniMax-M3"));
+        // 只有 s2（无 effectiveModel）+ s3（会话消失）落未标记桶。
+        let un = agg
+            .by_model
+            .get(crate::local::UNCLASSIFIED_MODEL)
+            .expect("unclassified bucket present");
+        assert_eq!(un.values().next().unwrap().0, 700.0);
+        // 恢复出的模型要记成本（s1 两行 0.4+0.6），未标记桶仍不记。
+        assert_eq!(agg.model_cost["minimax/MiniMax-M3.1-Flash-Preview"].0, 1.0);
+        assert!(!agg.model_cost.contains_key(crate::local::UNCLASSIFIED_MODEL));
+        // 按日总量与按模型合计仍然对账：input 1500 + output 150。
+        let total: f64 = agg.by_day.values().map(|d| d.0 + d.1 + d.2).sum();
+        assert_eq!(total, 1650.0);
+    }
+
+    #[test]
+    fn custom_provider_model_becomes_routed_sentinel() {
+        // MiniMax Code 走 TokenRouter 时，会话 effectiveModel 记的是自定义
+        // Provider 占位名；这类行须打成哨兵，交由路由自记账归因真实模型，
+        // 而不是当成一个叫 "custom_provider:..." 的模型。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE local_runtime_sessions (session_id TEXT, extra_data_json TEXT);
+             CREATE TABLE local_runtime_token_usage (
+                id INTEGER, session_id TEXT, agent_name TEXT, framework_type TEXT, turn_id TEXT,
+                model TEXT, ts INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                reasoning_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+                cost_usd REAL, raw TEXT
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO local_runtime_sessions (session_id, extra_data_json)
+             VALUES ('s1', '{\"effectiveModel\":\"custom_provider:localrouter/auto\"}'),
+                    ('s2', '{\"effectiveModel\":\"minimax/MiniMax-M3\"}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO local_runtime_token_usage
+             (session_id, model, ts, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd)
+             VALUES ('s1', NULL, 1776500585000, 100, 10, 0, 0, 1.5),
+                    ('s2', NULL, 1776500585000, 200, 20, 0, 0, 0.5)",
+            [],
+        )
+        .unwrap();
+
+        let sessions = read_session_models(&conn);
+        let mut agg = Agg {
+            by_day: BTreeMap::new(),
+            by_model: BTreeMap::new(),
+            model_cost: BTreeMap::new(),
+            sessions: HashSet::new(),
+            rows: 0,
+        };
+        scan_table(&conn, QRY_V2, &sessions, &mut agg);
+
+        assert!(
+            agg.by_model.contains_key(crate::local::ROUTED_MODEL),
+            "custom_provider 行须打成哨兵，实际键: {:?}",
+            agg.by_model.keys().collect::<Vec<_>>()
+        );
+        assert!(agg.by_model.contains_key("minimax/MiniMax-M3"));
+        // 哨兵记不了成本：按占位名估算会造出一个不存在的价格。
+        assert!(!agg.model_cost.contains_key(crate::local::ROUTED_MODEL));
+        assert_eq!(agg.model_cost["minimax/MiniMax-M3"].0, 0.5);
     }
 }

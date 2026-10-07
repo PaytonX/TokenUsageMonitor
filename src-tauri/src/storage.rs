@@ -349,11 +349,16 @@ impl Storage {
     }
 
     /// 路由记账：把一次经 TokenRouter 转发的用量增量累计进统一账本
-    /// （`source = router:<instance_id>`，kind='provider'，model='' 总量行）。
+    /// （`source = router:<instance_id>`，`kind` 由调用方给，`model` 为**实际
+    /// 承载模型**——候选指定了就用它，未指定（透传）就用工具请求里的原始模型名）。
     /// `router:*` 键没有其他写入方，与 `replace_usage_daily` 的全量回放语义
     /// 天然隔离——ON CONFLICT 累加不会和 REPLACE 互相覆盖。
+    ///
+    /// `kind` 独立传参而非写死 'provider'：路由自记账不是服务端日账，混在
+    /// `kind='provider'` 里会让前端的 provider 日账分支把它当官方账本吸收。
     pub fn accumulate_usage_daily(
         &self,
+        kind: &str,
         source: &str,
         date: NaiveDate,
         model: &str,
@@ -366,7 +371,7 @@ impl Storage {
         conn.execute(
             "INSERT INTO usage_daily
              (source, kind, date, model, input, cache_read, output, total, unit, cost, currency, cost_estimated, captured_at)
-             VALUES (?1, 'provider', ?2, ?3, ?4, ?5, ?6, ?7, 'tokens', NULL, NULL, 0, ?8)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'tokens', NULL, NULL, 0, ?9)
              ON CONFLICT(source, date, model) DO UPDATE SET
                 input = input + excluded.input,
                 cache_read = cache_read + excluded.cache_read,
@@ -375,6 +380,7 @@ impl Storage {
                 captured_at = excluded.captured_at",
             params![
                 source,
+                kind,
                 date.to_string(),
                 model,
                 input,
@@ -387,18 +393,47 @@ impl Storage {
         Ok(())
     }
 
-    /// 今日某来源的账本总量（仅 model='' 总量行）。TokenRouter 手填日限的
-    /// used 口径：used = 路由器自记账的当日经路由消耗。
+    /// 今日某来源的账本总量。TokenRouter 手填日限的 used 口径：used = 路由器
+    /// 自记账的当日经路由消耗。
+    ///
+    /// **不按 `model` 过滤**：路由自记账按实际承载模型分行（`ON CONFLICT
+    /// (source,date,model)`，同日多模型各占一行），这里对当天全部模型行求和。
+    /// 早期版本只认 `model=''` 总量行，路由开始记模型后会直接归零——手填日限
+    /// 随之永不触发，路由会突破用户日上限。`router:*` 的 source 键只有路由自己
+    /// 写，无需再按 kind 收窄。
     pub fn sum_usage_daily_today(&self, source: &str) -> Result<f64> {
         let conn = self.conn.lock().unwrap();
         let today = chrono::Local::now().date_naive().to_string();
         let total = conn.query_row(
             "SELECT COALESCE(SUM(total), 0.0) FROM usage_daily
-             WHERE source = ?1 AND date = ?2 AND model = ''",
+             WHERE source = ?1 AND date = ?2",
             params![source, today],
             |row| row.get::<_, f64>(0),
         )?;
         Ok(total)
+    }
+
+    /// 一次性清理**路由改记模型之前**留下的旧行（`kind='provider'` 且
+    /// `source LIKE 'router:%'`）。
+    ///
+    /// 路由现在写 `kind='router'` + 实际承载模型，旧行只剩「走了路由、但不知道
+    /// 用了哪个模型」这一条信息——正是 [`crate::local::ROUTED_MODEL`] 哨兵已经
+    /// 表达过的状态。留着它们没有额外价值，却会让账本里同时存在两种 kind 的
+    /// 路由行，下游按 kind 统计时口径不一。
+    ///
+    /// 删除是无损的：这些行从未被任何视图消费（前端一律过滤 `kind='tool'`，
+    /// provider 日账分支也按 source 前缀匹配不到 `router:`），工具侧的用量早已
+    /// 由各自扫描器独立记账。**只删旧 kind，不碰 `router:*` 的新行。**
+    pub fn purge_legacy_router_ledger(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "DELETE FROM usage_daily WHERE kind = 'provider' AND source LIKE 'router:%'",
+            [],
+        )?;
+        if n > 0 {
+            tracing::info!(target: "tum.storage", "purged {n} legacy router ledger rows (kind='provider')");
+        }
+        Ok(n)
     }
 
     /// 旧数据一次性迁移：把 `daily_snapshots` 里的 `minimax-code` 键（tokens）
@@ -763,6 +798,68 @@ mod storage_unit_tests {
         let path = dir.join(format!("pulse_heatmap_unit_test_{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         Storage::open(&path).unwrap()
+    }
+
+    /// 只清旧 kind 的路由行，且**幂等**；同批里的服务端日账与新路由行必须留下。
+    #[test]
+    fn purge_legacy_router_ledger_only_touches_old_kind() {
+        let s = temp_storage();
+        let today = chrono::Local::now().date_naive();
+        // 旧路由行：kind='provider' + router: 来源 —— 应被清掉
+        s.accumulate_usage_daily("provider", "router:acct-1", today, "", 100.0, 0.0, 0.0)
+            .unwrap();
+        s.accumulate_usage_daily("provider", "router:acct-2", today, "", 200.0, 0.0, 0.0)
+            .unwrap();
+        // 新路由行：kind='router' —— 必须保留
+        s.accumulate_usage_daily(
+            crate::router::ROUTER_LEDGER_KIND,
+            "router:acct-1",
+            today,
+            "ark-seed-1.6",
+            50.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+        // 真正的服务端日账 —— 必须保留
+        s.accumulate_usage_daily("provider", "volcengine-1-0", today, "", 999.0, 0.0, 0.0)
+            .unwrap();
+
+        let purged = s.purge_legacy_router_ledger().unwrap();
+        assert_eq!(purged, 2, "两条旧路由行应被清除");
+
+        let rows = s.load_usage_daily(None, 7).unwrap();
+        assert!(
+            !rows.iter().any(|r| r.source == "router:acct-2"),
+            "旧路由行应消失"
+        );
+        assert!(
+            rows.iter().any(|r| r.source == "router:acct-1" && r.model == "ark-seed-1.6"),
+            "新路由行须保留: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.source == "volcengine-1-0"),
+            "服务端日账须保留"
+        );
+
+        // 幂等：再跑一次不删任何东西，也不报错
+        assert_eq!(s.purge_legacy_router_ledger().unwrap(), 0);
+    }
+
+    /// used 口径对当日全部模型行求和——只认 model='' 会让路由日限静默失效。
+    #[test]
+    fn sum_usage_daily_today_sums_across_models() {
+        let s = temp_storage();
+        let today = chrono::Local::now().date_naive();
+        let src = "router:acct-1";
+        s.accumulate_usage_daily(crate::router::ROUTER_LEDGER_KIND, src, today, "model-a", 100.0, 0.0, 0.0)
+            .unwrap();
+        s.accumulate_usage_daily(crate::router::ROUTER_LEDGER_KIND, src, today, "model-b", 250.0, 0.0, 0.0)
+            .unwrap();
+        // 同模型再累加（ON CONFLICT 累加语义）
+        s.accumulate_usage_daily(crate::router::ROUTER_LEDGER_KIND, src, today, "model-a", 50.0, 0.0, 0.0)
+            .unwrap();
+        assert!((s.sum_usage_daily_today(src).unwrap() - 400.0).abs() < 1e-9);
     }
 
     #[test]

@@ -1,6 +1,10 @@
 // 品牌 glyph 注册表（spec §3.3）：24×24 真实品牌矢量，取自参考项目
 // Javis603/token-monitor 的 assets/icons。单色 path 走 CSS mask 剪影按品牌色着色；
 // 多色品牌（Kimi）走 tile 分支渲染内联 svg；只登记颜色没有矢量的品牌回退首字母 tile。
+//
+// 图标来源与许可：Javis603/token-monitor，MIT License，
+// Copyright (c) 2026 Javis。本文件按 MIT 条款保留其版权与许可声明。
+// 矢量本身是各服务商的商标，此处仅作标识性使用以指代数据来源。
 
 export type TileGlyph = { bg: string; inner: string };
 export type BrandGlyph = { color: string; path?: string; tile?: TileGlyph };

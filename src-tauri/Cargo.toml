@@ -4,7 +4,7 @@ version = "0.3.0"
 description = "Lightweight transparent desktop widget for AI token usage monitoring"
 authors = ["TokenUsageMonitor"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/OWNER/TokenUsageMonitor"
+repository = "https://github.com/PaytonX/TokenUsageMonitor"
 edition = "2021"
 rust-version = "1.77"
 

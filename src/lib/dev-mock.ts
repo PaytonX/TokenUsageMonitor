@@ -223,7 +223,7 @@ const STATES = Object.fromEntries(
 const SETTINGS = {
   enabled_providers: [],
   accounts: ACCOUNTS,
-  tool_data_roots: ["D:\\Lab\\.agentdata"],
+  tool_data_roots: ["C:\\Users\\you\\.agentdata"],
   tool_data_dirs: {},
   poll_interval_seconds: 30,
   dashboard_x: 100,

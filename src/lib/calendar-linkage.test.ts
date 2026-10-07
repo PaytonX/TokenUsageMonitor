@@ -150,6 +150,99 @@ describe("buildLedgerBreakdown", () => {
     expect(buildLedgerBreakdown(rows).size).toBe(0);
   });
 
+  // ---- 经本地路由的替换归因 ----
+
+  /** 构造一行 TokenRouter 自记账（kind='router'，model 为实际承载模型）。 */
+  const routerRow = (date: string, model: string, total: number) => ({
+    source: "router:acct-1",
+    kind: "router" as const,
+    date,
+    model,
+    input: total,
+    cache_read: 0,
+    output: 0,
+    total,
+    unit: "tokens",
+    cost: null,
+    currency: null,
+    cost_estimated: false,
+  });
+
+  it("哨兵行按路由台账的真实模型归因（不再靠工具兜底猜）", () => {
+    const rows = [
+      row("minimax-code", "2026-10-05", "", 1000),      // 来源总量
+      row("minimax-code", "2026-10-05", "minimax/MiniMax-M3", 200), // 直连
+      row("minimax-code", "2026-10-05", "__via_router__", 800),    // 经路由
+      routerRow("2026-10-05", "ark-seed-1.6", 500),
+      routerRow("2026-10-05", "deepseek-v4-flash", 300),
+    ];
+    const d = buildLedgerBreakdown(rows).get("2026-10-05")!;
+    // 800 被拆到两个真实模型所属 Provider，而不是整块记成 minimax
+    expect(d.byProvider).toEqual({ minimax: 200, volcengine: 500, deepseek: 300 });
+    // 总量不受替换影响，且分模型合计仍然对账
+    expect(d.total).toBe(1000);
+    expect(Object.values(d.byProvider).reduce((s, v) => s + v, 0)).toBe(d.total);
+  });
+
+  it("路由台账覆盖不足时差额回退工具兜底，不丢量也不虚增", () => {
+    const rows = [
+      row("minimax-code", "2026-10-05", "", 800),
+      row("minimax-code", "2026-10-05", "__via_router__", 800),
+      routerRow("2026-10-05", "ark-seed-1.6", 500), // 只解释了一半
+    ];
+    const d = buildLedgerBreakdown(rows).get("2026-10-05")!;
+    expect(d.byProvider).toEqual({ volcengine: 500, minimax: 300 });
+    expect(Object.values(d.byProvider).reduce((s, v) => s + v, 0)).toBe(d.total);
+  });
+
+  it("完全没有路由台账行时，哨兵整体回退到工具兜底", () => {
+    const rows = [
+      row("minimax-code", "2026-10-05", "", 1000),
+      row("minimax-code", "2026-10-05", "__via_router__", 800),
+      row("minimax-code", "2026-10-05", "minimax/MiniMax-M3", 200),
+    ];
+    const d = buildLedgerBreakdown(rows).get("2026-10-05")!;
+    expect(d.byProvider).toEqual({ minimax: 1000 });
+  });
+
+  it("路由台账多于哨兵时按顺序截断，不把非本机客户端的量算进来", () => {
+    const rows = [
+      row("minimax-code", "2026-10-05", "", 800),
+      row("minimax-code", "2026-10-05", "__via_router__", 800),
+      routerRow("2026-10-05", "ark-seed-1.6", 500),
+      routerRow("2026-10-05", "gpt-4o", 900), // 超出哨兵的部分应被截断
+    ];
+    const d = buildLedgerBreakdown(rows).get("2026-10-05")!;
+    expect(d.byProvider).toEqual({ volcengine: 500, openai: 300 });
+    expect(Object.values(d.byProvider).reduce((s, v) => s + v, 0)).toBe(d.total);
+  });
+
+  it("同一天既直连又经路由时，直连部分不受替换影响", () => {
+    const rows = [
+      row("minimax-code", "2026-10-05", "", 1000),
+      row("minimax-code", "2026-10-05", "minimax/MiniMax-M3", 200), // 直连
+      row("minimax-code", "2026-10-05", "__via_router__", 800),
+      row("codex", "2026-10-05", "", 400),
+      row("codex", "2026-10-05", "__via_router__", 400),
+      routerRow("2026-10-05", "ark-seed-1.6", 1200), // 两个工具共用一份台账
+    ];
+    const d = buildLedgerBreakdown(rows).get("2026-10-05")!;
+    expect(d.byProvider).toEqual({ minimax: 200, volcengine: 1200 });
+    expect(d.total).toBe(1400);
+    expect(Object.values(d.byProvider).reduce((s, v) => s + v, 0)).toBe(d.total);
+  });
+
+  it("跨多个 router:<account> 来源按日合并", () => {
+    const rows = [
+      row("minimax-code", "2026-10-05", "", 1000),
+      row("minimax-code", "2026-10-05", "__via_router__", 1000),
+      { ...routerRow("2026-10-05", "ark-seed-1.6", 600), source: "router:acct-1" },
+      { ...routerRow("2026-10-05", "gpt-4o", 400), source: "router:acct-2" },
+    ];
+    const d = buildLedgerBreakdown(rows).get("2026-10-05")!;
+    expect(d.byProvider).toEqual({ volcengine: 600, openai: 400 });
+  });
+
   it("按日期升序无关，map 按需累加", () => {
     const rows = [
       row("codex", "2026-10-05", "", 300),

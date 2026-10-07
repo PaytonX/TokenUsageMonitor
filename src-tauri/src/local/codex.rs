@@ -180,11 +180,40 @@ fn scan_tree(
     }
 }
 
+/// 预扫一个 Codex session 文件，取出它的**会话级模型名**。
+///
+/// 取自 `turn_context` 事件——那是 Codex 每轮开始时落盘的上下文，其中带
+/// `model`。用法量事件本身不带模型，配置直连上游时这里是真实模型名；配置
+/// 指向 TokenRouter 时这里是占位名 `LocalRouter`（由调用方转成哨兵）。
+fn session_model_of(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    for line in text.lines() {
+        if !line.contains("\"turn_context\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(m) = v.get("model").and_then(|m| m.as_str()) {
+            let m = m.trim();
+            if !m.is_empty() {
+                return Some(m.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn scan_file(
     path: &Path,
     by_day: &mut BTreeMap<String, (f64, f64, f64)>,
     by_model: &mut BTreeMap<String, BTreeMap<String, (f64, f64, f64)>>,
 ) {
+    // Codex 的用量事件（`token_usage_record`）**不携带 model 字段**，模型记在
+    // 同文件的 `turn_context` 事件里。一份文件就是一个会话，所以先扫出会话
+    // 模型，再回填到那些自身无模型的用量行上——否则 Codex 全部用量都只能落
+    // 「未标记模型」。
+    let session_model = session_model_of(path);
     let Ok(file) = File::open(path) else {
         return;
     };
@@ -198,9 +227,17 @@ fn scan_file(
             e.0 += input;
             e.1 += cache_read;
             e.2 += output;
-            // 无模型的行 token 归入"未标记模型"桶，避免按模型汇总漏算。
-            let model = if model.is_empty() {
+            // 优先级：行内自带 > 会话级回填 > 未标记。回填出来的若是指向本地
+            // 路由的占位名（`LocalRouter`），再打成哨兵交由路由自记账归因。
+            let model = if !model.is_empty() {
+                model
+            } else if let Some(sm) = &session_model {
+                sm.clone()
+            } else {
                 crate::local::UNCLASSIFIED_MODEL.to_string()
+            };
+            let model = if crate::local::is_routed_placeholder(&model) {
+                crate::local::ROUTED_MODEL.to_string()
             } else {
                 model
             };
@@ -216,6 +253,7 @@ fn scan_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn parses_flat_usage_line() {
@@ -282,5 +320,78 @@ mod tests {
         // every prior event of the session, so refuse rather than guess.
         let line = r#"{"timestamp":"2026-10-05T13:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#;
         assert!(parse_line(line).is_none());
+    }
+
+    fn write_session(dir: &Path, name: &str, lines: &[&str]) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        p
+    }
+
+    #[test]
+    fn session_model_comes_from_turn_context() {
+        // Codex 的用量事件不带 model，模型只在 turn_context 里。
+        let dir = std::env::temp_dir().join(format!("tum-codex-sm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = write_session(
+            &dir,
+            "s1.jsonl",
+            &[
+                r#"{"type":"turn_context","model":"LocalRouter","cwd":"D:/x"}"#,
+                r#"{"timestamp":"2026-10-05T13:11:15Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"total_tokens":90}}}}"#,
+            ],
+        );
+        assert_eq!(session_model_of(&p).as_deref(), Some("LocalRouter"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_model_is_none_without_turn_context() {
+        let dir = std::env::temp_dir().join(format!("tum-codex-sm2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = write_session(&dir, "s2.jsonl", &[r#"{"type":"event_msg"}"#]);
+        assert_eq!(session_model_of(&p), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_file_attributes_usage_to_session_model_and_marks_routed() {
+        // 端到端：无模型的用量行按会话模型归因；`LocalRouter` 是路由占位名，
+        // 必须打成哨兵而不是当成真实模型。
+        let dir = std::env::temp_dir().join(format!("tum-codex-sm3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, ctx) in [("routed.jsonl", "LocalRouter"), ("direct.jsonl", "gpt-5")] {
+            let p = write_session(
+                &dir,
+                name,
+                &[
+                    &format!(r#"{{"type":"turn_context","model":"{ctx}"}}"#),
+                    r#"{"timestamp":"2026-10-05T13:11:15Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"total_tokens":90}}}}"#,
+                ],
+            );
+            let mut by_day = BTreeMap::new();
+            let mut by_model: BTreeMap<String, BTreeMap<String, (f64, f64, f64)>> = BTreeMap::new();
+            scan_file(&p, &mut by_day, &mut by_model);
+            let day: Vec<f64> = by_day.values().map(|d| d.0 + d.1 + d.2).collect();
+            // input_tokens=100 是含缓存的 prompt，解析后 input=100-20=80，
+            // 合计 80 + 20(cache) + 10(output) = 110。
+            assert_eq!(day.iter().sum::<f64>(), 110.0, "按日总量与源一致 ({name})");
+        }
+
+        let mut by_day = BTreeMap::new();
+        let mut by_model: BTreeMap<String, BTreeMap<String, (f64, f64, f64)>> = BTreeMap::new();
+        for name in ["routed.jsonl", "direct.jsonl"] {
+            scan_file(&dir.join(name), &mut by_day, &mut by_model);
+        }
+        let keys: Vec<&String> = by_model.keys().collect();
+        assert!(
+            keys.iter().any(|k| k.as_str() == crate::local::ROUTED_MODEL),
+            "LocalRouter 会话须打成哨兵，实际键: {keys:?}"
+        );
+        assert!(
+            keys.iter().any(|k| k.as_str() == "gpt-5"),
+            "直连会话保留真实模型名，实际键: {keys:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

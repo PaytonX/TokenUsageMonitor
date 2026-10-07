@@ -10,6 +10,11 @@
 import { normalizeKind } from "./brand-glyphs";
 import type { UsageDailyRow } from "./api";
 import { providerForModel } from "./model-provider";
+import {
+  collectRouterRowsByDate,
+  routedAttribution,
+  ROUTED_MODEL,
+} from "./router-attribution";
 
 /** 某个 provider kind 在统一账本里对应的日序列。 */
 export type LedgerSeries =
@@ -137,14 +142,42 @@ export function buildLedgerBreakdown(
     }
     return e;
   };
+  // 经路由的哨兵行先攒着、不直接归因：真实模型在路由台账里，遍历结束后统一
+  // 做替换（见 router-attribution）。按 (date → 工具) 记，是为了差额回退时
+  // 仍能落回**各自**工具的兜底 Provider。
+  const routed = new Map<string, Map<string, number>>();
+  const routerRows = collectRouterRowsByDate(rows);
   for (const r of rows) {
     if (r.kind !== "tool") continue;
     const e = slot(r.date);
     if (r.model === "") {
       e.total += r.total;
+    } else if (r.model === ROUTED_MODEL) {
+      const bySource = routed.get(r.date) ?? new Map<string, number>();
+      bySource.set(r.source, (bySource.get(r.source) ?? 0) + r.total);
+      routed.set(r.date, bySource);
     } else {
       const key = providerForModel(r.model, r.source);
       e.byProvider[key] = (e.byProvider[key] ?? 0) + r.total;
+    }
+  }
+  for (const [date, bySource] of routed) {
+    const e = slot(date);
+    let sentinel = 0;
+    for (const v of bySource.values()) sentinel += v;
+    const { slices, fallback } = routedAttribution(sentinel, routerRows.get(date) ?? []);
+    for (const s of slices) {
+      const key = providerForModel(s.model);
+      e.byProvider[key] = (e.byProvider[key] ?? 0) + s.total;
+    }
+    // 路由台账覆盖不足（或没有）：差额按各工具占比回退到工具兜底归因，
+    // 保证「分模型合计 == 来源总量」不破，也不用猜。
+    if (fallback > 0) {
+      for (const [source, v] of bySource) {
+        const share = fallback * (v / sentinel);
+        const key = providerForModel(ROUTED_MODEL, source);
+        e.byProvider[key] = (e.byProvider[key] ?? 0) + share;
+      }
     }
   }
   return out;

@@ -29,3 +29,9 @@ coverage/
 .trae/
 .imgtest/
 
+# PowerShell 误写 `> null`（漏 $）产生的空文件
+$null
+
+# 开源发布工作文档，不属于仓库内容
+OPEN_SOURCE_RUNBOOK.md
+

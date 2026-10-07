@@ -338,7 +338,7 @@ export async function addRemoteDevice(base: string): Promise<number> {
 /** 统一历史视图数据源：usage_daily 账本原始行（三视图共用的唯一口径）。 */
 export interface UsageDailyRow {
   source: string;
-  kind: "tool" | "provider";
+  kind: "tool" | "provider" | "router";
   date: string;
   model: string;
   input: number;

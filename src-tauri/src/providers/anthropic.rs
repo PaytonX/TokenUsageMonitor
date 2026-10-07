@@ -111,11 +111,13 @@ mod tests {
         assert!(matches!(daily.cost_source, CostSource::Estimated));
 
         // 模拟路由记账：累计 1500 tokens（input 1000 + cache 300 + output 200）。
+        // 记**带模型名**——路由现在按实际承载模型分行，used 口径必须跨模型求和。
         storage
             .accumulate_usage_daily(
+                crate::router::ROUTER_LEDGER_KIND,
                 &crate::router::ledger_source("anthropic-1"),
                 chrono::Local::now().date_naive(),
-                "",
+                "claude-sonnet-4-5",
                 1000.0,
                 300.0,
                 200.0,

@@ -116,6 +116,27 @@ pub fn windows_candidates(dotdir: &str, tool_key: &str) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    /// 本模块的测试共享进程级 `CONFIG` 快照，而 cargo 默认并行跑测试：
+    /// 一个用例 `set_config(...)` 之后、断言之前，另一个用例把它清成空，
+    /// 断言就会读到别人的配置（实测该模块 5 个用例约 2/3 概率失败）。
+    /// 用一把测试互斥锁把「设置 → 断言 → 复位」整段串起来。
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 已持有 `TEST_LOCK` 的守卫，保证用例结束时无条件复位全局配置。
+    struct ResetGuard(std::sync::MutexGuard<'static, ()>);
+
+    impl ResetGuard {
+        fn new() -> Self {
+            ResetGuard(TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+        }
+    }
+
+    impl Drop for ResetGuard {
+        fn drop(&mut self) {
+            set_config(Vec::new(), BTreeMap::new());
+        }
+    }
+
     fn tmp(tag: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!("tum-roots-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
@@ -150,16 +171,17 @@ mod tests {
 
     #[test]
     fn extra_roots_are_joined_with_the_dotdir() {
+        let _guard = ResetGuard::new();
         let root = tmp("root");
         set_config(vec![root.clone()], BTreeMap::new());
         let cands = windows_candidates(".minimax", "minimax");
         assert!(cands.contains(&root.join(".minimax")));
-        set_config(Vec::new(), BTreeMap::new());
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn per_tool_override_is_included_and_deduped() {
+        let _guard = ResetGuard::new();
         let root = tmp("oroot");
         let exact = tmp("oexact");
         let mut ov = BTreeMap::new();
@@ -178,7 +200,6 @@ mod tests {
         seen.sort();
         seen.dedup();
         assert_eq!(seen.len(), cands2.len(), "candidates must be deduped");
-        set_config(Vec::new(), BTreeMap::new());
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&exact);
     }
@@ -186,6 +207,9 @@ mod tests {
     /// 并发读写不得 panic（设置保存与扫描会并发）。
     #[test]
     fn concurrent_set_and_read_is_safe() {
+        // 也要持锁：本用例的 4 个线程会反复改写全局配置，不隔离会污染
+        // 同模块其他用例的断言。
+        let _guard = ResetGuard::new();
         let handles: Vec<_> = (0..4)
             .map(|i| {
                 std::thread::spawn(move || {
@@ -200,6 +224,5 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        set_config(Vec::new(), BTreeMap::new());
     }
 }

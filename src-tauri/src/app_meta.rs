@@ -12,7 +12,7 @@ use std::time::Duration;
 
 /// GitHub 仓库 slug（owner/repo）。仓库直达链接与更新检查的唯一来源：
 /// 建仓后只需改这一处（README、Cargo.toml repository 字段另行同步）。
-pub const GITHUB_REPO: &str = "OWNER/TokenUsageMonitor";
+pub const GITHUB_REPO: &str = "PaytonX/TokenUsageMonitor";
 
 /// `open_url` 允许打开的 host 白名单。release 元数据里携带的 html_url 只有
 /// 命中名单才会交给系统浏览器，防止被构造的 URL 注入非预期地址。
@@ -177,8 +177,9 @@ mod tests {
 
     #[test]
     fn open_url_allows_github_https_only() {
-        assert!(is_allowed_open_url("https://github.com/OWNER/TokenUsageMonitor/releases"));
-        assert!(is_allowed_open_url("https://www.github.com/OWNER/REPO"));
+        assert!(is_allowed_open_url("https://github.com/PaytonX/TokenUsageMonitor/releases"));
+        // 通用夹具：只验 www. 主机变体被放行，仓库名本身不参与判定。
+        assert!(is_allowed_open_url("https://www.github.com/anyone/anything"));
         assert!(is_allowed_open_url("https://GITHUB.com/x"));
     }
 

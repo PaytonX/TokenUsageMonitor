@@ -98,6 +98,14 @@ pub fn ledger_source(account: &str) -> String {
     format!("router:{account}")
 }
 
+/// 路由自记账在 `usage_daily` 里的 `kind`。
+///
+/// 独立于 `'provider'`：后者是**服务端日账**的 kind，前端的 provider 日账分支
+/// 会把该 kind 当官方账本做「替换本机归因」。路由自记账是本机转发侧的事实，
+/// 混进去会被当成官方值——而它的量通常只是本机用量的子集，替换会直接吃掉
+/// 本机归因。独立 kind 让两类数据在账本层面就是可区分的。
+pub const ROUTER_LEDGER_KIND: &str = "router";
+
 /// 从凭据里取**可用于代理转发**的上游推理 API Key。
 ///
 /// - `BearerKey`：直接取（OpenAI / Anthropic 兼容类账户）。

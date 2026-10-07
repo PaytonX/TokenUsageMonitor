@@ -21,7 +21,7 @@ use token_usage_monitor_lib::providers::{
     CostSource, ProviderState, UsageSnapshot, UsageUnit, UsageWindows, WindowUsage,
 };
 use token_usage_monitor_lib::router::config::{CandidateConfig, RouterProtocol};
-use token_usage_monitor_lib::router::RouterCore;
+use token_usage_monitor_lib::router::{RouterCore, ROUTER_LEDGER_KIND};
 use token_usage_monitor_lib::settings::SettingsStore;
 use token_usage_monitor_lib::storage::Storage;
 
@@ -153,9 +153,27 @@ async fn sse_messages() -> Response {
 
 /// 组装一套真实 RouterCore：临时 config.toml + 临时 SQLite。`routes_toml`
 /// 是 [[router.routes]] 段的原文，由各测试自己拼（候选指向 mock 上游）。
+///
+/// 端口由 [`free_port`] 挑，那是 TOCTOU 的——读完端口监听就被释放了，cargo 并行
+/// 跑多个用例时两个可能挑到同一个，真正 bind 的那个就失败（表现为 "router did
+/// not start listening"）。因此绑定不上就换端口重试，而不是让用例随机红。
 async fn spawn_router(tag: &str, enabled: bool, routes_toml: &str) -> (Arc<RouterCore>, Arc<Storage>, u16, TempDir) {
+    const ATTEMPTS: usize = 5;
+    for attempt in 0..ATTEMPTS {
+        match spawn_router_once(tag, enabled, routes_toml, free_port()).await {
+            Some(v) => return v,
+            None if attempt + 1 < ATTEMPTS => {
+                eprintln!("router port bind collided, retrying ({attempt}/{ATTEMPTS})");
+            }
+            None => panic!("router did not start listening after {ATTEMPTS} ports"),
+        }
+    }
+    unreachable!("retry loop always returns")
+}
+
+/// 单次尝试；监听未就绪返回 `None` 交由调用方换端口重试。
+async fn spawn_router_once(tag: &str, enabled: bool, routes_toml: &str, port: u16) -> Option<(Arc<RouterCore>, Arc<Storage>, u16, TempDir)> {
     let dir = TempDir::new(tag);
-    let port = free_port();
     let config = format!(
         "poll_interval_seconds = 60\n\n[router]\nenabled = {enabled}\nport = {port}\nproactive_threshold_percent = 20\nerror_cooldown_secs = 300\nconn_breaker_count = 3\nprobe_start_secs = 60\nprobe_max_attempts = 5\n\n{routes_toml}"
     );
@@ -192,11 +210,10 @@ async fn spawn_router(tag: &str, enabled: bool, routes_toml: &str) -> (Arc<Route
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(
-        core.health.read().await.listening,
-        "router did not start listening"
-    );
-    (core, storage, port, dir)
+    if !core.health.read().await.listening {
+        return None;
+    }
+    Some((core, storage, port, dir))
 }
 
 fn router_client() -> reqwest::Client {
@@ -247,10 +264,49 @@ async fn pass_through_openai_and_ledger_records_usage() {
         "请求体 model 必须被重写为线路模型"
     );
 
-    // 记账：router:acct-1 当日总量 = 120。
-    let rows = storage.load_usage_daily(Some("provider"), 7).unwrap();
+    // 记账：router:acct-1 当日总量 = 120，且行上带**实际承载模型**。
+    let rows = storage.load_usage_daily(Some(ROUTER_LEDGER_KIND), 7).unwrap();
     let routed: Vec<_> = rows.iter().filter(|r| r.source == "router:acct-1").collect();
     assert_eq!(routed.len(), 1, "exactly one ledger row: {rows:?}");
+    assert!((routed[0].total - 120.0).abs() < 1e-6);
+    // 候选指定了 model="model-1"，转发时被改写为该模型——账本必须记它，
+    // 而不是工具请求里的 "whatever"，也不是空串。
+    assert_eq!(routed[0].model, "model-1", "记账模型须为实际转发模型");
+}
+
+/// 候选未指定模型（透传）时，实际承载的就是**工具请求里的模型名**——
+/// 记账必须记它。记 cand.model（空串）会把透传流量误标成「未知模型」。
+#[tokio::test]
+async fn passthrough_candidate_records_requested_model() {
+    let mock = Arc::new(MockState::new(false));
+    let upstream = spawn_mock(
+        axum::Router::new()
+            .route("/v1/chat/completions", post(chat_ok))
+            .with_state(mock.clone()),
+    )
+    .await;
+    // model = "" → 透传。account 必须用 spawn_router 已注入凭据的 acct-1，
+    // 否则候选 usable=false 会被选路跳过，请求最终拿到 429。
+    let toml = format!(
+        "[[router.routes]]\nid = \"r1\"\nname = \"test\"\nprotocol = \"openai\"\ntoken = \"tok-openai\"\n\n[[router.routes.candidates]]\naccount = \"acct-1\"\nmodel = \"\"\nbase_url = \"{upstream}\"\n"
+    );
+    let (_core, storage, port, _dir) = spawn_router("passthrough-model", true, &toml).await;
+
+    let resp = post_chat(port, "tok-openai", "glm-5.3-flash")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        mock.last_model.lock().unwrap().as_deref(),
+        Some("glm-5.3-flash"),
+        "透传时不得改写模型名"
+    );
+
+    let rows = storage.load_usage_daily(Some(ROUTER_LEDGER_KIND), 7).unwrap();
+    let routed: Vec<_> = rows.iter().filter(|r| r.source == "router:acct-1").collect();
+    assert_eq!(routed.len(), 1, "rows: {rows:?}");
+    assert_eq!(routed[0].model, "glm-5.3-flash", "透传流量记工具请求的模型名");
     assert!((routed[0].total - 120.0).abs() < 1e-6);
 }
 
@@ -329,7 +385,7 @@ async fn sse_stream_is_forwarded_and_usage_recorded() {
     let text = resp.text().await.unwrap();
     assert!(text.contains("[DONE]"), "SSE body must be forwarded verbatim");
 
-    let rows = storage.load_usage_daily(Some("provider"), 7).unwrap();
+    let rows = storage.load_usage_daily(Some(ROUTER_LEDGER_KIND), 7).unwrap();
     let routed: Vec<_> = rows.iter().filter(|r| r.source == "router:acct-a").collect();
     assert_eq!(routed.len(), 1);
     assert!((routed[0].total - 190.0).abs() < 1e-6, "rows: {rows:?}");
@@ -407,7 +463,7 @@ async fn models_endpoint_forwards_without_accounting() {
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["data"][0]["id"], "model-1");
-    let rows = storage.load_usage_daily(Some("provider"), 7).unwrap();
+    let rows = storage.load_usage_daily(Some(ROUTER_LEDGER_KIND), 7).unwrap();
     assert!(
         rows.iter().all(|r| !r.source.starts_with("router:")),
         "模型列表不记账"
@@ -482,7 +538,7 @@ base_url = \"{upstream_root}/api/plan/v3\"
         mock.last_model.lock().unwrap().as_deref(),
         Some("deepseek-v4-flash")
     );
-    let rows = storage.load_usage_daily(Some("provider"), 7).unwrap();
+    let rows = storage.load_usage_daily(Some(ROUTER_LEDGER_KIND), 7).unwrap();
     assert!(rows.iter().any(|r| r.source == "router:acct-1"), "记账正常");
 }
 
@@ -576,7 +632,7 @@ async fn responses_endpoint_serves_codex_style_requests() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["output"][0]["content"][0]["text"], "hi");
 
-    let rows = storage.load_usage_daily(Some("provider"), 7).unwrap();
+    let rows = storage.load_usage_daily(Some(ROUTER_LEDGER_KIND), 7).unwrap();
     let routed: Vec<_> = rows.iter().filter(|r| r.source == "router:acct-1").collect();
     assert_eq!(routed.len(), 1, "rows: {rows:?}");
     assert!((routed[0].total - 10.0).abs() < 1e-6);

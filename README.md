@@ -170,8 +170,9 @@ docs/                设计文档与 UI 原型
 
 - [qunqin24/Pulse](https://github.com/qunqin24/Pulse) —— macOS 屏幕边缘
   配额监控器，设置界面的分栏形态参考了它的设计范式
-- [Javis603/token-monitor](https://github.com/Javis603/token-monitor) 与
-  [junhoyeo/tokscale](https://github.com/junhoyeo/tokscale) —— 本机工具
+- [Javis603/token-monitor](https://github.com/Javis603/token-monitor)（MIT）——
+  提供品牌图标矢量资源（`src/lib/brand-glyphs.ts`，按 MIT 条款保留版权声明）
+- [junhoyeo/tokscale](https://github.com/junhoyeo/tokscale) —— 本机工具
   用量采集与账本思路的借鉴来源（详见
   [docs/benchmark-token-monitor-tokscale.md](docs/benchmark-token-monitor-tokscale.md)）
 - [Tauri](https://tauri.app)、[Svelte](https://svelte.dev) —— 应用框架
