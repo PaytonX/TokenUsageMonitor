@@ -1,6 +1,6 @@
 [package]
 name = "token-usage-monitor"
-version = "0.2.0"
+version = "0.3.0"
 description = "Lightweight transparent desktop widget for AI token usage monitoring"
 authors = ["TokenUsageMonitor"]
 license = "MIT OR Apache-2.0"
