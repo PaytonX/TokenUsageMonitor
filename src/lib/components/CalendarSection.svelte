@@ -15,9 +15,10 @@
   // 逐 provider「有服务端日账就以官方值为准，否则用本机归因」（服务端**替换**
   // 而非相加，故不会双计）。代价：OpenAI/xAI 的 USD、Kimi 的 CNY 行单位非
   // token，不进日历总量与色阶（见 buildUnifiedBreakdown）。
-  import HeatmapGrid from "./HeatmapGrid.svelte";
+  import HeatmapGrid, { type HeatStats } from "./HeatmapGrid.svelte";
   import { providerColor, providerLabel } from "../model-provider";
   import { hexToRgbTriplet } from "../calendar-linkage";
+  import { formatUsage } from "../types";
   import { t } from "../i18n/store";
 
   interface Props {
@@ -38,6 +39,10 @@
     highlightKey = $bindable(null),
     maxWidth,
   }: Props = $props();
+
+  // HeatmapGrid 上报的聚合快照（随数据加载与高亮焦点切换而刷新），
+  // 右侧统计栏的数据源。null = 首次加载前，统计栏暂不渲染。
+  let stats = $state<HeatStats | null>(null);
 
   // Provider 过多时改用下拉。400px 面板一行约放得下 5 个药丸，超出就换行，
   // 换行会吃掉日历的垂直预算（趋势页要在 680px 里同时装堆叠柱 + 日历）。
@@ -71,7 +76,11 @@
 >
   <div class="cal-sec__head">
     <span class="cal-sec__title">{$t("cal.title")}</span>
-    <span class="cal-sec__range">{$t("cal.range6m")}</span>
+    <span class="cal-sec__range">
+      {stats?.rangeLabel
+        ? $t("cal.range6mSpan", { range: stats.rangeLabel })
+        : $t("cal.range6m")}
+    </span>
   </div>
 
   <!-- 高亮药丸条：日历恒为合并口径，高亮在**任何**口径下都成立
@@ -128,11 +137,100 @@
     {/if}
   {/if}
 
-  <div class="cal-sec__grid" onclick={(e) => e.stopPropagation()} role="presentation">
-    <HeatmapGrid
-      {highlightKey}
-      emptyHint={$t("cal.emptyHint")}
-    />
+  <div
+    class="cal-sec__layout"
+    onclick={(e) => e.stopPropagation()}
+    onpointerdown={(e) => e.stopPropagation()}
+    role="presentation"
+  >
+    <div class="cal-sec__cal">
+      <div class="cal-sec__grid">
+        <HeatmapGrid
+          {highlightKey}
+          emptyHint={$t("cal.emptyHint")}
+          onStats={(s) => (stats = s)}
+        />
+      </div>
+    </div>
+
+    <div class="cal-sec__divider"></div>
+
+    <div class="cal-sec__stats">
+      {#if stats}
+        {@const avg =
+          stats.spanDays > 0 ? Math.round(stats.total / stats.spanDays) : 0}
+        {@const activeAvg =
+          stats.activeDays > 0 ? Math.round(stats.total / stats.activeDays) : 0}
+        <div class="cal-sec__stat">
+          <span class="cal-sec__stat-label">{$t("heat.stat.totalLabel")}</span>
+          <span class="cal-sec__stat-value">
+            {formatUsage(stats.total, stats.unit)}<small>{stats.unit}</small>
+          </span>
+        </div>
+        <div class="cal-sec__stat">
+          <div>
+            <div class="cal-sec__stat-label">{$t("heat.stat.dailyAvg")}</div>
+            <div class="cal-sec__stat-hint">
+              {$t("heat.stat.dailyAvgHint", {
+                n: stats.spanDays,
+                avg: formatUsage(activeAvg, stats.unit),
+              })}
+            </div>
+          </div>
+          <span class="cal-sec__stat-value cal-sec__stat-value--md">
+            {formatUsage(avg, stats.unit)}
+          </span>
+        </div>
+        <div class="cal-sec__stat">
+          <div>
+            <div class="cal-sec__stat-label">{$t("heat.stat.peakLabel")}</div>
+            {#if stats.peakDate}
+              <div class="cal-sec__stat-hint">{stats.peakDate}</div>
+            {/if}
+          </div>
+          <span class="cal-sec__stat-value cal-sec__stat-value--md">
+            {formatUsage(stats.peak, stats.unit)}
+          </span>
+        </div>
+        <div class="cal-sec__stat">
+          <div>
+            <div class="cal-sec__stat-label">{$t("heat.stat.activeLabel")}</div>
+            <div class="cal-sec__stat-hint">
+              {$t("heat.stat.activeHint", {
+                pct:
+                  stats.spanDays > 0
+                    ? Math.round((stats.activeDays / stats.spanDays) * 100)
+                    : 0,
+              })}
+            </div>
+          </div>
+          <span class="cal-sec__stat-value cal-sec__stat-value--md">
+            {$t("heat.nDays", { n: stats.activeDays })}
+          </span>
+        </div>
+        <div class="cal-sec__stat cal-sec__stat--share">
+          <div class="cal-sec__stat-label">{$t("heat.stat.shareLabel")}</div>
+          {#if stats.shares.length > 0}
+            <div class="cal-sec__share">
+              {#each stats.shares as seg (seg.key)}
+                <i
+                  style={`width:${seg.pct}%;background:${colors[seg.key] ?? providerColor(seg.key)};${stats.focused && stats.focused !== seg.key ? "opacity:.35" : ""}`}
+                ></i>
+              {/each}
+            </div>
+            <div class="cal-sec__share-legend">
+              {#each stats.shares as seg (seg.key)}
+                <span>
+                  <i style={`background:${colors[seg.key] ?? providerColor(seg.key)}`}></i>
+                  {$t(providerLabel(seg.key))}
+                  <b>{Math.round(seg.pct)}%</b>
+                </span>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
   </div>
 </section>
 
@@ -141,6 +239,8 @@
     flex: none;
     border-top: 1px solid var(--tum-border);
     padding-top: 8px;
+    /* 容器查询基准：宽容器（独立趋势窗/宽面板）左右分栏，窄容器堆叠 */
+    container-type: inline-size;
   }
 
   .cal-sec__head {
@@ -243,5 +343,152 @@
     flex: 1;
     min-width: 0;
     max-width: none;
+  }
+
+  /* ---- 改版布局：日历 58% + 右侧统计栏（拍板原型 2026-10-07） ----
+   * 基线（窄容器 <640px）纵向堆叠：统计栏 2×2 网格铺在日历下方；
+   * 宽容器升为左右分栏：右栏 space-between 沿日历全高铺开，顶底恒对齐。 */
+  .cal-sec__layout {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .cal-sec__cal {
+    min-width: 0;
+  }
+
+  .cal-sec__grid {
+    min-width: 0;
+  }
+
+  .cal-sec__divider {
+    display: none;
+  }
+
+  .cal-sec__stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 20px;
+  }
+
+  .cal-sec__stat--share {
+    grid-column: 1 / -1;
+  }
+
+  .cal-sec__stat {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .cal-sec__stat--share {
+    display: block;
+  }
+
+  .cal-sec__stat-label {
+    color: var(--tum-text-muted);
+    font-size: var(--tum-font-size-sm);
+  }
+
+  .cal-sec__stat-hint {
+    color: var(--tum-text-muted);
+    font-size: var(--tum-font-size-xs);
+    margin-top: 1px;
+  }
+
+  .cal-sec__stat-value {
+    flex: none;
+    font-size: var(--tum-font-size-xl);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--tum-text-primary);
+  }
+
+  .cal-sec__stat-value small {
+    font-size: var(--tum-font-size-sm);
+    font-weight: 400;
+    color: var(--tum-text-muted);
+    margin-left: 4px;
+  }
+
+  .cal-sec__stat-value--md {
+    font-size: var(--tum-font-size-lg);
+  }
+
+  .cal-sec__share {
+    display: flex;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 6px;
+    background: var(--tum-surface-hover);
+  }
+
+  .cal-sec__share i {
+    display: block;
+    height: 100%;
+  }
+
+  .cal-sec__share-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin-top: 6px;
+    font-size: var(--tum-font-size-xs);
+    color: var(--tum-text-muted);
+  }
+
+  .cal-sec__share-legend i {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    margin-right: 4px;
+  }
+
+  .cal-sec__share-legend b {
+    color: var(--tum-text-primary);
+    font-weight: 500;
+  }
+
+  @container (min-width: 640px) {
+    .cal-sec__layout {
+      flex-direction: row;
+      align-items: stretch;
+      gap: 18px;
+    }
+
+    .cal-sec__cal {
+      flex: 0 0 58%;
+      display: flex;
+    }
+
+    .cal-sec__grid {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .cal-sec__divider {
+      display: block;
+      width: 1px;
+      background: var(--tum-border);
+    }
+
+    .cal-sec__stats {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .cal-sec__stat + .cal-sec__stat {
+      border-top: 1px dashed var(--tum-border);
+      padding-top: 8px;
+    }
   }
 </style>

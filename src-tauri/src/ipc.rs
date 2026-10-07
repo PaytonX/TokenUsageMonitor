@@ -918,12 +918,13 @@ pub async fn open_trend_window(app: AppHandle) -> Result<(), String> {
         tauri::WebviewUrl::App("trend.html".into()),
     )
     .title(crate::i18n::window_title(current_lang(&app), crate::i18n::WindowPage::Trend))
-    // 760×480 是宽而矮的横窗：日历（26 列）在这种比例下每格近 26px，七行就
-    // 吃掉大半个窗口，堆叠柱只剩 ~140px——真机验收反馈「日历太大、柱太挤」。
-    // 拉高到 720，并把最小尺寸一起抬高，避免用户缩回矮窗时重现同一问题。
-    .inner_size(780.0, 720.0)
+    // 1080×660 横窗：2026-10 日历区改版（58% 日历 + 右侧统计栏）后，日历格
+    // 密度靠「限宽」而非「拉高」解决（旧 720 高是为全宽日历的六个月格子准备
+    // 的）。1.64 宽高比下堆叠柱与日历+统计栏同屏；最小尺寸保证 26 列日历格
+    // 不小于 ~14px、统计栏不挤成竖条。
+    .inner_size(1080.0, 660.0)
     .resizable(true)
-    .min_inner_size(620.0, 560.0)
+    .min_inner_size(880.0, 600.0)
     .visible(false)
     .decorations(false)
     .transparent(true)

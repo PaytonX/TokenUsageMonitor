@@ -1,4 +1,32 @@
-﻿<script lang="ts">
+﻿<script module lang="ts">
+  // 供 CalendarSection 右侧统计栏渲染的聚合快照。随高亮焦点切换口径：
+  // 总口径 = 全部来源；聚焦时 total/peak/activeDays 为该来源的窗口值。
+  export interface HeatStats {
+    focused: string | null;
+    /** tokens 总量。 */
+    total: number;
+    peak: number;
+    /** 峰值所在日本地日期（YYYY-MM-DD）；无数据时空串。 */
+    peakDate: string;
+    activeDays: number;
+    /** 窗口自然日跨度（含零值日）。 */
+    spanDays: number;
+    /** 有用量的来源数。 */
+    sourceCount: number;
+    /** 今天（YYYY-MM-DD）。 */
+    todayKey: string;
+    /** 窗口范围标签（YYYY-MM ~ YYYY-MM）。 */
+    rangeLabel: string;
+    /** 聚焦时该来源占总量百分比；总口径为 null。 */
+    focusSharePct: number | null;
+    /** 全部来源占比（按 tokens，降序）。 */
+    shares: { key: string; pct: number }[];
+    unit: UsageUnit;
+  }
+</script>
+
+<script lang="ts">
+  import { untrack } from "svelte";
   import { getUsageHistory } from "../api";
   import { formatUsage, type HeatmapCell, type UsageUnit } from "../types";
   import {
@@ -19,12 +47,15 @@
     emptyHint?: string;
     /** Unit fallback before the first fetch resolves. */
     unit?: UsageUnit;
+    /** 聚合快照出口：日历数据/高亮变化时回调一次（统计栏渲染用）。 */
+    onStats?: (s: HeatStats) => void;
   }
 
   let {
     highlightKey = null,
     emptyHint,
     unit = "tokens" as UsageUnit,
+    onStats,
   }: Props = $props();
 
   // 日历恒为「本机工具 + 服务端日账」的合并口径（buildUnifiedBreakdown，
@@ -158,7 +189,60 @@
     const stats = highlightKey
       ? focusStats(breakdown, windowDates, highlightKey, total)
       : null;
-    return { cols, windowCells, windowDates, monthLabels, total, peak, activeDays, stats };
+    return { cols, windowCells, windowDates, monthLabels, total, peak, activeDays, stats, todayKey };
+  });
+
+  // 统计栏快照：来源占比按窗口逐日 breakdown 聚合（与格阵同源，token 纯比值）。
+  // 峰值日：总口径取格阵 argmax，聚焦口径取该来源逐日 argmax。
+  let heatStats = $derived.by(() => {
+    const perKind = new Map<string, number>();
+    for (const date of grid.windowDates) {
+      const d = breakdown.get(date);
+      if (!d) continue;
+      for (const [k, v] of Object.entries(d.byProvider)) {
+        if (v > 0) perKind.set(k, (perKind.get(k) ?? 0) + v);
+      }
+    }
+    const grand = [...perKind.values()].reduce((a, b) => a + b, 0);
+    const shares = [...perKind.entries()]
+      .map(([key, total]) => ({ key, pct: grand > 0 ? (total / grand) * 100 : 0 }))
+      .sort((a, b) => b.pct - a.pct);
+    let peakDate = "";
+    let best = 0;
+    if (highlightKey) {
+      for (const date of grid.windowDates) {
+        const v = breakdown.get(date)?.byProvider[highlightKey] ?? 0;
+        if (v > best) { best = v; peakDate = date; }
+      }
+    } else {
+      for (const c of grid.windowCells) {
+        if (c.value > best) { best = c.value; peakDate = c.date; }
+      }
+    }
+    const last = grid.windowDates[grid.windowDates.length - 1] ?? "";
+    return {
+      focused: highlightKey,
+      total: grid.stats ? grid.stats.sum : grid.total,
+      peak: grid.stats ? grid.stats.peak : grid.peak,
+      activeDays: grid.stats ? grid.stats.days : grid.activeDays,
+      focusSharePct: grid.stats ? grid.stats.share : null,
+      peakDate,
+      spanDays: grid.windowDates.length,
+      sourceCount: perKind.size,
+      todayKey: grid.todayKey,
+      rangeLabel: grid.windowDates.length
+        ? `${grid.windowDates[0].slice(0, 7)} ~ ${last.slice(0, 7)}`
+        : "",
+      shares,
+      unit: displayUnit,
+    };
+  });
+
+  // 只依赖 heatStats：回调经 untrack 读取，父组件回调身份变化不会重触发，
+  // 父组件 setState 也不会反过来再进本 effect（无回环）。
+  $effect(() => {
+    const snapshot = heatStats;
+    untrack(() => onStats)?.(snapshot);
   });
 
   /**
@@ -276,11 +360,9 @@
         {/each}
       </div>
       <div class="cal__foot">
-        <div class="cal__stats">
-          <span class="cal__stat">{$t("heat.total")} <b>{formatUsage(grid.total, displayUnit)}</b></span>
-          <span class="cal__stat">{$t("heat.peak")} <b>{formatUsage(grid.peak, displayUnit)}</b></span>
-          <span class="cal__stat">{$t("heat.active")} <b>{$t("heat.nDays", { n: grid.activeDays })}</b></span>
-        </div>
+        <span class="cal__foot-meta">
+          {$t("heat.footMeta", { n: heatStats.sourceCount, date: grid.todayKey.slice(5) })}
+        </span>
         <div class="heatmap__legend">
           <span class="heatmap__legend-text">{$t("heat.less")}</span>
           {#each legendColors as c}
@@ -298,21 +380,13 @@
         </div>
       </div>
     </div>
-    {#if highlightKey && grid.stats}
-      <!-- P2 追加行：总量恒定，焦点 provider 自己的口径单列一行 -->
-      <div class="cal__stats cal__stats--focus">
-        <span class="cal__stat">{$t(providerLabel(highlightKey))} {$t("heat.active")} <b>{$t("heat.nDays", { n: grid.stats.days })}</b></span>
-        <span class="cal__stat">{$t("heat.total")} <b>{formatUsage(grid.stats.sum, displayUnit)}</b></span>
-        <span class="cal__stat">{$t("heat.peak")} <b>{formatUsage(grid.stats.peak, displayUnit)}</b></span>
-        <span class="cal__stat">{$t("heat.share")} <b>{grid.stats.share}%</b></span>
-      </div>
-    {/if}
   {/if}
 </div>
 
 <style>
   .heatmap {
     width: 100%;
+    flex: 1;
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -426,39 +500,22 @@
   }
 
   .cal__foot {
+    margin-top: auto;
+    padding-top: 8px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    margin-top: 3px;
     flex-wrap: wrap;
   }
 
-  .cal__stats {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    font-size: 9px;
+  .cal__foot-meta {
+    font-size: var(--tum-font-size-xs);
     color: var(--tum-text-muted);
-  }
-
-  .cal__stat b {
-    margin-left: 2px;
-    color: var(--tum-text-primary);
-    font-family: var(--tum-font-mono);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
   }
 
   .cal__foot .heatmap__legend {
     margin-top: 0;
   }
 
-  .cal__stats--focus {
-    margin-top: 3px;
-    color: var(--tum-text-secondary);
-  }
-  .cal__stats--focus b {
-    color: var(--tum-text-primary);
-  }
 </style>
