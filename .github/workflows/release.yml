@@ -11,6 +11,12 @@ jobs:
   build:
     name: 打包并发布（NSIS + MSI）
     runs-on: windows-latest
+    env:
+      # 与 ci.yml 同理：仓库根 rust-toolchain.toml 钉的是 GNU，那是本机开发的选择
+      # （依赖用户级 winget 的 LLVM-MinGW + 手工硬链接的 as.exe）。GitHub runner
+      # 上没有这套环境，GNU 链接无法工作。改用 runner 预装的 MSVC 工具链——
+      # windows-latest 自带 VS Build Tools。
+      RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
