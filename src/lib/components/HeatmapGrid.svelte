@@ -49,6 +49,10 @@
     unit?: UsageUnit;
     /** 聚合快照出口：日历数据/高亮变化时回调一次（统计栏渲染用）。 */
     onStats?: (s: HeatStats) => void;
+    /** false = foot 不渲染统计行（统计改由外部右栏承载，宽布局用）。 */
+    footStats?: boolean;
+    /** true = 日历加虚线框并拉满外层列高（宽布局用）。 */
+    framed?: boolean;
   }
 
   let {
@@ -56,6 +60,8 @@
     emptyHint,
     unit = "tokens" as UsageUnit,
     onStats,
+    footStats = true,
+    framed = false,
   }: Props = $props();
 
   // 日历恒为「本机工具 + 服务端日账」的合并口径（buildUnifiedBreakdown，
@@ -326,7 +332,7 @@
   {#if loaded && maxValue <= 0}
     <div class="heatmap__empty">{emptyHint ?? $t("heat.emptyNoData")}</div>
   {:else}
-    <div class="cal">
+    <div class="cal" class:cal--framed={framed}>
       <!-- 单张网格：第 1 行放月份、第 1 列放星期，格与标签共用同一套行轨道，
            行高随格宽（aspect-ratio）浮动时对位恒齐（旧版标签定高 10px 会漂移）。 -->
       <div class="cal__grid">
@@ -360,9 +366,17 @@
         {/each}
       </div>
       <div class="cal__foot">
-        <span class="cal__foot-meta">
-          {$t("heat.footMeta", { n: heatStats.sourceCount, date: grid.todayKey.slice(5) })}
-        </span>
+        {#if footStats}
+          <div class="cal__stats">
+            <span class="cal__stat">{$t("heat.total")} <b>{formatUsage(grid.total, displayUnit)}</b></span>
+            <span class="cal__stat">{$t("heat.peak")} <b>{formatUsage(grid.peak, displayUnit)}</b></span>
+            <span class="cal__stat">{$t("heat.active")} <b>{$t("heat.nDays", { n: grid.activeDays })}</b></span>
+          </div>
+        {:else}
+          <span class="cal__foot-meta">
+            {$t("heat.footMeta", { n: heatStats.sourceCount, date: grid.todayKey.slice(5) })}
+          </span>
+        {/if}
         <div class="heatmap__legend">
           <span class="heatmap__legend-text">{$t("heat.less")}</span>
           {#each legendColors as c}
@@ -380,13 +394,21 @@
         </div>
       </div>
     </div>
+    {#if footStats && highlightKey && grid.stats}
+      <!-- P2 追加行：总量恒定，焦点 provider 自己的口径单列一行 -->
+      <div class="cal__stats cal__stats--focus">
+        <span class="cal__stat">{$t(providerLabel(highlightKey))} {$t("heat.active")} <b>{$t("heat.nDays", { n: grid.stats.days })}</b></span>
+        <span class="cal__stat">{$t("heat.total")} <b>{formatUsage(grid.stats.sum, displayUnit)}</b></span>
+        <span class="cal__stat">{$t("heat.peak")} <b>{formatUsage(grid.stats.peak, displayUnit)}</b></span>
+        <span class="cal__stat">{$t("heat.share")} <b>{grid.stats.share}%</b></span>
+      </div>
+    {/if}
   {/if}
 </div>
 
 <style>
   .heatmap {
     width: 100%;
-    flex: 1;
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -438,6 +460,20 @@
     display: flex;
     flex-direction: column;
     gap: 3px;
+  }
+
+  /* 宽布局（framed）：虚线框拉满外层列高、footer 钉底，与右侧统计栏
+     顶底对齐；嵌入面板不带 framed，保持无框、foot 紧跟格阵。 */
+  .cal--framed {
+    flex: 1;
+    border: 1px dashed var(--tum-border);
+    border-radius: var(--tum-radius-md);
+    padding: 10px 10px 8px;
+  }
+
+  .cal--framed .cal__foot {
+    margin-top: auto;
+    padding-top: 8px;
   }
 
   /* 单网格：12px 星期列 + 26 周列；行高由格子的 aspect-ratio 决定，
@@ -500,8 +536,7 @@
   }
 
   .cal__foot {
-    margin-top: auto;
-    padding-top: 8px;
+    margin-top: 3px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -512,6 +547,26 @@
   .cal__foot-meta {
     font-size: var(--tum-font-size-xs);
     color: var(--tum-text-muted);
+  }
+
+  .cal__stats {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 9px;
+    color: var(--tum-text-muted);
+  }
+
+  .cal__stat b {
+    margin-left: 2px;
+    color: var(--tum-text-primary);
+    font-family: var(--tum-font-mono);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cal__stats--focus b {
+    color: var(--tum-text-primary);
   }
 
   .cal__foot .heatmap__legend {

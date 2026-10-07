@@ -193,7 +193,7 @@
     <!-- 不限宽：窗口已从 760×480 抬到 780×720，日历铺满 740px 时约占 260px，
          剩下的都给趋势图（.tw__body 是 flex:1）。早先限宽 440px 是为了压住
          480 矮窗的日历，但那样右侧会空出 340px，比原问题更难看。 -->
-    <CalendarSection series={seriesIds} colors={seriesColors} bind:highlightKey />
+    <CalendarSection variant="wide" series={seriesIds} colors={seriesColors} bind:highlightKey />
   {/if}
 </div>
 

@@ -31,6 +31,9 @@
     /** 日历区最大宽度。独立窗口很宽时不限会摊出 26px 的大格子、吃掉纵向预算，
      *  反而把上方的趋势图挤扁；限宽后密度与总览页一致。 */
     maxWidth?: string;
+    /** compact（默认）：嵌入面板原布局——全宽日历 + foot 统计行；
+     *  wide：独立趋势窗拍板布局——58% 日历（虚线框）+ 右侧统计栏。 */
+    variant?: "compact" | "wide";
   }
 
   let {
@@ -38,6 +41,7 @@
     colors,
     highlightKey = $bindable(null),
     maxWidth,
+    variant = "compact",
   }: Props = $props();
 
   // HeatmapGrid 上报的聚合快照（随数据加载与高亮焦点切换而刷新），
@@ -137,6 +141,7 @@
     {/if}
   {/if}
 
+  {#if variant === "wide"}
   <div
     class="cal-sec__layout"
     onclick={(e) => e.stopPropagation()}
@@ -149,6 +154,8 @@
           {highlightKey}
           emptyHint={$t("cal.emptyHint")}
           onStats={(s) => (stats = s)}
+          footStats={false}
+          framed
         />
       </div>
     </div>
@@ -232,6 +239,14 @@
       {/if}
     </div>
   </div>
+  {:else}
+    <div class="cal-sec__grid" onclick={(e) => e.stopPropagation()} role="presentation">
+      <HeatmapGrid
+        {highlightKey}
+        emptyHint={$t("cal.emptyHint")}
+      />
+    </div>
+  {/if}
 </section>
 
 <style>
@@ -470,6 +485,11 @@
       flex: 1;
       display: flex;
       flex-direction: column;
+    }
+
+    /* :global 穿透到 HeatmapGrid 根，否则虚线框撑不满列高、footer 不钉底 */
+    .cal-sec__grid :global(.heatmap) {
+      flex: 1;
     }
 
     .cal-sec__divider {
