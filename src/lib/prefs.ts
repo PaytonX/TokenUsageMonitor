@@ -8,11 +8,12 @@
 export type PageTab = "trend" | "tools" | "models" | "devices";
 
 export const TAB_KEYS: PageTab[] = ["trend", "tools", "models", "devices"];
+/** 值为 i18n 键（tab.*），渲染端经 $t(TAB_LABELS[tab]) 取词。 */
 export const TAB_LABELS: Record<PageTab, string> = {
-  trend: "趋势",
-  tools: "工具",
-  models: "模型",
-  devices: "设备",
+  trend: "tab.trend",
+  tools: "tab.tools",
+  models: "tab.models",
+  devices: "tab.devices",
 };
 
 const TABS_KEY = "tum.tabs";

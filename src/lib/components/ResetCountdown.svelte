@@ -1,10 +1,14 @@
 <script lang="ts">
+  import { t } from "../i18n/store";
+
   interface Props {
     resetAt?: string; // ISO8601 UTC
     label?: string;
   }
 
-  let { resetAt, label = "重置" }: Props = $props();
+  // label 默认值是 i18n 键（"countdown.reset"）；外部传入的非键字符串经 $t
+  // 原样返回，故既有的字面量调用方不受影响。
+  let { resetAt, label = "countdown.reset" }: Props = $props();
 
   let now = $state(Date.now());
 
@@ -19,7 +23,7 @@
   );
 
   let countdown = $derived.by(() => {
-    if (remainingMs <= 0) return "已重置";
+    if (remainingMs <= 0) return $t("countdown.resetDone");
     const totalSec = Math.floor(remainingMs / 1000);
     const d = Math.floor(totalSec / 86400);
     const h = Math.floor((totalSec % 86400) / 3600);
@@ -35,10 +39,10 @@
   });
 </script>
 
-<div class="countdown" title={resetAt}>
-  <span class="countdown__label">{label}</span>
-  <span class="countdown__value">{countdown}</span>
-</div>
+  <div class="countdown" title={resetAt}>
+    <span class="countdown__label">{$t(label)}</span>
+    <span class="countdown__value">{countdown}</span>
+  </div>
 
 <style>
   .countdown {

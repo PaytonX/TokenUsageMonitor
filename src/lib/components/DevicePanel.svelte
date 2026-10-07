@@ -6,6 +6,7 @@
   import type { HubDevice } from "../types";
   import TrendLineChart from "./TrendLineChart.svelte";
   import { PanelHeader, Stat, ColorSwatch } from "./atoms";
+  import { t } from "../i18n/store";
 
   interface Props {
     /** 兼容旧调用：本地 Provider 数（已被每设备 provider_count 取代，保留无副作用）。 */
@@ -93,15 +94,17 @@
     return `${Math.round(v)}`;
   }
 
-  function relTime(iso: string): string {
+  // 相对时间：返回 freshness.*（词典预置键）的取词键与插值参数，
+  // 模板里经 $t 渲染，语言切换后随模板重算。
+  function relTimeParts(iso: string): { key: string; params?: Record<string, number> } | null {
     const ms = Date.now() - new Date(iso).getTime();
-    if (Number.isNaN(ms)) return "";
+    if (Number.isNaN(ms)) return null;
     const min = Math.floor(ms / 60_000);
-    if (min < 1) return "刚刚";
-    if (min < 60) return `${min} 分钟前`;
+    if (min < 1) return { key: "freshness.justNow" };
+    if (min < 60) return { key: "freshness.minutesAgo", params: { n: min } };
     const hr = Math.floor(min / 60);
-    if (hr < 24) return `${hr} 小时前`;
-    return `${Math.floor(hr / 24)} 天前`;
+    if (hr < 24) return { key: "freshness.hoursAgo", params: { n: hr } };
+    return { key: "freshness.daysAgo", params: { n: Math.floor(hr / 24) } };
   }
 
   // 每台设备的逐日序列转 TrendLineChart 输入（单序列折线/面积）。
@@ -209,31 +212,31 @@
 </script>
 
 <div class="dev" data-tauri-drag-region={false}>
-  <PanelHeader title="设备 · 多端同步">
-    <button type="button" class="dev__refresh" title="刷新" onclick={() => void load()}>↻</button>
+  <PanelHeader title={$t("device.title")}>
+    <button type="button" class="dev__refresh" title={$t("common.refresh")} onclick={() => void load()}>↻</button>
   </PanelHeader>
 
   {#if loading && devices.length === 0}
-    <div class="dev__empty">正在加载设备…</div>
+    <div class="dev__empty">{$t("device.loading")}</div>
   {:else if error && devices.length === 0}
-    <div class="dev__empty dev__empty--err">加载失败：{error}</div>
+    <div class="dev__empty dev__empty--err">{$t("device.loadFailed", { error })}</div>
   {:else if warning}
     <div class="dev__warn" title={warning}>{warning}</div>
   {/if}
 
   {#if devices.length === 0}
-    <div class="dev__empty">暂无设备</div>
+    <div class="dev__empty">{$t("device.noDevices")}</div>
   {:else}
     {#if devices.length > 1}
       <div class="dev__agg">
         <div class="dev__agg-head">
-          <span class="dev__agg-title">全端汇总</span>
-          <span class="dev__agg-sub">{devices.length} 台设备 · 近 90 天 · 按设备去重</span>
+          <span class="dev__agg-title">{$t("device.summaryTitle")}</span>
+          <span class="dev__agg-sub">{$t("device.summarySub", { n: devices.length })}</span>
         </div>
         <div class="dev__stats dev__agg-stats">
-          <Stat value={fmtTokens(aggTotal)} label="全端合计" />
-          <Stat value={fmtTokens(aggToday)} label="今日全端" />
-          <Stat value={devices.length} label="设备" />
+          <Stat value={fmtTokens(aggTotal)} label={$t("device.totalAll")} />
+          <Stat value={fmtTokens(aggToday)} label={$t("device.todayAll")} />
+          <Stat value={devices.length} label={$t("tab.devices")} />
         </div>
         {#if aggDays.length > 0}
           <div class="dev__chart dev__agg-chart">
@@ -265,17 +268,18 @@
           <div class="dev__card-top">
             <span class="dev__name">{d.hostname}</span>
             {#if i === 0}
-              <span class="dev__badge">本机</span>
+              <span class="dev__badge">{$t("device.thisMachine")}</span>
             {:else}
-              <span class="dev__badge dev__badge--remote">{relTime(d.reported_at)}</span>
+              {@const ago = relTimeParts(d.reported_at)}
+              <span class="dev__badge dev__badge--remote">{ago ? $t(ago.key, ago.params) : ""}</span>
               <button
                 type="button"
                 class="dev__remove"
                 class:dev__remove--confirm={removeConfirmId === d.device_id}
                 title={removeConfirmId === d.device_id
-                  ? "再次点击确认移除（设备仍在同步时会自动重新出现）"
-                  : "移除该设备"}
-                aria-label={`移除 ${d.hostname}`}
+                  ? $t("device.removeConfirm")
+                  : $t("device.remove")}
+                aria-label={$t("device.removeNamed", { name: d.hostname })}
                 onclick={() => void removeDevice(d.device_id)}
               >×</button>
             {/if}
@@ -286,9 +290,9 @@
             {#if i > 0}<span>PPID {d.device_id}</span>{/if}
           </div>
           <div class="dev__stats">
-            <Stat value={fmtTokens(d.tool_tokens)} label="工具 tokens" />
+            <Stat value={fmtTokens(d.tool_tokens)} label={$t("device.toolTokens")} />
             <Stat value={d.provider_count} label="Provider" />
-            <Stat value={d.tool_count} label="本地工具" />
+            <Stat value={d.tool_count} label={$t("device.localTools")} />
           </div>
           {#if d.daily.length > 0}
             <div class="dev__chart">
@@ -312,35 +316,35 @@
           <input
             class="dev__add-input"
             type="text"
-            placeholder="对端 hub 地址，如 192.168.1.23:43210"
-            aria-label="对端 hub 地址"
+            placeholder={$t("device.peerHubPlaceholder")}
+            aria-label={$t("device.peerHubAddress")}
             bind:value={addBase}
             onkeydown={(e) => {
               if (e.key === "Enter") void submitAdd();
             }}
           />
           <button type="button" class="btn-add-ok" disabled={addBusy || !addBase.trim()} onclick={() => void submitAdd()}>
-            {addBusy ? "拉取中…" : "拉取"}
+            {addBusy ? $t("device.fetching") : $t("device.fetch")}
           </button>
-          <button type="button" class="btn-add-cancel" onclick={() => { adding = false; addError = null; }}>取消</button>
+          <button type="button" class="btn-add-cancel" onclick={() => { adding = false; addError = null; }}>{$t("common.cancel")}</button>
         </div>
         {#if addError}
           <div class="dev__add-err">{addError}</div>
         {/if}
-        <p class="dev__add-hint">从对端的 hub 拉取设备列表并入本机（一次性快照，之后由正常同步刷新）。若对端启用了共享密钥，将自动使用本机设置中的密钥。</p>
+        <p class="dev__add-hint">{$t("device.addHint")}</p>
       {:else}
         {#if addOk !== null}
-          <span class="dev__add-ok">已并入 {addOk} 台设备</span>
+          <span class="dev__add-ok">{$t("device.addedCount", { n: addOk })}</span>
         {/if}
-        <button type="button" class="dev__add-btn" onclick={() => { addOk = null; adding = true; }}>＋ 添加设备</button>
+        <button type="button" class="dev__add-btn" onclick={() => { addOk = null; adding = true; }}>{$t("device.addDevice")}</button>
       {/if}
     </div>
 
     <div class="dev__sync">
-      <div class="dev__sync-title">多端同步（B8）</div>
+      <div class="dev__sync-title">{$t("device.syncTitle")}</div>
       <p class="dev__sync-desc">
-        在其它设备运行的 TokenUsageMonitor 开启「agent」并指向本机的 hub 地址后，会在此列出。
-        本机作为 hub 时，其它设备通过 <code>POST /ingest</code> 上报用量摘要。
+        {$t("device.syncDesc1")}
+        {$t("device.syncDesc2a")} <code>POST /ingest</code>{$t("device.syncDesc2b")}
       </p>
     </div>
   {/if}

@@ -16,6 +16,7 @@
   import { hexToRgb } from "../types";
   import CalendarSection from "./CalendarSection.svelte";
   import { PanelHeader, RangePills, ColorSwatch } from "./atoms";
+  import { t } from "../i18n/store";
 
   let status: "loading" | "ready" | "empty" = $state("loading");
   let seriesIds: string[] = $state([]);
@@ -28,6 +29,11 @@
 
   let range: RangeKey = $state("30d");
   let rangeDef = $derived(RANGES.find((r) => r.key === range)!);
+  // RANGES.label 现为 i18n 键（"range.7d" 等），RangePills 原样渲染 label，
+  // 传入前先取词（$t 对非键字符串原样返回，不影响其它场景）。
+  let rangeOptions = $derived(
+    RANGES.map(({ key, label }) => ({ key, label: $t(label) })),
+  );
 
   let seriesById: Record<string, Record<string, number>> = $state({});
   let days = $derived(
@@ -129,30 +135,30 @@
 </script>
 
 <div class="tw">
-  <div class="tw__bar" onpointerdown={onDrag} role="toolbar" aria-label="窗口控制" tabindex="-1">
-    <span class="tw__bar-title">用量趋势</span>
+  <div class="tw__bar" onpointerdown={onDrag} role="toolbar" aria-label={$t("trend.windowControls")} tabindex="-1">
+    <span class="tw__bar-title">{$t("trend.title")}</span>
     <div class="tw__bar-controls">
-      <button type="button" class="tw__bar-btn" aria-label="最小化" onclick={minimize} onpointerdown={(e) => e.stopPropagation()}>—</button>
-      <button type="button" class="tw__bar-btn" aria-label="最大化/还原" onclick={toggleMaximize} onpointerdown={(e) => e.stopPropagation()}>▢</button>
-      <button type="button" class="tw__bar-btn tw__bar-btn--close" aria-label="关闭" onclick={close} onpointerdown={(e) => e.stopPropagation()}>✕</button>
+      <button type="button" class="tw__bar-btn" aria-label={$t("trend.minimize")} onclick={minimize} onpointerdown={(e) => e.stopPropagation()}>—</button>
+      <button type="button" class="tw__bar-btn" aria-label={$t("trend.maximizeRestore")} onclick={toggleMaximize} onpointerdown={(e) => e.stopPropagation()}>▢</button>
+      <button type="button" class="tw__bar-btn tw__bar-btn--close" aria-label={$t("common.close")} onclick={close} onpointerdown={(e) => e.stopPropagation()}>✕</button>
     </div>
   </div>
-  <PanelHeader title="用量趋势" label="用量趋势窗口">
+  <PanelHeader title={$t("trend.title")} label={$t("trend.windowTitle")}>
     <RangePills
-      options={RANGES}
+      options={rangeOptions}
       value={range}
       onChange={(k) => (range = k)}
-      label="时间区间"
+      label={$t("trend.rangeLabel")}
     />
     <span class="tw__stats">
-      累计 <b>{formatCompact(rangeTotal)}</b> · 连续 <b>{streak}</b> 天
+      {$t("trend.totalLabel")} <b>{formatCompact(rangeTotal)}</b> · {$t("trend.streakShort")} <b>{streak}</b> {$t("trend.dayUnit")}
     </span>
   </PanelHeader>
 
   {#if status === "empty"}
-    <div class="tw__empty">暂无用量数据，请先在主面板配置 Provider</div>
+    <div class="tw__empty">{$t("trend.emptyProvider")}</div>
   {:else if status === "loading"}
-    <div class="tw__empty">正在加载用量数据…</div>
+    <div class="tw__empty">{$t("trend.loading")}</div>
   {:else}
     <div class="tw__body" bind:clientWidth={bodyW}>
       <div class="tw__chart">
@@ -178,10 +184,10 @@
       {#each seriesIds as id (id)}
         <span class="tw__key">
           <ColorSwatch color={colorOf(id)} size={9} />
-          <span>{nameOf(id)}</span>
+          <span>{$t(nameOf(id))}</span>
         </span>
       {/each}
-      <span class="tw__legend-hint">放大本窗口可获得更粗的柱与更多细节</span>
+      <span class="tw__legend-hint">{$t("trend.zoomHint")}</span>
     </div>
 
     <!-- 不限宽：窗口已从 760×480 抬到 780×720，日历铺满 740px 时约占 260px，

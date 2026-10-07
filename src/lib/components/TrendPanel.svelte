@@ -23,6 +23,7 @@
     Stat,
     ColorSwatch,
   } from "./atoms";
+  import { t } from "../i18n/store";
 
   interface Props {
     /** 总量线 / 面积颜色（系统强调色）。 */
@@ -42,6 +43,11 @@
       : "30d",
   );
   let rangeDef = $derived(RANGES.find((r) => r.key === range)!);
+  // RANGES.label 现为 i18n 键（"range.7d" 等），RangePills 原样渲染 label，
+  // 传入前先取词（$t 对非键字符串原样返回，不影响其它场景）。
+  let rangeOptions = $derived(
+    RANGES.map(({ key, label }) => ({ key, label: $t(label) })),
+  );
 
   // 全端汇总模式：序列来自各设备上报（按设备堆叠）；本机模式：账本中各
   // 工具的 token 日序列（按工具堆叠）。两者同为 tokens 口径。
@@ -131,10 +137,10 @@
 
 <div class="trend" data-tauri-drag-region={false}>
   <PanelHeader
-    title={aggMode ? "全端趋势看板" : "趋势看板 · 本机工具"}
+    title={aggMode ? $t("trend.hubTitle") : $t("trend.localTitle")}
   >
     <RangePills
-      options={RANGES}
+      options={rangeOptions}
       value={range}
       onChange={(k) => {
         range = k;
@@ -147,8 +153,11 @@
   </PanelHeader>
 
   <div class="trend__stats">
-    <Stat value={formatCompact(rangeTotal)} label={aggMode ? "全端累计" : "本机累计"} />
-    <Stat value={streak} label="连续活跃" suffix="天" />
+    <Stat
+      value={formatCompact(rangeTotal)}
+      label={aggMode ? $t("trend.hubTotal") : $t("trend.localTotal")}
+    />
+    <Stat value={streak} label={$t("trend.streak")} suffix={$t("trend.dayUnit")} />
   </div>
 
   <div class="trend__chart">
@@ -165,7 +174,7 @@
     {#each activeIds as id (id)}
       <span class="trend__key">
         <ColorSwatch color={activeColors[id] ?? "rgb(138,143,152)"} size={8} />
-        <span>{labelOf(id)}</span>
+        <span>{$t(labelOf(id))}</span>
       </span>
     {/each}
   </div>

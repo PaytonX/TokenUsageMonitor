@@ -435,6 +435,7 @@ pub async fn poll_one(
                     burn.as_ref(),
                     settings.notify_warn_percent,
                     settings.notify_crit_percent,
+                    crate::i18n::resolve(&settings.language),
                 )
             };
             if settings.notify_enabled {

@@ -2,6 +2,11 @@
 // 职责只有两件：hover 唤醒主胶囊、收到 peek-show 后复现自己。不持有业务数据。
 import { emit, listen } from "@tauri-apps/api/event";
 
+// 把手窗无文案，但保持统一接线：语言镜像随设置同步（为将来留好底子）。
+import { initLocaleWithBackend } from "../lib/i18n/store";
+
+initLocaleWithBackend();
+
 type Side = "left" | "right" | "top" | "bottom";
 
 declare global {

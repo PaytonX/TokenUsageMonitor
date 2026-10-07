@@ -16,20 +16,23 @@ export interface ProviderMeta {
   label: string;
 }
 
-/** 归一化后的 provider key → 展示名。 */
+/** 归一化后的 provider key → 展示名。
+ *  值有两种形态：i18n 键（"mp.*"，随界面语言翻译）或品牌名本身（两种语言
+ *  写法一致，不需要翻译）。渲染端一律经 $t(label)——tFor 对非键字符串原样
+ *  返回，品牌名因此直通显示。 */
 const PROVIDER_LABELS: Record<string, string> = {
   minimax: "MiniMax",
   deepseek: "DeepSeek",
-  glm: "GLM 智谱",
-  volcengine: "火山方舟",
+  glm: "mp.glm",
+  volcengine: "mp.volcengine",
   openai: "OpenAI",
   anthropic: "Claude",
   gemini: "Gemini",
   qwen: "Qwen",
   kimi: "Kimi",
-  doubao: "豆包",
+  doubao: "mp.doubao",
   xai: "xAI",
-  other: "其他",
+  other: "mp.other",
 };
 
 /** 模型名前缀 → provider key。按最长前缀优先匹配。 */

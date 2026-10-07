@@ -7,6 +7,8 @@
   默认走「无填充 + 主文字」风格；带 accent 时激活态改用 accent 半透底。
 -->
 <script lang="ts" generics="T extends string">
+  import { t } from "../../i18n/store";
+
   interface RangeOption {
     key: T;
     label: string;
@@ -18,7 +20,7 @@
     onChange: (key: T) => void;
     /** 强调色（#RRGGBB）。激活态底色由此推导；不传走 --tum-accent。 */
     accent?: string;
-    /** aria-label，默认 "时间区间"。 */
+    /** aria-label，缺省取词典 atom.rangeLabel（"时间区间"）。 */
     label?: string;
   }
 
@@ -27,7 +29,7 @@
     value,
     onChange,
     accent,
-    label = "时间区间",
+    label,
   }: Props = $props();
 
   // 把 #RRGGBB 转成 rgba(...)，与安全转回 CSS 变量。空值走 token。
@@ -44,7 +46,7 @@
   let bg = $derived(activeBg(accent));
 </script>
 
-<div class="pills" role="group" aria-label={label}>
+<div class="pills" role="group" aria-label={label ?? $t("atom.rangeLabel")}>
   {#each options as opt (opt.key)}
     <button
       type="button"

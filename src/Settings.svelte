@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { get } from "svelte/store";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import {
     getProviders,
@@ -50,6 +51,7 @@
     type PageTab,
   } from "./lib";
   import { CURRENCIES, USD_RATES, applyRatesSnapshot, type Currency } from "./lib/currency";
+  import { applyLocaleSetting, t, type LangSetting } from "./lib/i18n/store";
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
 
   type Tab = "general" | "accounts" | "interaction" | "network" | "router" | "about";
@@ -57,11 +59,11 @@
   /** 可做精确覆盖的工具标识（须与后端 local::roots 的 key 一致）。 */
   const TOOL_DATA_DIR_KEYS = [".claude", ".codex", ".zcode", ".minimax", "cherry-studio"] as const;
   const TOOL_DATA_LABELS: Record<string, string> = {
-    ".claude": "Claude Code（.claude）",
-    ".codex": "Codex（.codex）",
-    ".zcode": "ZCode（.zcode）",
-    ".minimax": "MiniMax Code（.minimax）",
-    "cherry-studio": "Cherry Studio（.cherrystudio）",
+    ".claude": "settings.tools.claude",
+    ".codex": "settings.tools.codex",
+    ".zcode": "settings.tools.zcode",
+    ".minimax": "settings.tools.minimax",
+    "cherry-studio": "settings.tools.cherryStudio",
   };
 
   /** One account as rendered in the Settings UI. Meta edits are batched into
@@ -114,6 +116,8 @@
   let notifyCrit = $state<number>(95);
   let countdownMode = $state(false);
   let displayCurrency = $state("auto");
+  // 界面语言：切换立即生效（applyLocaleSetting），并随保存持久化到后端。
+  let language = $state<LangSetting>("auto");
   // 页签显隐：趋势/工具/模型可关闭（总量恒常驻）。立即持久化到 localStorage 并
   // 广播 tabs-changed，让主面板重读。
   let hiddenTabs = $state<PageTab[]>(readHiddenTabs());
@@ -228,6 +232,9 @@
       notifyCrit = s.notify_crit_percent ?? 95;
       countdownMode = s.countdown_mode ?? false;
       displayCurrency = s.display_currency ?? "auto";
+      language = ["auto", "zh-CN", "en"].includes(s.language)
+        ? (s.language as LangSetting)
+        : "auto";
       hubMode = s.hub_mode ?? "off";
       hubPort = s.hub_port ?? 43210;
       hubBase = s.hub_base ?? "";
@@ -364,7 +371,7 @@
 
   async function testConnection(f: AccountForm) {
     if (!hasCredentialInput(f)) {
-      f.error = "请先填写凭证";
+      f.error = get(t)("settings.accounts.errorFillCreds");
       f.testResult = null;
       return;
     }
@@ -391,7 +398,7 @@
           ok: false,
           status: null,
           url: baseUrl,
-          error: "未配置路由用推理 Key",
+          error: get(t)("settings.accounts.routeKeyMissing"),
         };
       } else if (baseUrl) {
         const protocol = f.meta.provider_kind === "anthropic" ? "anthropic" : "openai";
@@ -430,7 +437,7 @@
       }
     } catch (e) {
       // 静默吞掉会让「没有回读」变成无头案：把原因亮出来。
-      f.error = "回读已存凭据失败（可直接全量重填后保存）：" + String(e);
+      f.error = get(t)("settings.accounts.credsReadBackError", { err: String(e) });
     }
     f.credsDirty = true;
   }
@@ -454,7 +461,7 @@
 
   async function saveCredentialsFor(f: AccountForm) {
     if (!hasCredentialInput(f)) {
-      f.error = "请先填写凭证";
+      f.error = get(t)("settings.accounts.errorFillCreds");
       return;
     }
     f.error = null;
@@ -491,7 +498,7 @@
     try {
       const detected = await detectCodexToken();
       if (!detected) {
-        f.error = "未检测到本地 Codex 登录（~/.codex/auth.json）。请先登录 Codex CLI。";
+        f.error = get(t)("settings.accounts.codexNotDetected");
         return;
       }
       f.token = detected.token;
@@ -571,7 +578,7 @@
     if (!r) {
       r = {
         id: nextRouteId(),
-        name: "主力路由",
+        name: get(t)("settings.router.defaultRouteName"),
         protocol: "openai",
         on: true,
         token: "",
@@ -649,7 +656,7 @@
   async function handleFetchModels(cand: RouterCandidate, protocol: RouterProtocol) {
     const key = modelKey(cand.account, cand.base_url);
     if (!cand.account || !cand.base_url) {
-      modelFetchError[key] = "先选择账户并填写上游地址，再拉取模型列表";
+      modelFetchError[key] = get(t)("settings.router.modelFetchNeedSetup");
       return;
     }
     modelFetching[key] = true;
@@ -687,7 +694,7 @@
       probe_max_attempts: clampInt(cfg.probe_max_attempts, 1, 20, 5),
       routes: cfg.routes.slice(0, 1).map((r) => ({
         id: r.id || nextRouteId(),
-        name: r.name.trim() || "未命名路由",
+        name: r.name.trim() || get(t)("settings.router.unnamedRoute"),
         protocol: r.protocol,
         on: r.on,
         token: r.token.trim(),
@@ -711,11 +718,11 @@
   }
 
   const LINE_STATE_LABELS: Record<string, string> = {
-    ok: "可用",
-    low_quota: "低余量",
-    full: "已用尽",
-    cooldown: "冷却",
-    unusable: "凭据缺失",
+    ok: "settings.router.lineOk",
+    low_quota: "settings.router.lineLowQuota",
+    full: "settings.router.lineFull",
+    cooldown: "settings.router.lineCooldown",
+    unusable: "settings.router.lineUnusable",
   };
 
   function lineBadge(state: string): string {
@@ -744,7 +751,9 @@
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "";
     const secs = Math.max(0, Math.round((d.getTime() - Date.now()) / 1000));
-    return secs > 90 ? `${Math.round(secs / 60)} 分钟后` : `${secs} 秒后`;
+    return secs > 90
+      ? get(t)("settings.router.inMinutes", { n: Math.round(secs / 60) })
+      : get(t)("settings.router.inSeconds", { n: secs });
   }
 
   function probeInText(iso?: string): string {
@@ -752,7 +761,9 @@
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "";
     const secs = Math.max(0, Math.round((d.getTime() - Date.now()) / 1000));
-    return secs > 90 ? `${Math.round(secs / 60)} 分钟后` : `${secs} 秒后`;
+    return secs > 90
+      ? get(t)("settings.router.inMinutes", { n: Math.round(secs / 60) })
+      : get(t)("settings.router.inSeconds", { n: secs });
   }
 
   /** 切走线仪表：当前承载流量的线路的最小窗口剩余（无刻度数据时 null）。 */
@@ -778,6 +789,21 @@
     try {
       await saveSettings({ ...settings, countdown_mode: checked });
       settings = { ...settings, countdown_mode: checked };
+    } catch (err) {
+      genericError = String(err);
+    }
+  }
+
+  /** 语言切换立即生效：先更新本地镜像与状态，再落盘后端（settings-changed
+   *  会让其余窗口跟随）。落盘失败不回滚界面语言——下次保存会再写入。 */
+  async function applyLanguageNow(e: Event) {
+    const value = (e.currentTarget as HTMLSelectElement).value as LangSetting;
+    language = value;
+    applyLocaleSetting(value);
+    if (!settings) return;
+    try {
+      await saveSettings({ ...settings, language: value });
+      settings = { ...settings, language: value };
     } catch (err) {
       genericError = String(err);
     }
@@ -875,6 +901,7 @@
         notify_crit_percent: clampPercent(notifyCrit),
         countdown_mode: countdownMode,
         display_currency: displayCurrency,
+        language,
         hub_mode: hubMode,
         hub_port: hubPort,
         hub_base: hubBase,
@@ -958,7 +985,7 @@
 
   function formatTestResult(r: TestResult | null): string {
     if (!r) return "";
-    if (r.ok) return "✓ 连接成功";
+    if (r.ok) return get(t)("settings.accounts.testOk");
     return `✗ ${r.message}`;
   }
 
@@ -969,7 +996,9 @@
 
   // Keep the flipped "确认删除" state harmless if the user switches accounts.
   function deleteLabel(f: AccountForm): string {
-    return deleteConfirmId === f.meta.instance_id ? "确认删除" : "删除账户";
+    return deleteConfirmId === f.meta.instance_id
+      ? get(t)("settings.accounts.confirmDelete")
+      : get(t)("settings.accounts.deleteTitle");
   }
 
   // 关键：窗口打开时必须先加载数据，否则 catalog/settings 恒为 null，
@@ -1008,9 +1037,9 @@ async function handleMinimize() {
       <span class="settings__title">TokenUsageMonitor</span>
     </div>
     <div class="settings__win">
-      <button type="button" class="settings__win-btn" aria-label="最小化" onclick={handleMinimize} onpointerdown={(e) => e.stopPropagation()}>—</button>
-      <button type="button" class="settings__win-btn" aria-label="最大化/还原" onclick={handleToggleMaximize} onpointerdown={(e) => e.stopPropagation()}>▢</button>
-      <button class="settings__close" onclick={handleClose} aria-label="保存并关闭">
+      <button type="button" class="settings__win-btn" aria-label={$t("settings.win.minimize")} onclick={handleMinimize} onpointerdown={(e) => e.stopPropagation()}>—</button>
+      <button type="button" class="settings__win-btn" aria-label={$t("settings.win.maximize")} onclick={handleToggleMaximize} onpointerdown={(e) => e.stopPropagation()}>▢</button>
+      <button class="settings__close" onclick={handleClose} aria-label={$t("settings.footer.saveClose")}>
         ✕
       </button>
     </div>
@@ -1023,28 +1052,28 @@ async function handleMinimize() {
         class:is-active={tab === "general"}
         onclick={() => (tab = "general")}
       >
-        通用
+        {$t("settings.nav.general")}
       </button>
       <button
         class="nav-item"
         class:is-active={tab === "accounts"}
         onclick={() => (tab = "accounts")}
       >
-        账户与额度
+        {$t("settings.nav.accounts")}
       </button>
       <button
         class="nav-item"
         class:is-active={tab === "interaction"}
         onclick={() => (tab = "interaction")}
       >
-        交互与通知
+        {$t("settings.nav.interaction")}
       </button>
       <button
         class="nav-item"
         class:is-active={tab === "network"}
         onclick={() => (tab = "network")}
       >
-        网络
+        {$t("settings.nav.network")}
       </button>
       <button
         class="nav-item"
@@ -1054,14 +1083,14 @@ async function handleMinimize() {
           void refreshRouterStatus();
         }}
       >
-        路由
+        {$t("settings.nav.router")}
       </button>
       <button
         class="nav-item"
         class:is-active={tab === "about"}
         onclick={() => (tab = "about")}
       >
-        关于与诊断
+        {$t("settings.nav.about")}
       </button>
     </nav>
 
@@ -1072,10 +1101,22 @@ async function handleMinimize() {
 
       {#if tab === "general"}
         <div class="pane">
-          <h2 class="pane__title">通用</h2>
+          <h2 class="pane__title">{$t("settings.nav.general")}</h2>
 
           <div class="section">
-            <h3 class="section__title">轮询间隔</h3>
+            <h3 class="section__title">{$t("settings.general.language")}</h3>
+            <p class="hint">{$t("settings.general.languageHint")}</p>
+            <label class="interval">
+              <select class="interval-select" value={language} onchange={applyLanguageNow}>
+                <option value="auto">{$t("settings.general.languageAuto")}</option>
+                <option value="zh-CN">{$t("settings.general.languageZh")}</option>
+                <option value="en">{$t("settings.general.languageEn")}</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="section">
+            <h3 class="section__title">{$t("settings.polling.title")}</h3>
             <label class="interval">
               <input
                 type="number"
@@ -1084,26 +1125,26 @@ async function handleMinimize() {
                 step="30"
                 bind:value={pollInterval}
               />
-              <span class="interval__hint">秒 · 0 = 使用默认（5 分钟）</span>
+              <span class="interval__hint">{$t("settings.polling.secondsHint")}</span>
             </label>
           </div>
 
           <div class="section">
-            <h3 class="section__title">环形用量窗口</h3>
-            <p class="hint">主面板与迷你胶囊的百分比圆环基于哪个窗口计算。</p>
+            <h3 class="section__title">{$t("settings.ring.title")}</h3>
+            <p class="hint">{$t("settings.ring.hint")}</p>
             <label class="interval">
               <select class="interval-select" bind:value={ringWindow}>
-                <option value="auto">自动（各来源最紧张窗口）</option>
-                <option value="five_hour">5 小时窗口</option>
-                <option value="daily">当日窗口</option>
-                <option value="weekly">周用量窗口</option>
-                <option value="monthly">月度窗口</option>
+                <option value="auto">{$t("settings.ring.auto")}</option>
+                <option value="five_hour">{$t("settings.ring.fiveHour")}</option>
+                <option value="daily">{$t("settings.ring.daily")}</option>
+                <option value="weekly">{$t("settings.ring.weekly")}</option>
+                <option value="monthly">{$t("settings.ring.monthly")}</option>
               </select>
             </label>
             <div class="behavior-row">
               <div class="behavior-info">
-                <span class="behavior-label">倒计时模式（显示剩余量）</span>
-                <span class="behavior-hint">关闭时圆环显示已用量；开启后显示剩余量，便于估算还能用多久。</span>
+                <span class="behavior-label">{$t("settings.ring.countdownMode")}</span>
+                <span class="behavior-hint">{$t("settings.ring.countdownHint")}</span>
               </div>
               <label class="toggle">
                 <input type="checkbox" onchange={applyCountdownNow} />
@@ -1113,29 +1154,29 @@ async function handleMinimize() {
           </div>
 
           <div class="section">
-            <h3 class="section__title">展示币种</h3>
-            <p class="hint">模型页签与详情卡中估算成本的显示币种。“自动”默认人民币（CNY）。</p>
+            <h3 class="section__title">{$t("settings.currency.title")}</h3>
+            <p class="hint">{$t("settings.currency.hint")}</p>
             <label class="interval">
               <select class="interval-select" bind:value={displayCurrency}>
-                <option value="auto">自动（人民币 CNY）</option>
-                <option value="CNY">人民币 (CNY)</option>
-                <option value="USD">美元 (USD)</option>
-                <option value="TWD">新台币 (TWD)</option>
-                <option value="HKD">港币 (HKD)</option>
-                <option value="JPY">日元 (JPY)</option>
-                <option value="EUR">欧元 (EUR)</option>
-                <option value="GBP">英镑 (GBP)</option>
+                <option value="auto">{$t("settings.currency.auto")}</option>
+                <option value="CNY">{$t("currency.CNY")}</option>
+                <option value="USD">{$t("currency.USD")}</option>
+                <option value="TWD">{$t("currency.TWD")}</option>
+                <option value="HKD">{$t("currency.HKD")}</option>
+                <option value="JPY">{$t("currency.JPY")}</option>
+                <option value="EUR">{$t("currency.EUR")}</option>
+                <option value="GBP">{$t("currency.GBP")}</option>
               </select>
             </label>
           </div>
 
           <div class="section">
-            <h3 class="section__title">汇率覆盖</h3>
-            <p class="hint">应用每 6 小时检查一次自动汇率（缓存 24 小时）；在此可将某币种固定为手动值（每 1 USD 兑该币种），留空使用自动值，离线时回退内置默认。</p>
+            <h3 class="section__title">{$t("settings.rates.title")}</h3>
+            <p class="hint">{$t("settings.rates.hint")}</p>
             <div class="rate-grid">
               {#each OVERRIDE_CODES as c (c.code)}
                 <label class="field">
-                  <span class="field__label">{c.label}</span>
+                  <span class="field__label">{$t(c.label)}</span>
                   <input
                     class="field__input"
                     type="number"
@@ -1151,29 +1192,29 @@ async function handleMinimize() {
               <div class="behavior-info">
                 <span class="behavior-label">
                   {#if ratesSnapshot?.fetched_at}
-                    自动汇率更新于 {formatRateTime(ratesSnapshot.fetched_at)}
+                    {$t("settings.rates.updatedAt", { time: formatRateTime(ratesSnapshot.fetched_at) })}
                   {:else}
-                    尚未拉取自动汇率（使用内置默认值）
+                    {$t("settings.rates.notFetched")}
                   {/if}
                 </span>
                 <span class="behavior-hint">
-                  {ratesSnapshot?.warning ?? "覆盖值在保存设置后生效，并同步到所有窗口。"}
+                  {ratesSnapshot?.warning ?? $t("settings.rates.overrideHint")}
                 </span>
               </div>
               <button class="btn btn--ghost" type="button" disabled={rateRefreshing} onclick={handleRateRefresh}>
-                {rateRefreshing ? "刷新中…" : "立即刷新"}
+                {rateRefreshing ? $t("settings.rates.refreshing") : $t("settings.rates.refreshNow")}
               </button>
             </div>
           </div>
 
           <div class="section">
-            <h3 class="section__title">页签显示</h3>
-            <p class="hint">「总量」页签始终显示；其余页签可在此关闭，关闭后该页签不显示、相关功能不启用。</p>
+            <h3 class="section__title">{$t("settings.tabs.title")}</h3>
+            <p class="hint">{$t("settings.tabs.hint")}</p>
             <div class="behavior-row">
               <div class="behavior-info">
-                <span class="behavior-label">全端汇总模式</span>
+                <span class="behavior-label">{$t("settings.tabs.aggMode")}</span>
                 <span class="behavior-hint">
-                  趋势 / 工具 / 模型页签改为显示全部设备的合并用量（按设备去重，成本不参与聚合）。需多端同步在线。
+                  {$t("settings.tabs.aggModeHint")}
                 </span>
               </div>
               <label class="toggle">
@@ -1186,21 +1227,21 @@ async function handleMinimize() {
               </label>
             </div>
             {#each [
-              { key: "trend", label: "趋势", hint: "跨 Provider 逐日用量看板" },
-              { key: "tools", label: "工具", hint: "本机 AI 工具（Claude Code / MiniMax Code / Hermes…）用量" },
-              { key: "models", label: "模型", hint: "按模型维度聚合的 token / 成本统计" },
-              { key: "devices", label: "设备", hint: "本机设备信息与多端同步" },
-            ] as t (t.key)}
+              { key: "trend", label: "tab.trend", hint: "settings.tabs.trendHint" },
+              { key: "tools", label: "tab.tools", hint: "settings.tabs.toolsHint" },
+              { key: "models", label: "tab.models", hint: "settings.tabs.modelsHint" },
+              { key: "devices", label: "tab.devices", hint: "settings.tabs.devicesHint" },
+            ] as item (item.key)}
               <div class="behavior-row">
                 <div class="behavior-info">
-                  <span class="behavior-label">{t.label}</span>
-                  <span class="behavior-hint">{t.hint}</span>
+                  <span class="behavior-label">{$t(item.label)}</span>
+                  <span class="behavior-hint">{$t(item.hint)}</span>
                 </div>
                 <label class="toggle">
                   <input
                     type="checkbox"
-                    checked={tabEnabled(t.key as PageTab)}
-                    onchange={(e) => toggleTab(t.key as PageTab, (e.currentTarget as HTMLInputElement).checked)}
+                    checked={tabEnabled(item.key as PageTab)}
+                    onchange={(e) => toggleTab(item.key as PageTab, (e.currentTarget as HTMLInputElement).checked)}
                   />
                   <span class="toggle__track"><span class="toggle__thumb"></span></span>
                 </label>
@@ -1211,10 +1252,9 @@ async function handleMinimize() {
 
       {:else if tab === "accounts"}
         <div class="pane">
-          <h2 class="pane__title">账户与额度</h2>
+          <h2 class="pane__title">{$t("settings.nav.accounts")}</h2>
           <p class="hint">
-            每个账户独立轮询、独立启停；凭证保存在 Windows 凭据管理器（DPAPI
-            加密），不写磁盘明文。点击账户行展开编辑，支持添加多个同一来源的账户。
+            {$t("settings.accounts.hint")}
           </p>
 
           {#if presetMenuFor}
@@ -1227,12 +1267,12 @@ async function handleMinimize() {
 
           <div class="section">
             <h3 class="section__title">
-              已配置账户
+              {$t("settings.accounts.configured")}
               <span class="section__count">{forms.length}</span>
             </h3>
 
             {#if forms.length === 0}
-              <div class="empty">还没有账户。点击下方「添加账户」从预设创建。</div>
+              <div class="empty">{$t("settings.accounts.empty")}</div>
             {:else}
               <div class="acct-list">
                 {#each forms as f (f.meta.instance_id)}
@@ -1260,20 +1300,20 @@ async function handleMinimize() {
                       <ProviderLogo kind={f.meta.provider_kind} size={18} accent={f.meta.accent_color} />
                     </span>
                     <span class="acct-row__label" title={f.meta.note || f.meta.label}>
-                      {f.meta.label || "未命名账户"}
+                      {f.meta.label || $t("settings.accounts.unnamed")}
                     </span>
                     <span class="acct-row__kind">{displayNameFor(f.meta.provider_kind)}</span>
                     {#if f.hasCredentials}
-                      <span class="acct-row__dot" title="凭证已存" aria-label="凭证已存"></span>
+                      <span class="acct-row__dot" title={$t("settings.accounts.credsStored")} aria-label={$t("settings.accounts.credsStored")}></span>
                     {/if}
                     <span
                       class="account__badge acct-row__live"
                       class:account__badge--live={f.live}
                       class:account__badge--off={!f.live}
                     >
-                      {f.live ? "轮询中" : "已停止"}
+                      {f.live ? $t("settings.accounts.live") : $t("settings.accounts.stopped")}
                     </span>
-                    <label class="toggle" title={f.meta.enabled ? "已启用" : "已停用"}>
+                    <label class="toggle" title={f.meta.enabled ? $t("settings.common.enabled") : $t("settings.common.disabled")}>
                       <input
                         type="checkbox"
                         checked={f.meta.enabled}
@@ -1294,7 +1334,7 @@ async function handleMinimize() {
                 pickerOpen = true;
               }}
             >
-              ＋ 添加账户
+              {$t("settings.accounts.add")}
             </button>
           </div>
 
@@ -1307,21 +1347,21 @@ async function handleMinimize() {
               <div class="account__body">
                   <div class="account__meta-row">
                     <label class="field field--flex">
-                      <span class="field__label">标签</span>
+                      <span class="field__label">{$t("settings.accounts.label")}</span>
                       <input
                         class="field__input"
                         type="text"
-                        placeholder="显示名称"
+                        placeholder={$t("settings.accounts.labelPlaceholder")}
                         bind:value={selectedForm.meta.label}
                       />
                     </label>
                     <label class="field field--swatch">
-                      <span class="field__label">强调色</span>
+                      <span class="field__label">{$t("settings.accounts.accent")}</span>
                       <span class="colorpicker">
                         <input
                           type="color"
                           bind:value={selectedForm.meta.accent_color}
-                          aria-label="强调色"
+                          aria-label={$t("settings.accounts.accent")}
                         />
                         <span class="colorpicker__hex">{selectedForm.meta.accent_color}</span>
                       </span>
@@ -1329,20 +1369,20 @@ async function handleMinimize() {
                   </div>
 
                   <label class="field">
-                    <span class="field__label">备注（可选）</span>
+                    <span class="field__label">{$t("settings.accounts.note")}</span>
                     <input
                       class="field__input"
                       type="text"
-                      placeholder="例如：主账号 / 备用额度 …"
+                      placeholder={$t("settings.accounts.notePlaceholder")}
                       bind:value={selectedForm.meta.note}
                     />
                   </label>
 
                   {#if selectedForm.hasCredentials && !selectedForm.credsDirty}
                     <div class="account__stored">
-                      <span class="account__badge account__badge--ok">已保存</span>
-                      <button class="btn btn--ghost" onclick={() => modifyCredentialsFor(selectedForm)}>修改</button>
-                      <button class="btn btn--ghost" onclick={() => clearCredentialsFor(selectedForm)}>清除</button>
+                      <span class="account__badge account__badge--ok">{$t("settings.accounts.savedBadge")}</span>
+                      <button class="btn btn--ghost" onclick={() => modifyCredentialsFor(selectedForm)}>{$t("settings.accounts.edit")}</button>
+                      <button class="btn btn--ghost" onclick={() => clearCredentialsFor(selectedForm)}>{$t("settings.accounts.clear")}</button>
                     </div>
                   {:else}
                     {#if isAccessKey(selectedForm.meta.provider_kind)}
@@ -1368,20 +1408,17 @@ async function handleMinimize() {
                       </label>
                       <div class="creds-optional">
                         <div class="creds-optional__title">
-                          推理 API Key（可选 · 仅 TokenRouter 路由需要）
+                          {$t("settings.accounts.routeKeyTitle")}
                         </div>
                         <p class="creds-optional__desc">
-                          上面这组 AK / SK 只用于<strong>查询配额</strong>（HMAC 签名），
-                          本身不是接口调用密钥。TokenRouter 转发请求时需要该服务的
-                          <strong>推理 API Key</strong>（如火山方舟 API Key）——
-                          不填不影响用量监控，但这个账户<strong>无法作为路由线路</strong>使用。
+                          {$t("settings.accounts.routeKeyDesc1")}<strong>{$t("settings.accounts.routeKeyQuota")}</strong>{$t("settings.accounts.routeKeyDesc2")}<strong>{$t("settings.accounts.routeKeyInference")}</strong>{$t("settings.accounts.routeKeyDesc3")}<strong>{$t("settings.accounts.routeKeyNoRoute")}</strong>{$t("settings.accounts.routeKeyDesc4")}
                         </p>
                         <label class="field">
-                          <span class="field__label">推理 API Key</span>
+                          <span class="field__label">{$t("settings.accounts.routeKeyLabel")}</span>
                           <input
                             class="field__input"
                             type="password"
-                            placeholder="留空 = 仅监控，不参与路由"
+                            placeholder={$t("settings.accounts.routeKeyPlaceholder")}
                             bind:value={selectedForm.routeApiKey}
                             oninput={() => (selectedForm.credsDirty = true)}
                           />
@@ -1389,18 +1426,18 @@ async function handleMinimize() {
                       </div>
                     {:else if isLocalToken(selectedForm.meta.provider_kind)}
                       <label class="field">
-                        <span class="field__label">本地登录凭证</span>
+                        <span class="field__label">{$t("settings.accounts.localToken")}</span>
                         <input
                           class="field__input"
                           type="password"
-                          placeholder="粘贴 Codex 登录令牌，或点击右侧自动检测"
+                          placeholder={$t("settings.accounts.tokenPlaceholder")}
                           bind:value={selectedForm.token}
                           oninput={() => (selectedForm.credsDirty = true)}
                         />
                       </label>
                       <div class="account__actions">
                         <button class="btn btn--ghost" onclick={() => detectCodexFor(selectedForm)}>
-                          自动检测 ~/.codex
+                          {$t("settings.accounts.detectCodex")}
                         </button>
                       </div>
                     {:else}
@@ -1422,18 +1459,18 @@ async function handleMinimize() {
                         disabled={selectedForm.testing || !hasCredentialInput(selectedForm)}
                         onclick={() => testConnection(selectedForm)}
                       >
-                        {selectedForm.testing ? "测试中…" : "测试连接"}
+                        {selectedForm.testing ? $t("settings.common.testing") : $t("settings.common.testConnection")}
                       </button>
                       <button
                         class="btn btn--primary"
                         disabled={!hasCredentialInput(selectedForm)}
                         onclick={() => saveCredentialsFor(selectedForm)}
                       >
-                        {selectedForm.saved ? "已保存 ✓" : "保存凭证"}
+                        {selectedForm.saved ? $t("settings.common.savedCheck") : $t("settings.accounts.saveCreds")}
                       </button>
                       {#if selectedForm.hasCredentials}
-                        <button class="btn btn--ghost" onclick={() => clearCredentialsFor(selectedForm)}>清除</button>
-                        <button class="btn btn--ghost" onclick={() => cancelCredentialsEdit(selectedForm)}>取消</button>
+                        <button class="btn btn--ghost" onclick={() => clearCredentialsFor(selectedForm)}>{$t("settings.accounts.clear")}</button>
+                        <button class="btn btn--ghost" onclick={() => cancelCredentialsEdit(selectedForm)}>{$t("common.cancel")}</button>
                       {/if}
                     </div>
                   {/if}
@@ -1451,11 +1488,11 @@ async function handleMinimize() {
                       class:test-fail={!p.ok && p.status !== 404}
                     >
                       {#if p.ok}
-                        路由通道 ✓ 可达{p.models ? ` · ${p.models} 个模型` : ""}
+                        {$t("settings.router.probeOk")}{p.models ? $t("settings.router.probeModels", { n: p.models }) : ""}
                       {:else if p.status === 404}
-                        路由通道 ？ 上游未实现 /models，无法免费探测（转发以实际为准）
+                        {$t("settings.router.probeNotImplemented")}
                       {:else}
-                        路由通道 ✗ {p.error ?? "不可达"}——该账户无法作为路由线路
+                        {$t("settings.router.probeFail", { err: p.error ?? $t("settings.router.probeUnreachable") })}
                       {/if}
                     </div>
                   {/if}
@@ -1471,11 +1508,11 @@ async function handleMinimize() {
                       onclick={() => deleteAccount(selectedForm)}
                     >
                       {busy === selectedForm.meta.instance_id
-                        ? "删除中…"
+                        ? $t("settings.accounts.deleting")
                         : deleteLabel(selectedForm)}
                     </button>
                     {#if deleteConfirmId === selectedForm.meta.instance_id}
-                      <span class="account__danger-hint">再次点击将删除该账户及凭证</span>
+                      <span class="account__danger-hint">{$t("settings.accounts.deleteHint")}</span>
                     {/if}
                   </div>
                 </div>
@@ -1491,16 +1528,16 @@ async function handleMinimize() {
               }}
               aria-hidden="true"
             ></div>
-            <div class="preset-picker" role="dialog" aria-modal="true" aria-label="添加账户">
+            <div class="preset-picker" role="dialog" aria-modal="true" aria-label={$t("settings.accounts.addTitle")}>
               <header class="preset-picker__head">
-                <span class="preset-picker__title">选择来源</span>
+                <span class="preset-picker__title">{$t("settings.accounts.pickSource")}</span>
                 <button
                   class="preset-picker__close"
                   onclick={() => {
                     pickerOpen = false;
                     presetMenuFor = null;
                   }}
-                  aria-label="关闭"
+                  aria-label={$t("common.close")}
                 >×</button>
               </header>
               <div class="preset-grid">
@@ -1520,27 +1557,27 @@ async function handleMinimize() {
                         <span class="preset-card__name">
                           {preset.display_name}
                           {#if preset.experimental}
-                            <span class="preset-card__exp">实验</span>
+                            <span class="preset-card__exp">{$t("settings.accounts.experimental")}</span>
                           {/if}
                         </span>
                         <span class="preset-card__auth">
                           {preset.auth_kind === "access_key_secret"
                             ? "Access Key + Secret"
                             : preset.auth_kind === "local_token"
-                              ? "本地登录凭证"
+                              ? $t("settings.accounts.localToken")
                               : "Bearer API Key"}
                         </span>
                       </span>
                       <span class="preset-card__add">
                         {busy === `add-${preset.kind}`
-                          ? "添加中…"
+                          ? $t("settings.accounts.adding")
                           : preset.sub_modes?.length
-                            ? "选择计费方式 ▾"
-                            : "＋ 添加"}
+                            ? $t("settings.accounts.pickBilling")
+                            : $t("settings.accounts.addShort")}
                       </span>
                     </button>
                     {#if presetMenuFor?.kind === preset.kind && preset.sub_modes?.length}
-                      <div class="preset-menu" role="menu" aria-label={`选择 ${preset.display_name} 计费方式`}>
+                      <div class="preset-menu" role="menu" aria-label={$t("settings.accounts.pickBillingFor", { name: preset.display_name })}>
                         {#each preset.sub_modes as m (m.kind)}
                           <button
                             class="preset-menu__item"
@@ -1552,7 +1589,7 @@ async function handleMinimize() {
                           >
                             <span class="preset-menu__label">{m.label}</span>
                             {#if m.limited}
-                              <span class="preset-menu__badge">未实装</span>
+                              <span class="preset-menu__badge">{$t("settings.accounts.notImplemented")}</span>
                             {/if}
                           </button>
                         {/each}
@@ -1567,14 +1604,14 @@ async function handleMinimize() {
 
       {:else if tab === "interaction"}
         <div class="pane">
-          <h2 class="pane__title">交互与通知</h2>
+          <h2 class="pane__title">{$t("settings.nav.interaction")}</h2>
 
           <div class="section">
-            <h3 class="section__title">行为</h3>
+            <h3 class="section__title">{$t("settings.behavior.title")}</h3>
             <div class="behavior-row">
               <div class="behavior-info">
-                <span class="behavior-label">靠边吸附</span>
-                <span class="behavior-hint">拖动面板贴近屏幕边缘时自动吸附。</span>
+                <span class="behavior-label">{$t("settings.behavior.edgeSnap")}</span>
+                <span class="behavior-hint">{$t("settings.behavior.edgeSnapHint")}</span>
               </div>
               <label class="toggle">
                 <input type="checkbox" bind:checked={edgeSnap} />
@@ -1584,8 +1621,8 @@ async function handleMinimize() {
 
             <div class="behavior-row">
               <div class="behavior-info">
-                <span class="behavior-label">开机自启</span>
-                <span class="behavior-hint">开机后自动运行本程序（写入当前用户注册表，点保存后生效）。</span>
+                <span class="behavior-label">{$t("settings.behavior.autostart")}</span>
+                <span class="behavior-hint">{$t("settings.behavior.autostartHint")}</span>
               </div>
               <label class="toggle">
                 <input type="checkbox" bind:checked={autostart} />
@@ -1595,32 +1632,30 @@ async function handleMinimize() {
           </div>
 
           <div class="section">
-            <h3 class="section__title">多端同步</h3>
-            <p class="hint">本机作为 hub 接收其它设备上报；或以 agent 把本机用量上报到指定 hub；或用局域网模式自动发现同网段设备并互相同步。改动需重启应用生效。</p>
+            <h3 class="section__title">{$t("settings.sync.title")}</h3>
+            <p class="hint">{$t("settings.sync.hint")}</p>
             <label class="interval">
               <select class="interval-select" bind:value={hubMode}>
-                <option value="off">关闭</option>
-                <option value="lan">局域网模式（自动发现同网段设备）</option>
-                <option value="hub">本机作为 hub（接收上报）</option>
-                <option value="agent">作为 agent（上报到远端 hub）</option>
+                <option value="off">{$t("settings.sync.off")}</option>
+                <option value="lan">{$t("settings.sync.lan")}</option>
+                <option value="hub">{$t("settings.sync.hub")}</option>
+                <option value="agent">{$t("settings.sync.agent")}</option>
               </select>
             </label>
             {#if hubMode === "hub" || hubMode === "lan"}
               <label class="interval">
                 <input type="number" min="1024" max="65535" bind:value={hubPort} />
-                <span class="interval__hint">监听端口（默认 43210）</span>
+                <span class="interval__hint">{$t("settings.sync.listenPort")}</span>
               </label>
             {/if}
             {#if hubMode === "lan"}
               <p class="hint">
-                同一局域网内的实例会通过 mDNS 自动互相发现并互相同步，无需填写任何地址。
-                每台机器都会在设备页看到全部同网段设备。跨网段（不同路由器 / 办公网与家中）无法通过 mDNS 发现，
-                请改用「作为 agent」手动填写 hub 地址，或把其中一台设为 hub。
+                {$t("settings.sync.lanHint")}
               </p>
               <div class="behavior-row">
                 <div class="behavior-info">
-                  <span class="behavior-label">上报本机用量</span>
-                  <span class="behavior-hint">每 30 秒向每个已发现的同网段设备上报；本机同时也会接收它们的用量。</span>
+                  <span class="behavior-label">{$t("settings.sync.reportUsage")}</span>
+                  <span class="behavior-hint">{$t("settings.sync.reportLanHint")}</span>
                 </div>
                 <label class="toggle">
                   <input type="checkbox" bind:checked={reportOn} />
@@ -1628,18 +1663,18 @@ async function handleMinimize() {
                 </label>
               </div>
               <p class="hint">
-                首次启用时若共享密钥为空，会自动生成并保存。其它设备需填写<strong>同一密钥</strong>才能互相同步。
+                {$t("settings.sync.secretHint1")}<strong>{$t("settings.sync.sameSecret")}</strong>{$t("settings.sync.secretHint2")}
               </p>
             {/if}
             {#if hubMode === "agent"}
               <label class="interval">
                 <input type="text" placeholder="http://192.168.1.20:43210" bind:value={hubBase} />
-                <span class="interval__hint">hub 地址</span>
+                <span class="interval__hint">{$t("settings.sync.hubAddress")}</span>
               </label>
               <div class="behavior-row">
                 <div class="behavior-info">
-                  <span class="behavior-label">上报本机用量</span>
-                  <span class="behavior-hint">每 30 秒向 hub 上报本机工具 token 与 Provider 数量。</span>
+                  <span class="behavior-label">{$t("settings.sync.reportUsage")}</span>
+                  <span class="behavior-hint">{$t("settings.sync.reportAgentHint")}</span>
                 </div>
                 <label class="toggle">
                   <input type="checkbox" bind:checked={reportOn} />
@@ -1651,20 +1686,20 @@ async function handleMinimize() {
               <label class="interval">
                 <input
                   type="password"
-                  placeholder="（留空则不鉴权）"
+                  placeholder={$t("settings.sync.tokenPlaceholder")}
                   bind:value={hubToken}
                 />
-                <span class="interval__hint">共享密钥 · hub 与 agent 两端须一致，Bearer 鉴权</span>
+                <span class="interval__hint">{$t("settings.sync.tokenHint")}</span>
               </label>
             {/if}
           </div>
 
           <div class="section">
-            <h3 class="section__title">用量告急通知</h3>
+            <h3 class="section__title">{$t("settings.notify.title")}</h3>
             <div class="behavior-row">
               <div class="behavior-info">
-                <span class="behavior-label">启用通知</span>
-                <span class="behavior-hint">用量跨越阈值时弹出系统通知。关闭后仅保留界面警示。</span>
+                <span class="behavior-label">{$t("settings.notify.enable")}</span>
+                <span class="behavior-hint">{$t("settings.notify.enableHint")}</span>
               </div>
               <label class="toggle">
                 <input type="checkbox" bind:checked={notifyEnabled} />
@@ -1673,7 +1708,7 @@ async function handleMinimize() {
             </div>
             <div class="threshold-grid">
               <label class="field">
-                <span class="field__label">警告阈值（%）</span>
+                <span class="field__label">{$t("settings.notify.warn")}</span>
                 <input
                   class="field__input"
                   type="number"
@@ -1683,7 +1718,7 @@ async function handleMinimize() {
                 />
               </label>
               <label class="field">
-                <span class="field__label">告急阈值（%）</span>
+                <span class="field__label">{$t("settings.notify.crit")}</span>
                 <input
                   class="field__input"
                   type="number"
@@ -1693,24 +1728,23 @@ async function handleMinimize() {
                 />
               </label>
             </div>
-            <p class="hint">设为 0 可关闭对应级别。建议告急阈值高于警告阈值。</p>
+            <p class="hint">{$t("settings.notify.hint")}</p>
           </div>
         </div>
 
       {:else if tab === "network"}
         <div class="pane">
-          <h2 class="pane__title">网络</h2>
+          <h2 class="pane__title">{$t("settings.nav.network")}</h2>
 
           <div class="section">
-            <h3 class="section__title">代理</h3>
+            <h3 class="section__title">{$t("settings.proxy.title")}</h3>
             <p class="hint">
-              为所有 Provider 请求与多端同步配置 HTTP / SOCKS5 代理。保存后生效，已连接的账号会自动重建。
-              留空则不显式设置代理（跟随系统环境变量）。
+              {$t("settings.proxy.hint")}
             </p>
             <div class="behavior-row">
               <div class="behavior-info">
-                <span class="behavior-label">启用代理</span>
-                <span class="behavior-hint">支持 http:// 与 socks5://，用户名密码可写在 URL 中。</span>
+                <span class="behavior-label">{$t("settings.proxy.enable")}</span>
+                <span class="behavior-hint">{$t("settings.proxy.enableHint")}</span>
               </div>
               <label class="toggle">
                 <input type="checkbox" bind:checked={proxyEnabled} />
@@ -1721,34 +1755,30 @@ async function handleMinimize() {
               <label class="interval">
                 <input
                   type="text"
-                  placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+                  placeholder={$t("settings.proxy.urlPlaceholder")}
                   bind:value={proxyUrl}
                 />
-                <span class="interval__hint">代理地址</span>
+                <span class="interval__hint">{$t("settings.proxy.address")}</span>
               </label>
               <div class="account__actions">
                 <button class="btn btn--ghost" disabled={proxyTesting || proxyUrl.trim().length === 0} onclick={() => handleTestProxy()}>
-                  {proxyTesting ? "测试中…" : "测试连接"}
+                  {proxyTesting ? $t("settings.common.testing") : $t("settings.common.testConnection")}
                 </button>
               </div>
               {#if proxyResult}
                 <div class="account__test {proxyResult.ok ? "test-ok" : "test-fail"}">
                   {proxyResult.ok
-                    ? `✓ 连接成功（HTTP ${proxyResult.status ?? "?"}）`
-                    : `✗ ${proxyResult.error ?? "连接失败"}`}
+                    ? $t("settings.proxy.testOk", { status: proxyResult.status ?? "?" })
+                    : `✗ ${proxyResult.error ?? $t("settings.proxy.testFailDefault")}`}
                 </div>
               {/if}
             {/if}
           </div>
 
           <div class="section">
-            <h3 class="section__title">本机工具数据目录</h3>
+            <h3 class="section__title">{$t("settings.tools.title")}</h3>
             <p class="hint">
-              Claude Code / ZCode / MiniMax Code 等工具默认把数据写在用户主目录的
-              点目录下（<code>.claude</code>、<code>.zcode</code>、<code>.minimax</code>…）。
-              若你把这些目录整体搬到了别处，在这里填一个<strong>额外数据根目录</strong>即可——
-              其下的所有点目录会被自动命中，无需逐个工具填写。
-              搬迁后旧位置常残留停更的副本，程序会自动选择<strong>最近活跃</strong>的那个。
+              {$t("settings.tools.hintA")}<code>.claude</code>{$t("settings.tools.hintSep")}<code>.zcode</code>{$t("settings.tools.hintSep")}<code>.minimax</code>{$t("settings.tools.hintB")}<strong>{$t("settings.tools.hintExtraRoot")}</strong>{$t("settings.tools.hintC")}<strong>{$t("settings.tools.hintRecent")}</strong>{$t("settings.tools.hintD")}
             </p>
 
             <div class="roots-list">
@@ -1763,7 +1793,7 @@ async function handleMinimize() {
                   <button
                     type="button"
                     class="btn btn--ghost"
-                    aria-label="删除该根目录"
+                    aria-label={$t("settings.tools.removeRoot")}
                     onclick={() => toolDataRoots = toolDataRoots.filter((_, j) => j !== i)}
                   >×</button>
                 </div>
@@ -1773,18 +1803,18 @@ async function handleMinimize() {
               <button
                 class="btn btn--ghost"
                 onclick={() => toolDataRoots = [...toolDataRoots, ""]}
-              >＋ 添加根目录</button>
+              >{$t("settings.tools.addRoot")}</button>
             </div>
 
-            <h3 class="section__title" style="margin-top: 14px;">单工具精确覆盖</h3>
-            <p class="hint">仅当上面的根目录规则不适用时使用，直接指定某个工具的数据目录。</p>
+            <h3 class="section__title" style="margin-top: 14px;">{$t("settings.tools.perTool")}</h3>
+            <p class="hint">{$t("settings.tools.perToolHint")}</p>
             {#each TOOL_DATA_DIR_KEYS as key (key)}
               <label class="field">
-                <span class="field__label">{TOOL_DATA_LABELS[key]}</span>
+                <span class="field__label">{$t(TOOL_DATA_LABELS[key])}</span>
                 <input
                   class="field__input"
                   type="text"
-                  placeholder="留空 = 使用默认位置"
+                  placeholder={$t("settings.tools.perToolPlaceholder")}
                   value={toolDataDirs[key] ?? ""}
                   oninput={(e) => toolDataDirs = { ...toolDataDirs, [key]: e.currentTarget.value }}
                 />
@@ -1800,59 +1830,59 @@ async function handleMinimize() {
             <div class="rt-card__hd">
               <h2 class="rt-card__title">TokenRouter</h2>
               {#if routerStatus?.health.bind_error}
-                <span class="line-badge line-badge--bad"><i class="rt-dot rt-dot--err"></i>端口异常</span>
+                <span class="line-badge line-badge--bad"><i class="rt-dot rt-dot--err"></i>{$t("settings.router.portError")}</span>
               {:else if routerCfg.enabled && routerStatus?.health.listening}
-                <span class="line-badge line-badge--ok"><i class="rt-dot rt-dot--live"></i>服务中</span>
+                <span class="line-badge line-badge--ok"><i class="rt-dot rt-dot--live"></i>{$t("settings.router.serving")}</span>
               {:else if routerCfg.enabled}
-                <span class="line-badge"><i class="rt-dot"></i>已启用</span>
+                <span class="line-badge"><i class="rt-dot"></i>{$t("settings.common.enabled")}</span>
               {:else}
-                <span class="line-badge"><i class="rt-dot"></i>已停用</span>
+                <span class="line-badge"><i class="rt-dot"></i>{$t("settings.common.disabled")}</span>
               {/if}
               <span class="spacer"></span>
-              <label class="rt-switch" title="总开关：停用后工具的请求会收到明确错误">
+              <label class="rt-switch" title={$t("settings.router.masterSwitchTitle")}>
                 <input type="checkbox" bind:checked={routerCfg.enabled} />
                 <span class="rt-switch__track"><span class="rt-switch__thumb"></span></span>
               </label>
             </div>
-            <p class="rt-desc">本机 API 代理：工具指向下面的地址，线路配额告急自动切换，长任务不中断</p>
+            <p class="rt-desc">{$t("settings.router.desc")}</p>
             <div class="rt-addr-row">
               <code class="rt-addr">http://127.0.0.1:{routerCfg.port}</code>
               <button type="button" class="btn btn--ghost" onclick={copyRouterUrl}>
-                {routerUrlCopied ? "已复制 ✓" : "复制地址"}
+                {routerUrlCopied ? $t("settings.router.copied") : $t("settings.router.copyAddress")}
               </button>
-              <span class="rt-hint">填到工具的「API 地址」（带不带 /v1 均可）</span>
+              <span class="rt-hint">{$t("settings.router.addrHint")}</span>
               <span class="spacer"></span>
               <button type="button" class="rt-link" onclick={() => (svcOpen = !svcOpen)}>
-                {svcOpen ? "收起服务设置 ▲" : "服务设置 ▾"}
+                {svcOpen ? $t("settings.router.svcCollapse") : $t("settings.router.svcExpand")}
               </button>
             </div>
 
             {#if svcOpen}
               <div class="rt-sect rt-sect--in">
-                <h3 class="rt-sect__title">服务设置 <span class="rt-sect__sub">多数情况不用改</span></h3>
+                <h3 class="rt-sect__title">{$t("settings.router.svcTitle")} <span class="rt-sect__sub">{$t("settings.router.svcSub")}</span></h3>
                 <div class="rt-grid">
                   <label class="rt-field">
-                    <span class="rt-label">主动预警阈值（最小窗口剩余 %，0 = 关闭）</span>
+                    <span class="rt-label">{$t("settings.router.proactiveLabel")}</span>
                     <input class="rt-input" type="number" min="0" max="95" bind:value={routerCfg.proactive_threshold_percent} />
                   </label>
                   <label class="rt-field">
-                    <span class="rt-label">配额错误冷却（秒，尊重上游 Retry-After）</span>
+                    <span class="rt-label">{$t("settings.router.cooldownLabel")}</span>
                     <input class="rt-input" type="number" min="5" max="86400" bind:value={routerCfg.error_cooldown_secs} />
                   </label>
                   <label class="rt-field">
-                    <span class="rt-label">连接异常熔断（连续 N 次）</span>
+                    <span class="rt-label">{$t("settings.router.breakerLabel")}</span>
                     <input class="rt-input" type="number" min="1" max="20" bind:value={routerCfg.conn_breaker_count} />
                   </label>
                   <label class="rt-field">
-                    <span class="rt-label">切回探视起始间隔（秒，×2 退避）</span>
+                    <span class="rt-label">{$t("settings.router.probeStartLabel")}</span>
                     <input class="rt-input" type="number" min="10" max="3600" bind:value={routerCfg.probe_start_secs} />
                   </label>
                   <label class="rt-field">
-                    <span class="rt-label">切回探视最大次数（超过后等窗口重置）</span>
+                    <span class="rt-label">{$t("settings.router.probeMaxLabel")}</span>
                     <input class="rt-input" type="number" min="1" max="20" bind:value={routerCfg.probe_max_attempts} />
                   </label>
                   <label class="rt-field">
-                    <span class="rt-label">端口</span>
+                    <span class="rt-label">{$t("settings.router.portLabel")}</span>
                     <input class="rt-input" type="number" min="1" max="65535" bind:value={routerCfg.port} />
                   </label>
                 </div>
@@ -1864,7 +1894,7 @@ async function handleMinimize() {
                     <div class="rt-gauge__zone rt-gauge__zone--hi" style="width:{100 - routerCfg.proactive_threshold_percent}%"></div>
                   </div>
                   <div class="rt-gauge__line" style="left:{routerCfg.proactive_threshold_percent}%">
-                    <span>切走线 {routerCfg.proactive_threshold_percent}%</span>
+                    <span>{$t("settings.router.gaugeSwitchAt", { n: routerCfg.proactive_threshold_percent })}</span>
                   </div>
                   {#if gaugeRemaining !== null}
                     <div class="rt-gauge__bal" style="left:{gaugeRemaining}%"></div>
@@ -1877,20 +1907,17 @@ async function handleMinimize() {
                     step="1"
                     value={routerCfg.proactive_threshold_percent}
                     oninput={onGaugeInput}
-                    aria-label="主动预警阈值（最小窗口剩余 %）"
+                    aria-label={$t("settings.router.proactiveAria")}
                   />
                 </div>
                 <div class="rt-gauge__scale"><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
                 <div class="rt-gauge__state" class:rt-gauge__state--warn={gaugeRemaining !== null && gaugeRemaining <= routerCfg.proactive_threshold_percent}>
                   {#if gaugeRemaining === null}
-                    当前承载流量的线路<strong>没有可用的配额刻度</strong>（provider 不报窗口，或未设额度上限）——
-                    主动预警对它不生效，将完全依赖限流错误与硬墙兜底切换。
+                    {$t("settings.router.gaugeNoDataA")}<strong>{$t("settings.router.gaugeNoDataStrong")}</strong>{$t("settings.router.gaugeNoDataB")}
                   {:else if gaugeRemaining <= routerCfg.proactive_threshold_percent}
-                    当前承载流量的线路最小窗口还剩 <strong>{Math.round(gaugeRemaining)}%</strong>，
-                    已低于切走线 <strong>{routerCfg.proactive_threshold_percent}%</strong>，新流量已导向备用线路。
+                    {$t("settings.router.gaugeRemainA")} <strong>{Math.round(gaugeRemaining)}%</strong>{$t("settings.router.gaugeBelowB")} <strong>{routerCfg.proactive_threshold_percent}%</strong>{$t("settings.router.gaugeBelowC")}
                   {:else}
-                    当前承载流量的线路最小窗口还剩 <strong>{Math.round(gaugeRemaining)}%</strong>，
-                    距离切走线还有 <strong>{Math.round(gaugeRemaining - routerCfg.proactive_threshold_percent)}%</strong> 余量。
+                    {$t("settings.router.gaugeRemainA")} <strong>{Math.round(gaugeRemaining)}%</strong>{$t("settings.router.gaugeOkB")} <strong>{Math.round(gaugeRemaining - routerCfg.proactive_threshold_percent)}%</strong>{$t("settings.router.gaugeOkC")}
                   {/if}
                 </div>
 
@@ -1899,8 +1926,8 @@ async function handleMinimize() {
                   {@const pr = routerStatus.route.probe}
                   <div class="rt-probe rt-sect--in">
                     <div class="rt-probe__t">
-                      切回探视中 · 第 {pr.attempts} / {routerCfg.probe_max_attempts} 次
-                      <span class="line-badge line-badge--ok"><i class="rt-dot rt-dot--live"></i>主线路资格满足，等待真实请求确认</span>
+                      {$t("settings.router.probing", { n: pr.attempts, total: routerCfg.probe_max_attempts })}
+                      <span class="line-badge line-badge--ok"><i class="rt-dot rt-dot--live"></i>{$t("settings.router.probeQualified")}</span>
                     </div>
                     <div class="rt-probe__steps">
                       {#each Array.from({ length: routerCfg.probe_max_attempts }, (_, i) => i + 1) as n (n)}
@@ -1911,15 +1938,12 @@ async function handleMinimize() {
                         >{n < pr.attempts ? `✓ ${n}` : n}</span>
                       {/each}
                     </div>
-                    <p class="rt-hint">下一次探视：{probeInText(pr.next_probe_at)}（失败按 ×2 退避；达上限后等窗口重置）</p>
+                    <p class="rt-hint">{$t("settings.router.nextProbeA")}{probeInText(pr.next_probe_at)}{$t("settings.router.nextProbeB")}</p>
                   </div>
                 {/if}
 
                 <div class="rt-howto">
-                  <strong>四层判定：</strong>① 主动预警（可设，0 = 关闭）以最小（最短周期）在报窗口的剩余 % 为准，
-                  月总量剩 5% 但 5h 窗剩 98% 时不会误切；② 硬墙兜底（恒开）任一窗口 / 上限打到 100% → 立即不可用；
-                  ③ 被动观测（恒开）限流 / 配额错误立即换线路并冷却，连接异常原地重试、连续熔断才标记；
-                  ④ 切回 = 资格判定（无窗口打满 + 最小窗口有余量）通过后用真实请求探测，×2 退避，达上限等 reset_at。
+                  <strong>{$t("settings.router.fourLayersTitle")}</strong>{$t("settings.router.fourLayers")}
                 </div>
               </div>
             {/if}
@@ -1928,23 +1952,23 @@ async function handleMinimize() {
           <!-- ═══════ 路由链卡 ═══════ -->
           {#if !route}
             <section class="rt-card rt-empty">
-              <h2 class="rt-card__title">还没有配置路由</h2>
-              <p class="rt-desc">路由是一条「同协议线路的有序链」：链头是主线路，其余是备用。配额告急时自动换下一条，主线路恢复后探视切回。</p>
-              <button type="button" class="btn btn--primary" onclick={ensureRoute}>＋ 新建路由</button>
+              <h2 class="rt-card__title">{$t("settings.router.emptyTitle")}</h2>
+              <p class="rt-desc">{$t("settings.router.emptyDesc")}</p>
+              <button type="button" class="btn btn--primary" onclick={ensureRoute}>{$t("settings.router.createRoute")}</button>
             </section>
           {:else}
             {@const st = routerStatus?.route}
             <section class="rt-card" class:rt-card--off={!route.on}>
               <div class="rt-card__hd">
-                <input class="rt-card__name" type="text" bind:value={route.name} placeholder="路由名称" />
-                <span class="line-badge">{route.protocol === "openai" ? "OpenAI 兼容" : "Anthropic"}</span>
+                <input class="rt-card__name" type="text" bind:value={route.name} placeholder={$t("settings.router.routeName")} />
+                <span class="line-badge">{route.protocol === "openai" ? $t("settings.router.openaiCompat") : "Anthropic"}</span>
                 <span class="spacer"></span>
-                <label class="rt-switch" title="路由链开关：停用后该链的 token 请求返回明确错误（配置保留）">
+                <label class="rt-switch" title={$t("settings.router.chainSwitchTitle")}>
                   <input type="checkbox" bind:checked={route.on} />
                   <span class="rt-switch__track"><span class="rt-switch__thumb"></span></span>
                 </label>
                 <button type="button" class="rt-link" onclick={() => (chainOpen = !chainOpen)}>
-                  当前走 {route.candidates[st?.active_index ?? 0]?.model || "—"} {chainOpen ? "▼" : "▲"}
+                  {$t("settings.router.currentlyOn")} {route.candidates[st?.active_index ?? 0]?.model || "—"} {chainOpen ? "▼" : "▲"}
                 </button>
               </div>
 
@@ -1957,14 +1981,14 @@ async function handleMinimize() {
                     onclick={() => (chainOpen = true)}
                   >
                     <i class="rt-dot" style="background:{remainingColor(st?.candidates[i]?.remaining_percent)}"></i>
-                    {cand.model || "（未设模型）"}
+                    {cand.model || $t("settings.router.noModel")}
                   </button>
                   {#if i < route.candidates.length - 1}<span class="rt-arrow">→</span>{/if}
                 {/each}
                 <span class="spacer"></span>
-                <code class="rt-key" title={route.token}>{route.token ? `${route.token.slice(0, 7)}…${route.token.slice(-6)}` : "待生成"}</code>
+                <code class="rt-key" title={route.token}>{route.token ? `${route.token.slice(0, 7)}…${route.token.slice(-6)}` : $t("settings.router.pendingToken")}</code>
                 <button type="button" class="btn btn--ghost btn--sm" onclick={() => copyRouteToken(route.token)} disabled={!route.token}>
-                  {tokenCopied ? "已复制 ✓" : "复制"}
+                  {tokenCopied ? $t("settings.router.copied") : $t("settings.router.copy")}
                 </button>
               </div>
 
@@ -1973,29 +1997,29 @@ async function handleMinimize() {
                   <div class="rt-sect">
                     <div class="rt-grid">
                       <label class="rt-field">
-                        <span class="rt-label">路由名称</span>
+                        <span class="rt-label">{$t("settings.router.routeName")}</span>
                         <input class="rt-input" type="text" bind:value={route.name} />
                       </label>
                       <label class="rt-field">
-                        <span class="rt-label" title="OpenAI 兼容：/v1/chat/completions 与 /v1/responses（Codex）皆可；Anthropic：/v1/messages。线路上游需同协议">协议（线路上游需同协议）</span>
+                        <span class="rt-label" title={$t("settings.router.protocolTitle")}>{$t("settings.router.protocolLabel")}</span>
                         <select class="rt-input" bind:value={route.protocol}>
-                          <option value="openai">OpenAI 兼容</option>
+                          <option value="openai">{$t("settings.router.openaiCompat")}</option>
                           <option value="anthropic">Anthropic</option>
                         </select>
                       </label>
                     </div>
                     <label class="rt-field" style="margin-top:12px">
-                      <span class="rt-label">API Key（保存时自动生成；工具端以此作 API 密钥）</span>
+                      <span class="rt-label">{$t("settings.router.apiKeyLabel")}</span>
                       <span class="rt-url-row">
-                        <input class="rt-input rt-mono" type="text" value={route.token || "（保存后自动生成）"} readonly />
-                        <button type="button" class="btn btn--ghost" onclick={() => copyRouteToken(route.token)} disabled={!route.token}>复制</button>
+                        <input class="rt-input rt-mono" type="text" value={route.token || $t("settings.router.tokenAuto")} readonly />
+                        <button type="button" class="btn btn--ghost" onclick={() => copyRouteToken(route.token)} disabled={!route.token}>{$t("settings.router.copy")}</button>
                       </span>
                     </label>
                   </div>
 
                   <div class="rt-sect">
                     <h3 class="rt-sect__title">
-                      链路 <span class="rt-sect__sub">按顺序尝试：① 不可用时自动换 ②，主线路恢复后探视切回</span>
+                      {$t("settings.router.chainTitle")} <span class="rt-sect__sub">{$t("settings.router.chainSub")}</span>
                     </h3>
                     <div class="rt-lines" class:rt-lines--single={route.candidates.length < 2}>
                       {#each route.candidates as cand, i (i)}
@@ -2008,50 +2032,50 @@ async function handleMinimize() {
                         >
                           <span class="rt-line__num">{CIRCLES[i] ?? String(i + 1)}</span>
                           <div class="rt-line__hd">
-                            <span class="rt-line__ttl">{i === 0 ? "主线路" : `备用 ${i}`}</span>
+                            <span class="rt-line__ttl">{i === 0 ? $t("settings.router.primary") : $t("settings.router.backupN", { n: i })}</span>
                             {#if cs}
-                              <span class="line-badge {lineBadge(cs.state)}" title="剩余按最小（最短周期）在报窗口计算">
+                              <span class="line-badge {lineBadge(cs.state)}" title={$t("settings.router.remainingTitle")}>
                                 <i class="rt-dot" style="background:{remainingColor(cs.remaining_percent)}"></i>
-                                {LINE_STATE_LABELS[cs.state] ?? cs.state}{cs.remaining_percent !== undefined ? ` · 剩 ${Math.round(cs.remaining_percent)}%` : ""}
+                                {LINE_STATE_LABELS[cs.state] ? $t(LINE_STATE_LABELS[cs.state]) : cs.state}{cs.remaining_percent !== undefined ? $t("settings.router.remainPct", { n: Math.round(cs.remaining_percent) }) : ""}
                               </span>
                             {/if}
                             <span class="spacer"></span>
                             <span class="ops">
-                              <button type="button" class="rt-op" disabled={i === 0} onclick={() => moveCandidate(i, -1)} title="上移">↑</button>
-                              <button type="button" class="rt-op" disabled={i === route.candidates.length - 1} onclick={() => moveCandidate(i, 1)} title="下移">↓</button>
-                              <button type="button" class="rt-op rt-op--del" onclick={() => removeCandidate(i)} title="移除该线路">✕</button>
+                              <button type="button" class="rt-op" disabled={i === 0} onclick={() => moveCandidate(i, -1)} title={$t("settings.router.moveUp")}>↑</button>
+                              <button type="button" class="rt-op" disabled={i === route.candidates.length - 1} onclick={() => moveCandidate(i, 1)} title={$t("settings.router.moveDown")}>↓</button>
+                              <button type="button" class="rt-op rt-op--del" onclick={() => removeCandidate(i)} title={$t("settings.router.removeLine")}>✕</button>
                             </span>
                           </div>
                           <div class="rt-line__row">
                             <label class="rt-field">
-                              <span class="rt-label" title="选择已配置且有 API Key 凭据的账户；选定后自动带出上游地址">账户</span>
+                              <span class="rt-label" title={$t("settings.router.accountTitle")}>{$t("settings.router.accountLabel")}</span>
                               <select
                                 class="rt-input"
                                 value={cand.account}
                                 onchange={(e) => onCandidateAccountChanged(cand, (e.currentTarget as HTMLSelectElement).value)}
                               >
-                                <option value="">选择账户…</option>
+                                <option value="">{$t("settings.router.pickAccount")}</option>
                                 {#each routableAccounts as acct (acct.instance_id)}
                                   <option value={acct.instance_id}>
-                                    {acct.label}{authKindFor(acct.provider_kind) === "access_key_secret" ? "（需填推理 Key）" : ""}
+                                    {acct.label}{authKindFor(acct.provider_kind) === "access_key_secret" ? $t("settings.router.needsRouteKey") : ""}
                                   </option>
                                 {/each}
                               </select>
                             </label>
                             <label class="rt-field">
-                              <span class="rt-label" title="工具端模型名可任填（如 auto），实际模型由线路决定；留空 = 透传工具端原名">模型（实际由此决定，留空 = 透传）</span>
+                              <span class="rt-label" title={$t("settings.router.modelTitle")}>{$t("settings.router.modelLabel")}</span>
                               <span class="rt-model-wrap">
-                                <input class="rt-input rt-mono" type="text" bind:value={cand.model} placeholder="留空 = 透传" />
+                                <input class="rt-input rt-mono" type="text" bind:value={cand.model} placeholder={$t("settings.router.modelPlaceholder")} />
                                 <button
                                   type="button"
                                   class="rt-op"
-                                  title="从上游拉取模型列表"
+                                  title={$t("settings.router.fetchModelsTitle")}
                                   disabled={modelFetching[modelKey(cand.account, cand.base_url)] || !cand.account || !cand.base_url}
                                   onclick={() => handleFetchModels(cand, route.protocol)}
                                 >{modelFetching[modelKey(cand.account, cand.base_url)] ? "…" : "▼"}</button>
                                 {#if modelPickerFor === modelKey(cand.account, cand.base_url) && (modelOptions[modelKey(cand.account, cand.base_url)]?.length ?? 0) > 0}
                                   <span class="rt-models">
-                                    <b>从上游拉取 · {modelOptions[modelKey(cand.account, cand.base_url)].length} 个模型</b>
+                                    <b>{$t("settings.router.fetchedModels", { n: modelOptions[modelKey(cand.account, cand.base_url)].length })}</b>
                                     {#each modelOptions[modelKey(cand.account, cand.base_url)] ?? [] as m (m)}
                                       <button type="button" class:rt-models--sel={m === cand.model} onclick={() => pickModel(cand, m)}>{m}</button>
                                     {/each}
@@ -2061,11 +2085,11 @@ async function handleMinimize() {
                             </label>
                           </div>
                           <label class="rt-field">
-                            <span class="rt-label" title="选账户后自动带出该 kind 的官方地址；可改为中转站地址">上游地址（选账户自动带出，可改为中转站）</span>
+                            <span class="rt-label" title={$t("settings.router.baseUrlTitle")}>{$t("settings.router.baseUrlLabel")}</span>
                             <span class="rt-url-row">
-                              <input class="rt-input rt-mono" type="text" bind:value={cand.base_url} placeholder="选择账户后自动预填" />
+                              <input class="rt-input rt-mono" type="text" bind:value={cand.base_url} placeholder={$t("settings.router.baseUrlPlaceholder")} />
                               {#if cand.base_url === (ROUTER_BASE_PRESETS[accountKindOf(cand.account)] ?? "")}
-                                <span class="rt-tag">自动带出</span>
+                                <span class="rt-tag">{$t("settings.router.autoFilled")}</span>
                               {/if}
                             </span>
                           </label>
@@ -2076,26 +2100,26 @@ async function handleMinimize() {
                             <p class="rt-line__err" title={cs.last_error}>{cs.last_error}</p>
                           {/if}
                           {#if cs?.state === "cooldown" && cs.cooldown_until}
-                            <p class="rt-hint">冷却至 {cooldownUntilText(cs.cooldown_until)}恢复（{cs.cooldown_reason === "quota" ? "配额/限流" : cs.cooldown_reason === "auth" ? "凭据" : "连接异常熔断"}）</p>
+                            <p class="rt-hint">{$t("settings.router.cooldown", { until: cooldownUntilText(cs.cooldown_until), reason: cs.cooldown_reason === "quota" ? $t("settings.router.reasonQuota") : cs.cooldown_reason === "auth" ? $t("settings.router.reasonAuth") : $t("settings.router.reasonConn") })}</p>
                           {/if}
                           <details class="rt-cap">
                             <summary>
-                              额度上限（可选，达到即提前切换）·
+                              {$t("settings.router.capTitle")}
                               {#if cand.plan_limit_tokens_daily || cand.monthly_cost_limit}
-                                日 <b>{cand.plan_limit_tokens_daily || "未设"}</b>{cand.plan_limit_tokens_daily ? " tokens" : ""} ·
-                                月 <b>{cand.monthly_cost_limit || "未设"}</b>{cand.monthly_cost_limit ? " 金额" : ""}
+                                {$t("settings.router.daily")} <b>{cand.plan_limit_tokens_daily || $t("settings.router.unset")}</b>{cand.plan_limit_tokens_daily ? " tokens" : ""} ·
+                                {$t("settings.router.monthly")} <b>{cand.monthly_cost_limit || $t("settings.router.unset")}</b>{cand.monthly_cost_limit ? $t("settings.router.amountSuffix") : ""}
                               {:else}
-                                未设置
+                                {$t("settings.router.capUnset")}
                               {/if}
                             </summary>
                             <div class="rt-cap__body">
                               <label class="rt-field">
-                                <span class="rt-label" title="手填订阅日上限（tokens / 自然日）；used 取经本路由的实际消耗。仅对不上报配额的来源有意义">日上限（tokens / 自然日）</span>
-                                <input class="rt-input" type="number" min="0" bind:value={cand.plan_limit_tokens_daily} placeholder="未设" />
+                                <span class="rt-label" title={$t("settings.router.dailyLimitTitle")}>{$t("settings.router.dailyLimitLabel")}</span>
+                                <input class="rt-input" type="number" min="0" bind:value={cand.plan_limit_tokens_daily} placeholder={$t("settings.router.unset")} />
                               </label>
                               <label class="rt-field">
-                                <span class="rt-label" title="按量付费月消耗上限（账户币种金额，如 20 = ¥20/月）；used 取 provider 统计的月已用。仅对有金额统计的账户生效（余额差分类：DeepSeek / Kimi 等），订阅类账户设置不生效">月上限（账户币种金额）</span>
-                                <input class="rt-input" type="number" min="0" bind:value={cand.monthly_cost_limit} placeholder="如 20 = ¥20/月" />
+                                <span class="rt-label" title={$t("settings.router.monthlyLimitTitle")}>{$t("settings.router.monthlyLimitLabel")}</span>
+                                <input class="rt-input" type="number" min="0" bind:value={cand.monthly_cost_limit} placeholder={$t("settings.router.monthlyLimitPlaceholder")} />
                               </label>
                             </div>
                           </details>
@@ -2103,9 +2127,9 @@ async function handleMinimize() {
                       {/each}
                     </div>
                     <div class="rt-foot">
-                      <button type="button" class="btn btn--ghost" onclick={addCandidate}>＋ 添加备用线路</button>
+                      <button type="button" class="btn btn--ghost" onclick={addCandidate}>{$t("settings.router.addBackup")}</button>
                       <span class="spacer"></span>
-                      <span class="rt-hint">工具端模型名可任填（推荐 auto）——实际模型由线路决定；线路模型留空 = 透传工具端原名</span>
+                      <span class="rt-hint">{$t("settings.router.footHint")}</span>
                     </div>
                   </div>
                 </div>
@@ -2116,57 +2140,55 @@ async function handleMinimize() {
 
       {:else}
         <div class="pane">
-          <h2 class="pane__title">关于与诊断</h2>
+          <h2 class="pane__title">{$t("settings.nav.about")}</h2>
 
           <div class="section">
             <h3 class="section__title">
               TokenUsageMonitor {#if appVersion}<span class="about-ver">v{appVersion}</span>{/if}
             </h3>
             <p class="hint">
-              一个轻量的透明桌面 AI 用量监控面板。边栏小窗 + 热力图 + 消耗速率估算，
-              让你在开发 AI 应用时随时掌握各家的额度余量。支持 MiniMax Token
-              Plan、DeepSeek API 与火山引擎 AgentPlan。
+              {$t("settings.about.desc")}
             </p>
             <ul class="about-list">
-              <li>常驻后台：仅托盘图标与数据轮询，无弹窗打扰</li>
-              <li>支持多账户：同一来源可添加多个独立账户</li>
-              <li>凭证由 Windows 凭据管理器（DPAPI）加密保存</li>
-              <li>热力图历史数据存储于本地 SQLite</li>
-              <li>本地工具用量采集 + 多端同步（hub）</li>
+              <li>{$t("settings.about.feat1")}</li>
+              <li>{$t("settings.about.feat2")}</li>
+              <li>{$t("settings.about.feat3")}</li>
+              <li>{$t("settings.about.feat4")}</li>
+              <li>{$t("settings.about.feat5")}</li>
             </ul>
           </div>
 
           <div class="section">
-            <h3 class="section__title">项目主页与更新</h3>
+            <h3 class="section__title">{$t("settings.about.projectTitle")}</h3>
             <p class="hint">
               {#if repoUrl}
                 <button type="button" class="link-btn" onclick={handleOpenRepo}>{repoUrl}</button>
               {:else}
-                GitHub 仓库
+                {$t("settings.about.repoFallback")}
               {/if}
-              —— 提 Issue / PR 与获取新版本都在这里。
+              {$t("settings.about.repoTail")}
             </p>
             <div class="account__actions">
               <button class="btn btn--ghost" disabled={updateChecking} onclick={handleUpdateCheck}>
-                {updateChecking ? "检查中…" : "检查更新"}
+                {updateChecking ? $t("settings.about.checking") : $t("settings.about.checkUpdates")}
               </button>
             </div>
             {#if updateError}
-              <p class="hint about-update__error">检查失败：{updateError}</p>
+              <p class="hint about-update__error">{$t("settings.about.checkFailed", { err: updateError })}</p>
             {:else if updateInfo}
               {#if updateInfo.has_update}
                 <p class="hint">
-                  发现新版本 <b>{updateInfo.latest}</b>（当前 v{updateInfo.current}）。
+                  {$t("settings.about.updateFound")} <b>{updateInfo.latest}</b>{$t("settings.about.updateFoundCur", { cur: updateInfo.current })}
                   {#if updateInfo.url}
                     <button type="button" class="link-btn" onclick={() => updateInfo?.url && handleOpenUpdateUrl(updateInfo.url)}>
-                      前往 Releases 页下载
+                      {$t("settings.about.gotoReleases")}
                     </button>
                   {/if}
                 </p>
               {:else if updateInfo.latest}
-                <p class="hint">已是最新版本（v{updateInfo.current}）。</p>
+                <p class="hint">{$t("settings.about.upToDate", { cur: updateInfo.current })}</p>
               {:else}
-                <p class="hint">仓库还没有发布任何版本。</p>
+                <p class="hint">{$t("settings.about.noReleases")}</p>
               {/if}
             {/if}
             <label class="toggle">
@@ -2177,34 +2199,33 @@ async function handleMinimize() {
               />
               <span class="toggle__track"><span class="toggle__thumb"></span></span>
             </label>
-            <span class="behavior-hint">启动时自动检查更新（仅访问 api.github.com，随"保存设置"生效）</span>
+            <span class="behavior-hint">{$t("settings.about.autoCheckHint")}</span>
           </div>
 
           <div class="section">
-            <h3 class="section__title">开源致谢</h3>
-            <p class="hint">本项目建立在以下优秀开源项目之上，衷心感谢各项目与维护者的贡献：</p>
+            <h3 class="section__title">{$t("settings.about.creditsTitle")}</h3>
+            <p class="hint">{$t("settings.about.creditsHint")}</p>
             <ul class="about-list">
-              <li><b>Tauri</b> —— 桌面应用框架（Rust 后端 + Web 前端）</li>
-              <li><b>Svelte</b> —— 响应式前端框架</li>
-              <li><b>tokio</b> —— 异步运行时</li>
-              <li><b>serde</b> —— 序列化框架</li>
-              <li><b>chrono</b> —— 时间与日期处理</li>
-              <li><b>reqwest / rustls</b> —— HTTP 客户端与 TLS</li>
-              <li><b>rusqlite</b> —— SQLite 绑定</li>
-              <li><b>keyring</b> —— 基于 Windows DPAPI 的安全凭证存储</li>
+              <li><b>Tauri</b> {$t("settings.about.credTauri")}</li>
+              <li><b>Svelte</b> {$t("settings.about.credSvelte")}</li>
+              <li><b>tokio</b> {$t("settings.about.credTokio")}</li>
+              <li><b>serde</b> {$t("settings.about.credSerde")}</li>
+              <li><b>chrono</b> {$t("settings.about.credChrono")}</li>
+              <li><b>reqwest / rustls</b> {$t("settings.about.credReqwest")}</li>
+              <li><b>rusqlite</b> {$t("settings.about.credRusqlite")}</li>
+              <li><b>keyring</b> {$t("settings.about.credKeyring")}</li>
             </ul>
-            <p class="hint">用量监控与多端同步的思路借鉴自 tokscale。</p>
+            <p class="hint">{$t("settings.about.creditsTokscale")}</p>
           </div>
 
           <div class="section">
-            <h3 class="section__title">诊断</h3>
+            <h3 class="section__title">{$t("settings.about.diagnostics")}</h3>
             <p class="hint">
-              共 {forms.length} 个账户，其中
-              {forms.filter((f) => f.meta.enabled).length || 0} 个已启用。
+              {$t("settings.about.diagnosticsLine", { total: forms.length, enabled: forms.filter((f) => f.meta.enabled).length || 0 })}
             </p>
             <div class="account__actions">
               <button class="btn btn--ghost" onclick={() => forceRefresh()}>
-                手动刷新全部
+                {$t("settings.about.refreshAll")}
               </button>
             </div>
           </div>
@@ -2214,9 +2235,9 @@ async function handleMinimize() {
   </div>
 
   <footer class="settings__footer">
-    <button class="btn btn--ghost" onclick={handleClose}>保存并关闭</button>
+    <button class="btn btn--ghost" onclick={handleClose}>{$t("settings.footer.saveClose")}</button>
     <button class="btn btn--primary" disabled={!canSave || saving} onclick={handleSaveAll}>
-      {saving ? "保存中…" : savedFlash ? "已保存 ✓" : "保存设置"}
+      {saving ? $t("settings.footer.saving") : savedFlash ? $t("settings.common.savedCheck") : $t("settings.footer.saveSettings")}
     </button>
   </footer>
 </main>

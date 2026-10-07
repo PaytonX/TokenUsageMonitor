@@ -12,7 +12,7 @@ use crate::router::decision::{
     self, DecisionPolicy, ProbeState, ResolvedCandidate, UpstreamOutcome,
 };
 use crate::router::forward;
-use crate::router::{ledger_source, RouterCore, RouterSwitchEvent};
+use crate::router::{ledger_source, RouterCore, RouterSwitchEvent, ROUTER_LEDGER_KIND};
 use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -255,11 +255,17 @@ async fn route_request(
         let api_key = api_keys[idx].clone().unwrap_or_default();
 
         // 候选未指定模型（空串）= 透传工具的原始模型名；指定了才重写。
-        let body_bytes = if cand.model.is_empty() {
-            body.to_vec()
+        // `effective_model` 是**实际打到上游的模型名**：指定了就用 cand.model，
+        // 透传就从 body 里取工具请求的模型名。记账必须记它——只记 cand.model 会把
+        // 透传流量误标成「未知模型」。
+        let (body_bytes, effective_model) = if cand.model.is_empty() {
+            (
+                body.to_vec(),
+                forward::request_model(&body).unwrap_or_default(),
+            )
         } else {
             match forward::rewrite_model_field(&body, &cand.model) {
-                Ok(rewritten) => rewritten,
+                Ok(rewritten) => (rewritten, cand.model.clone()),
                 Err(e) => {
                     return protocol_error(
                         protocol,
@@ -320,7 +326,16 @@ async fn route_request(
                         clear_probe(&core, route).await;
                     }
                 }
-                return forward_response(&core, resp, protocol, cand, endpoint, accounting).await;
+                return forward_response(
+                    &core,
+                    resp,
+                    protocol,
+                    cand,
+                    &effective_model,
+                    endpoint,
+                    accounting,
+                )
+                .await;
             }
         }
     }
@@ -381,7 +396,16 @@ async fn proxy_models(State(core): State<Arc<RouterCore>>, headers: HeaderMap) -
             .await;
         match send {
             Ok(resp) => {
-                return forward_response(&core, resp, RouterProtocol::OpenAi, cand, Endpoint::OpenAiChat, false).await;
+                return forward_response(
+                    &core,
+                    resp,
+                    RouterProtocol::OpenAi,
+                    cand,
+                    &cand.model,
+                    Endpoint::OpenAiChat,
+                    false,
+                )
+                .await;
             }
             Err(_) => continue,
         }
@@ -543,32 +567,28 @@ async fn mark_active(core: &Arc<RouterCore>, route: &RouteConfig, idx: usize) {
         },
     );
     if reason != "initial" {
-        let reason_text = if reason == "failover" {
-            "主线路配额受限，已自动切换"
-        } else {
-            "主线路已恢复，切回主线路"
-        };
-        notify::deliver(
-            app,
-            "TokenRouter 已切换",
-            &format!(
-                "{}：{} → {}（{}）",
-                route.name,
-                from.as_deref().unwrap_or("—"),
-                to,
-                reason_text
-            ),
+        // 文案语言按当前设置解析；读不到应用状态（测试桩）时按默认中文。
+        let lang = crate::ipc::current_lang(app);
+        let (title, body) = crate::i18n::router_switch_notify(
+            lang,
+            &route.name,
+            from.as_deref().unwrap_or("—"),
+            &to,
+            reason,
         );
+        notify::deliver(app, &title, &body);
     }
 }
 
 /// 转发上游响应。accounting=true 时旁路提取 usage 记账（SSE 走流式扫描，
-/// 普通 JSON 读全量后提取）。
+/// 普通 JSON 读全量后提取）。`model` 是本次请求**实际打到上游的模型名**
+/// （透传候选传工具请求里的原始模型名），记进账本供按模型归因。
 async fn forward_response(
     core: &Arc<RouterCore>,
     upstream: reqwest::Response,
     protocol: RouterProtocol,
     cand: &CandidateConfig,
+    model: &str,
     endpoint: Endpoint,
     accounting: bool,
 ) -> Response {
@@ -597,14 +617,17 @@ async fn forward_response(
         .unwrap_or(false);
     if is_sse {
         let storage = core.storage.clone();
+        // `model` 是借用，闭包是 move 且要活过响应流——先落成 owned 副本。
+        let model = model.to_string();
         let stream = forward::ScanStream::new(
             upstream.bytes_stream(),
             shape.expect("SSE only on accounting endpoints"),
             Box::new(move |input, cache_read, output| {
                 let _ = storage.accumulate_usage_daily(
+                    ROUTER_LEDGER_KIND,
                     &source,
                     chrono::Local::now().date_naive(),
-                    "",
+                    &model,
                     input,
                     cache_read,
                     output,
@@ -627,9 +650,10 @@ async fn forward_response(
                     forward::extract_usage_json(shape.expect("json accounting endpoint"), &v)
                 {
                     let _ = core.storage.accumulate_usage_daily(
+                        ROUTER_LEDGER_KIND,
                         &source,
                         chrono::Local::now().date_naive(),
-                        "",
+                        model,
                         input,
                         cache_read,
                         output,

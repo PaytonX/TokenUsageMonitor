@@ -13,6 +13,8 @@
  * nudge, not a stopwatch.
  */
 
+import { tFor, type Locale } from "./i18n/dicts";
+
 export type FreshnessTone = "fresh" | "recent" | "stale" | "expired";
 
 /** Floor on the period used for bucketing, so a misconfigured 1s interval
@@ -29,14 +31,16 @@ export function freshnessTone(ageMs: number, intervalSec: number): FreshnessTone
 }
 
 /** Human-readable age. Kept separate from the tone so the wording stays in one
- *  place. Negative ages (clock skew, restored session) read as "just now". */
-export function freshnessLabel(ageMs: number): string {
+ *  place. Negative ages (clock skew, restored session) read as "just now".
+ *  `locale` 由调用方传入（响应式：组件里写 $locale，语言切换后重算）；
+ *  缺省中文，供纯逻辑调用方兜底。 */
+export function freshnessLabel(ageMs: number, locale: Locale = "zh-CN"): string {
   const s = Math.max(0, Math.floor(ageMs / 1000));
-  if (s < 10) return "刚刚";
-  if (s < 60) return `${s} 秒前`;
+  if (s < 10) return tFor(locale, "freshness.justNow");
+  if (s < 60) return tFor(locale, "freshness.secondsAgo", { n: s });
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m} 分钟前`;
+  if (m < 60) return tFor(locale, "freshness.minutesAgo", { n: m });
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h} 小时前`;
-  return `${Math.floor(h / 24)} 天前`;
+  if (h < 24) return tFor(locale, "freshness.hoursAgo", { n: h });
+  return tFor(locale, "freshness.daysAgo", { n: Math.floor(h / 24) });
 }

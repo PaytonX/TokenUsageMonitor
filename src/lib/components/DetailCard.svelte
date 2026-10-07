@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getUsageHistory, forceRefresh } from "../api";
+  import { t, locale } from "../i18n/store";
   import {
     displayCurrency,
     estimateCostUsd,
@@ -42,11 +43,14 @@
     error = null,
   }: Props = $props();
 
+  // 窗口名 → i18n 键。five_hour / daily / monthly 的中文与 settings.ring.*
+  // 完全一致，直接复用；weekly 这里是「本周窗口」（settings.ring.weekly 是
+  // 「周用量窗口」），单独给 detail.windowNames.weekly。模板经 $t 渲染。
   const WINDOW_LABELS: Record<WindowKey, string> = {
-    five_hour: "5 小时窗口",
-    daily: "当日窗口",
-    weekly: "本周窗口",
-    monthly: "月度窗口",
+    five_hour: "settings.ring.fiveHour",
+    daily: "settings.ring.daily",
+    weekly: "detail.windowNames.weekly",
+    monthly: "settings.ring.monthly",
   };
 
   // Per-account accent → override CSS vars on the detail root.
@@ -82,7 +86,7 @@
   let resetLabel = $derived.by(() => {
     const at = critical?.window.reset_at;
     if (!at) return "—";
-    return new Date(at).toLocaleString("zh-CN", {
+    return new Date(at).toLocaleString($locale === "en" ? "en-US" : "zh-CN", {
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
@@ -99,10 +103,10 @@
 
   let refreshedLabel = $derived.by(() => {
     const secs = Math.max(0, Math.floor((nowTs - lastRefreshAt) / 1000));
-    if (secs < 60) return `${secs}s 前`;
+    if (secs < 60) return $t("detail.agoSeconds", { n: secs });
     const mins = Math.floor(secs / 60);
-    if (mins < 60) return `${mins}m 前`;
-    return `${Math.floor(mins / 60)}h 前`;
+    if (mins < 60) return $t("detail.agoMinutes", { n: mins });
+    return $t("detail.agoHours", { n: Math.floor(mins / 60) });
   });
 
   // --- 近 7 日迷你柱状：统一账本口径 ---
@@ -127,7 +131,7 @@
     const series = ledgerSeriesForKind(kind, providerId);
     const seq = ++weekSeq;
     if (!series) {
-      noDailyNote = "该 Provider 无按日用量数据，无法按天查看";
+      noDailyNote = $t("detail.noDailyLedger");
       weekCells = [];
       return;
     }
@@ -141,7 +145,7 @@
             (r) => r.kind === "provider" && r.source === series.providerId,
           );
           if (picked.length === 0) {
-            noDailyNote = "该账户尚无服务端日账数据";
+            noDailyNote = $t("detail.noServerDailyLedger");
             weekCells = [];
             return;
           }
@@ -163,7 +167,7 @@
         const key = series.providerKey;
         const appears = [...map.values()].some((d) => (d.byProvider[key] ?? 0) > 0);
         if (!appears) {
-          noDailyNote = "近 90 天账本中没有该 Provider 的用量记录";
+          noDailyNote = $t("detail.noUsageIn90d");
           weekCells = [];
           return;
         }
@@ -217,16 +221,18 @@
 
   // Quota pool (额度池): every quota'd window with its used/quota amounts +
   // the used/remaining fraction depending on `countdown`.
+  // label 存的是 i18n 键（5 小时/周用量复用 card.*，其余用 detail.poolNames.*），
+  // 模板里经 $t 渲染。
   let quotaRows = $derived.by(() => {
     const wins: { label: string; win: WindowUsage }[] = [];
     const push = (key: WindowKey, label: string) => {
       const w = snapshot.windows[key];
       if (w && w.quota > 0) wins.push({ label, win: w });
     };
-    push("five_hour", "5 小时");
-    push("daily", "当日");
-    push("weekly", "周用量");
-    push("monthly", "月度");
+    push("five_hour", "card.fiveHour");
+    push("daily", "detail.poolNames.daily");
+    push("weekly", "card.weeklyUsage");
+    push("monthly", "detail.poolNames.monthly");
     return wins.map(({ label, win }) => {
       const pct = percent(win);
       return {
@@ -258,24 +264,24 @@
       <span class="detail__title">{snapshot.provider_display_name}</span>
     </span>
     <span class="detail__window">
-      {critical ? WINDOW_LABELS[critical.key] : "暂无窗口"}
+      {critical ? $t(WINDOW_LABELS[critical.key]) : $t("detail.noWindow")}
     </span>
   </div>
 
   {#if quotaRows.length > 0}
     <div class="detail__pool">
-      <span class="detail__pool-label">额度池</span>
+      <span class="detail__pool-label">{$t("detail.poolLabel")}</span>
       {#each quotaRows as row (row.label)}
         <div class="detail__pool-row">
-          <span class="detail__pool-name">{row.label}</span>
+          <span class="detail__pool-name">{$t(row.label)}</span>
           <span class="detail__pool-amount">{row.amount}</span>
           <span class="detail__pool-pct">{row.pctLabel}</span>
         </div>
       {/each}
       {#if critical?.window.reset_at}
         <div class="detail__pool-row">
-          <span class="detail__pool-name">重置</span>
-          <span class="detail__pool-amount">下一窗口</span>
+          <span class="detail__pool-name">{$t("countdown.reset")}</span>
+          <span class="detail__pool-amount">{$t("detail.nextWindow")}</span>
           <span class="detail__pool-pct">{resetLabel}</span>
         </div>
       {/if}
@@ -284,28 +290,28 @@
 
   <dl class="detail__rows">
     {#if costLabel}
-      <dt>估算成本</dt>
+      <dt>{$t("detail.estimatedCost")}</dt>
       <dd>
         <span class="detail__cost">{costLabel}</span>
-        <span class="detail__tag">估算</span>
+        <span class="detail__tag">{$t("detail.estimatedTag")}</span>
       </dd>
     {/if}
-    <dt>燃烧率</dt>
+    <dt>{$t("detail.burnRate")}</dt>
     <dd>{burnLabel}</dd>
-    <dt>预计耗尽</dt>
+    <dt>{$t("detail.eta")}</dt>
     <dd>{etaLabel}</dd>
-    <dt>当前窗口重置</dt>
+    <dt>{$t("detail.currentReset")}</dt>
     <dd>{resetLabel}</dd>
-    <dt>上次刷新</dt>
+    <dt>{$t("detail.lastRefresh")}</dt>
     <dd>{refreshedLabel}</dd>
     {#if error}
-      <dt class="detail__err-label">诊断</dt>
+      <dt class="detail__err-label">{$t("detail.diagnostics")}</dt>
       <dd class="detail__err">{error}</dd>
     {/if}
   </dl>
 
   <div class="detail__chart">
-    <span class="detail__chart-label">近 7 日</span>
+    <span class="detail__chart-label">{$t("detail.last7Days")}</span>
     {#if noDailyNote}
       <p class="detail__chart-note">{noDailyNote}</p>
     {/if}
@@ -327,8 +333,8 @@
       type="button"
       class="detail__btn"
       onclick={() => void forceRefresh(snapshot.provider_id)}
-      title="立即刷新该账户"
-    >↻ 刷新该账户</button>
+      title={$t("detail.refreshThisTitle")}
+    >↻ {$t("detail.refreshThis")}</button>
   </div>
 </div>
 

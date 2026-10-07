@@ -2,6 +2,7 @@
   // 药丸 / 下拉自适应选择器：条目 ≤3 时用胶囊按钮铺开；>3 时改原生下拉，
   // 避免多个选中项挤压面板空间。用于模型、工具、Provider 等选择。
   import { hexToRgb } from "../types";
+  import { t } from "../i18n/store";
   import ColorSwatch from "./atoms/ColorSwatch.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
 
@@ -21,14 +22,15 @@
     items,
     value,
     onPick,
-    label = "选择",
+    label,
     dotFor,
     brandFor,
   }: {
     items: ChoiceItem[];
     value: string | null;
     onPick: (id: string) => void;
-    /** 可选：读屏标签（aria-label），两种形态（药丸/下拉）共用。 */
+    /** 可选：读屏标签（aria-label），两种形态（药丸/下拉）共用；
+     *  缺省取词典 pills.select（"选择"）。 */
     label?: string;
     /** 可选：为每个条目渲染一个小圆点（如 Provider 强调色）。 */
     dotFor?: (id: string) => string | undefined;
@@ -56,13 +58,13 @@
 </script>
 
 {#if useSelect}
-  <select class="ps" value={value ?? ""} onchange={onSel} aria-label={label}>
+  <select class="ps" value={value ?? ""} onchange={onSel} aria-label={label ?? $t("pills.select")}>
     {#each items as it (it.id)}
       <option value={it.id}>{it.label}</option>
     {/each}
   </select>
 {:else}
-  <div class="ps__pills" role="group" aria-label={label}>
+  <div class="ps__pills" role="group" aria-label={label ?? $t("pills.select")}>
     {#each items as it (it.id)}
       {@const brand = brandFor?.(it.id) ?? null}
       {@const active = it.id === value}
@@ -85,7 +87,7 @@
             style={brand.color
               ? `background: rgba(${hexToRgb(brand.color) ?? "255,255,255"}, 0.22)`
               : ""}
-          >实验</span>
+          >{$t("pills.experimental")}</span>
         {/if}
       </button>
     {/each}

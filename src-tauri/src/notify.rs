@@ -4,6 +4,7 @@
 //! deliver at most one warn and one crit notification; once usage falls back
 //! below the warn threshold (window reset) the key is cleared and re-armed.
 
+use crate::i18n::{self, Lang};
 use crate::providers::{BurnInfo, UsageSnapshot};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -112,31 +113,17 @@ pub enum NotifyAction {
     },
 }
 
-fn eta_text(burn: Option<&BurnInfo>) -> String {
-    match burn.and_then(|b| b.eta_seconds) {
-        Some(secs) => {
-            let mins = secs / 60;
-            if mins >= 60 {
-                format!("约 {} 小时 {} 分钟后耗尽", mins / 60, mins % 60)
-            } else if mins >= 1 {
-                format!("约 {} 分钟后耗尽", mins)
-            } else {
-                "约 1 分钟内耗尽".to_string()
-            }
-        }
-        None => String::new(),
-    }
-}
-
 impl NotifyState {
     /// Evaluate one snapshot against warn/crit percent thresholds.
-    /// Percent values are integers 0..=100 from settings.
+    /// Percent values are integers 0..=100 from settings. `lang` picks the
+    /// notification wording (from `Settings.language`, resolved by the caller).
     pub fn evaluate(
         &mut self,
         snap: &UsageSnapshot,
         burn: Option<&BurnInfo>,
         warn_percent: u8,
         crit_percent: u8,
+        lang: Lang,
     ) -> NotifyAction {
         let Some((key, used_pct)) = Self::critical_pct(snap) else {
             return NotifyAction::None;
@@ -161,16 +148,9 @@ impl NotifyState {
         }
         self.sent.insert(map_key, level);
 
-        let title = match level {
-            Level::Warn => format!("{} 用量提醒（{}%）", snap.provider_display_name, pct_int),
-            Level::Crit => format!("{} 用量告急（{}%）", snap.provider_display_name, pct_int),
-        };
-        let mut body = format!("{} 本窗口已用 {}%", snap.provider_display_name, pct_int);
-        let eta = eta_text(burn);
-        if !eta.is_empty() {
-            body.push('，');
-            body.push_str(&eta);
-        }
+        let title = i18n::usage_title(lang, level == Level::Crit, &snap.provider_display_name, pct_int);
+        let eta_secs = burn.and_then(|b| b.eta_seconds);
+        let body = i18n::usage_body(lang, &snap.provider_display_name, pct_int, eta_secs);
 
         NotifyAction::Fire {
             provider_id: snap.provider_id.clone(),
@@ -244,13 +224,13 @@ mod notify_state_tests {
     #[test]
     fn warn_then_crit_fire_once_each_then_go_silent() {
         let mut st = NotifyState::default();
-        let a1 = st.evaluate(&snap(0.85), None, 80, 95);
+        let a1 = st.evaluate(&snap(0.85), None, 80, 95, Lang::ZhCn);
         assert!(matches!(a1, NotifyAction::Fire { level: Level::Warn, .. }));
-        let a2 = st.evaluate(&snap(0.90), None, 80, 95);
+        let a2 = st.evaluate(&snap(0.90), None, 80, 95, Lang::ZhCn);
         assert!(matches!(a2, NotifyAction::None));
-        let a3 = st.evaluate(&snap(0.96), None, 80, 95);
+        let a3 = st.evaluate(&snap(0.96), None, 80, 95, Lang::ZhCn);
         assert!(matches!(a3, NotifyAction::Fire { level: Level::Crit, .. }));
-        let a4 = st.evaluate(&snap(0.99), None, 80, 95);
+        let a4 = st.evaluate(&snap(0.99), None, 80, 95, Lang::ZhCn);
         assert!(matches!(a4, NotifyAction::None));
     }
 
@@ -258,15 +238,15 @@ mod notify_state_tests {
     fn dropping_below_warn_rearms() {
         let mut st = NotifyState::default();
         assert!(matches!(
-            st.evaluate(&snap(0.85), None, 80, 95),
+            st.evaluate(&snap(0.85), None, 80, 95, Lang::ZhCn),
             NotifyAction::Fire { level: Level::Warn, .. }
         ));
         assert!(matches!(
-            st.evaluate(&snap(0.40), None, 80, 95),
+            st.evaluate(&snap(0.40), None, 80, 95, Lang::ZhCn),
             NotifyAction::None
         ));
         assert!(matches!(
-            st.evaluate(&snap(0.82), None, 80, 95),
+            st.evaluate(&snap(0.82), None, 80, 95, Lang::ZhCn),
             NotifyAction::Fire { level: Level::Warn, .. }
         ));
     }
@@ -275,10 +255,10 @@ mod notify_state_tests {
     fn below_threshold_stays_silent_and_body_omits_eta_when_unknown() {
         let mut st = NotifyState::default();
         assert!(matches!(
-            st.evaluate(&snap(0.50), None, 80, 95),
+            st.evaluate(&snap(0.50), None, 80, 95, Lang::ZhCn),
             NotifyAction::None
         ));
-        match st.evaluate(&snap(0.85), None, 80, 95) {
+        match st.evaluate(&snap(0.85), None, 80, 95, Lang::ZhCn) {
             NotifyAction::Fire { body, .. } => assert!(!body.contains("耗尽")),
             other => panic!("expected fire, got other variant: {other:?}"),
         }

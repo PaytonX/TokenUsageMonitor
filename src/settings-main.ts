@@ -1,6 +1,10 @@
 import { installDevMock } from "./lib/dev-mock";
 installDevMock();
 
+import { initLocaleWithBackend } from "./lib/i18n/store";
+
+initLocaleWithBackend();
+
 import { mount } from "svelte";
 import "./styles/tokens.css";
 import Settings from "./Settings.svelte";

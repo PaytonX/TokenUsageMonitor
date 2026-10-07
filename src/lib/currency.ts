@@ -20,13 +20,13 @@ import type { RatesSnapshot } from "./types";
 export type Currency = "USD" | "CNY" | "TWD" | "HKD" | "JPY" | "EUR" | "GBP";
 
 export const CURRENCIES: { code: Currency; label: string }[] = [
-  { code: "CNY", label: "人民币 (CNY)" },
-  { code: "USD", label: "美元 (USD)" },
-  { code: "TWD", label: "新台币 (TWD)" },
-  { code: "HKD", label: "港币 (HKD)" },
-  { code: "JPY", label: "日元 (JPY)" },
-  { code: "EUR", label: "欧元 (EUR)" },
-  { code: "GBP", label: "英镑 (GBP)" },
+  { code: "CNY", label: "currency.CNY" },
+  { code: "USD", label: "currency.USD" },
+  { code: "TWD", label: "currency.TWD" },
+  { code: "HKD", label: "currency.HKD" },
+  { code: "JPY", label: "currency.JPY" },
+  { code: "EUR", label: "currency.EUR" },
+  { code: "GBP", label: "currency.GBP" },
 ];
 
 /** Units of the target currency per 1 USD. Starts from offline defaults and

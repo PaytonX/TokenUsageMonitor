@@ -15,6 +15,7 @@
   import ProviderLogo from "./ProviderLogo.svelte";
   import { brandColorFor, EXPERIMENTAL_KINDS } from "../brand-glyphs";
   import { freshnessLabel, freshnessTone } from "../freshness";
+  import { t, locale } from "../i18n/store";
 
   interface Props {
     snapshot: UsageSnapshot;
@@ -113,8 +114,8 @@
   let dualLegend = $derived(
     useDual
       ? hasWeeklyQuota
-        ? "内环：5 小时窗口 · 外环：周用量窗口"
-        : "内环：5 小时窗口 · 外环：月度窗口"
+        ? $t("card.dual.legend.weekly")
+        : $t("card.dual.legend.monthly")
       : "",
   );
 
@@ -139,7 +140,7 @@
   // 仅在离开 fresh 档时渲染——平时不占视觉预算，数字开始变旧才提示。
   let freshAgeMs = $derived(Math.max(0, now - lastRefreshAt));
   let freshTone = $derived(freshnessTone(freshAgeMs, pollIntervalSec));
-  let freshLabel = $derived(freshnessLabel(freshAgeMs));
+  let freshLabel = $derived(freshnessLabel(freshAgeMs, $locale));
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events:
@@ -166,7 +167,9 @@
       type="button"
       class="card__titlebtn"
       aria-expanded={expanded}
-      aria-label={`${snapshot.provider_display_name}，用量详情${active ? "（正在请求）" : ""}`}
+      aria-label={active
+        ? $t("card.aria.detailsRequesting", { name: snapshot.provider_display_name })
+        : $t("card.aria.details", { name: snapshot.provider_display_name })}
       onclick={() => {
         expanded = !expanded;
         onSelect?.();
@@ -175,13 +178,13 @@
       <span class="card__status">
         <span class="card__halo" class:card__halo--on={active} aria-hidden="true"></span>
         <span class="card__logo"><ProviderLogo {kind} size={32} accent={accent ?? null} /></span>
-        <span class="card__status-dot" title={active ? "正在请求" : undefined}>
+        <span class="card__status-dot" title={active ? $t("card.requesting") : undefined}>
           <PulseDot {active} {tone} size={8} />
         </span>
       </span>
       <span class="card__name">{snapshot.provider_display_name}</span>
       {#if isExperimental}
-        <span class="card__exp" style={expStyle} title="实验性支持：数据可能不完整或口径调整中">实验</span>
+        <span class="card__exp" style={expStyle} title={$t("card.experimental.title")}>{$t("card.experimental.badge")}</span>
       {/if}
     </button>
     {#if snapshot.plan_tier}
@@ -189,12 +192,12 @@
     {/if}
     <div class="card__head-right">
       {#if freshTone !== "fresh"}
-        <span class="card__fresh" data-tone={freshTone} title={`用量数据更新于 ${freshLabel}`}
+        <span class="card__fresh" data-tone={freshTone} title={$t("card.freshness.updatedAt", { time: freshLabel })}
           >{freshLabel}</span
         >
       {/if}
       {#if balanceLabel && !isPayAsYouGo(snapshot)}
-        <span class="card__balance" title="账户余额">{balanceLabel}</span>
+        <span class="card__balance" title={$t("card.balance")}>{balanceLabel}</span>
       {/if}
       <span class="card__ring" title={useDual ? dualLegend : undefined}>
         {#if !isPayAsYouGo(snapshot)}
@@ -221,33 +224,33 @@
            替代头部的余额与底部的月度条，避免信息重复。 -->
       {#if balanceLabel}
         <div class="card__money-row">
-          <span class="card__money-label">账户余额</span>
-          <span class="card__money-value" title="账户余额">{balanceLabel}</span>
+          <span class="card__money-label">{$t("card.balance")}</span>
+          <span class="card__money-value" title={$t("card.balance")}>{balanceLabel}</span>
         </div>
       {/if}
       {#if w.monthly}
         <div class="card__money-row">
-          <span class="card__money-label">本月消费</span>
+          <span class="card__money-label">{$t("card.monthlySpend")}</span>
           <span class="card__money-value">{formatUsage(w.monthly.used, w.monthly.unit)}</span>
         </div>
       {/if}
     {/if}
     {#if !isPayAsYouGo(snapshot) && w.five_hour}
-      <UsageBar usage={w.five_hour} label="5 小时" />
+      <UsageBar usage={w.five_hour} label={$t("card.fiveHour")} />
       {#if w.five_hour.reset_at}
         <ResetCountdown resetAt={w.five_hour.reset_at} label="5h" />
       {/if}
     {/if}
     {#if !isPayAsYouGo(snapshot) && w.weekly}
-      <UsageBar usage={w.weekly} label="周用量" />
+      <UsageBar usage={w.weekly} label={$t("card.weeklyUsage")} />
       {#if w.weekly.reset_at}
-        <ResetCountdown resetAt={w.weekly.reset_at} label="周" />
+        <ResetCountdown resetAt={w.weekly.reset_at} label={$t("card.weekShort")} />
       {/if}
     {/if}
     {#if !isPayAsYouGo(snapshot) && w.monthly}
-      <UsageBar usage={w.monthly} label={w.monthly.quota > 0 ? "月度总量" : "本月消费"} />
+      <UsageBar usage={w.monthly} label={w.monthly.quota > 0 ? $t("card.monthlyTotal") : $t("card.monthlySpend")} />
       {#if w.monthly.reset_at}
-        <ResetCountdown resetAt={w.monthly.reset_at} label="月" />
+        <ResetCountdown resetAt={w.monthly.reset_at} label={$t("card.monthShort")} />
       {/if}
     {/if}
   </div>

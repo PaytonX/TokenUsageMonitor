@@ -4,6 +4,10 @@ import { installDevMock } from "./lib/dev-mock";
 // 生产构建被 tree-shake 掉；`tauri dev` 的原生窗口下自动跳过。
 installDevMock();
 
+import { initLocaleWithBackend } from "./lib/i18n/store";
+
+initLocaleWithBackend();
+
 import { mount } from "svelte";
 import "./styles/tokens.css";
 import App from "./App.svelte";

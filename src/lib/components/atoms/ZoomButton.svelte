@@ -9,6 +9,8 @@
     <ZoomButton title="放大为独立窗口" onclick={openWindow} />
 -->
 <script lang="ts">
+  import { t } from "../../i18n/store";
+
   interface Props {
     title?: string;
     /** 默认 "⤢"。若未来需要换成 SVG 也由这一处统一。 */
@@ -18,15 +20,15 @@
     label?: string;
   }
 
-  let { title = "放大为独立窗口", glyph = "⤢", onclick, label }: Props =
+  let { title, glyph = "⤢", onclick, label }: Props =
     $props();
 </script>
 
 <button
   type="button"
   class="zoom-btn"
-  {title}
-  aria-label={label ?? title}
+  title={title ?? $t("atom.zoomTitle")}
+  aria-label={label ?? title ?? $t("atom.zoomTitle")}
   onclick={onclick}
 >⤢</button>
 

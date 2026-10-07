@@ -286,6 +286,8 @@ export interface Settings {
   countdown_mode: boolean;
   /** Currency used to render estimated costs: "auto" | "USD" | "CNY" | ... */
   display_currency: string;
+  /** UI 语言："auto"（跟随系统）| "zh-CN" | "en"。Rust 侧托盘/通知同样读取。 */
+  language: string;
   /** 额外的本机工具数据根目录；其下的点目录（.claude/.zcode/.minimax…）会被
    *  自动命中。多个候选目录并存时按新鲜度择优（见 local/roots.rs）。 */
   tool_data_roots?: string[];
@@ -519,7 +521,7 @@ const SHORT_KIND_NAMES: Record<string, string> = {
   kimi_global: "Kimi Global",
   xai: "xAI",
   codex: "Codex",
-  doubao: "豆包",
+  doubao: "mp.doubao",
   spark: "Spark",
   xiaomi_plan: "MiMo Plan",
   xiaomi_api: "MiMo API",

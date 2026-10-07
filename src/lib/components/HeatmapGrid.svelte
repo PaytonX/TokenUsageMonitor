@@ -10,6 +10,7 @@
     type PaintMode,
   } from "../calendar-linkage";
   import { providerColor, providerLabel } from "../model-provider";
+  import { t, locale } from "../i18n/store";
 
   interface Props {
     /** P2 分层高亮：要高亮的 provider key；null = 不高亮（基线行为）。 */
@@ -101,6 +102,9 @@
   let brandRgb = $derived(hexToRgbTriplet(providerColor(highlightKey ?? "minimax")));
 
   let grid = $derived.by(() => {
+    // 月标注随界面语言：zh-CN → "3月"，en → "Mar"（Intl 对两种语言都给最
+    // 自然的短格式，故月名不走词典键）。$locale 变化会触发本派生重算。
+    const monthFmt = new Intl.DateTimeFormat($locale, { month: "short" });
     const today = new Date();
     const todayKey = localDateKey(today);
     const todayDow = (today.getDay() + 6) % 7; // 0=Mon, 6=Sun
@@ -141,7 +145,7 @@
       const monday = new Date(start);
       monday.setDate(start.getDate() + wi * 7);
       const m = monday.getMonth();
-      monthLabels.push(wi > 0 && m !== prevMonth ? `${m + 1}月` : null);
+      monthLabels.push(wi > 0 && m !== prevMonth ? monthFmt.format(monday) : null);
       prevMonth = m;
     }
     const total = windowCells.reduce((s, c) => s + c.value, 0);
@@ -192,16 +196,38 @@
     });
   }
 
-  /** tooltip：当日总量 + 按 provider 构成明细。 */
+  /** tooltip：当日总量 + 按 provider 构成明细。provider 名是 i18n 键或品牌名，
+   *  经 $t 取词（非键原样返回）；预构建进 $derived，语言切换后随派生重算，
+   *  模板经 titleFor 读取保持响应式。 */
+  let tooltips = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const [date, d] of breakdown) {
+      const parts = Object.entries(d.byProvider)
+        .filter(([, v]) => v > 0)
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => `  ${$t(providerLabel(k))} ${formatUsage(v, displayUnit)}`);
+      map.set(
+        date,
+        [`${date} · ${formatUsage(d.total, displayUnit)}`, ...parts].join("\n"),
+      );
+    }
+    return map;
+  });
+
   function titleFor(day: NonNullable<Day>): string {
-    const parts = Object.entries(breakdown.get(day.date)?.byProvider ?? {})
-      .filter(([, v]) => v > 0)
-      .sort((a, b) => b[1] - a[1])
-      .map(([k, v]) => `  ${providerLabel(k)} ${formatUsage(v, displayUnit)}`);
-    return [`${day.date} · ${formatUsage(day.value, displayUnit)}`, ...parts].join("\n");
+    // breakdown 未覆盖的零值日：只有日期 + 0，无文案，无需取词。
+    return tooltips.get(day.date) ?? `${day.date} · ${formatUsage(day.value, displayUnit)}`;
   }
 
-  const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
+  const WEEKDAY_KEYS = [
+    "heat.mon",
+    "heat.tue",
+    "heat.wed",
+    "heat.thu",
+    "heat.fri",
+    "heat.sat",
+    "heat.sun",
+  ];
   let legendColors = $derived(
     [1, 2, 3, 4].map((l) =>
       paintCell({ mode: "total", level: l as 1 | 2 | 3 | 4, isToday: false, focusValue: 0, brandRgb }),
@@ -213,7 +239,7 @@
 
 <div class="heatmap">
   {#if loaded && maxValue <= 0}
-    <div class="heatmap__empty">{emptyHint ?? "该来源暂无热力图数据"}</div>
+    <div class="heatmap__empty">{emptyHint ?? $t("heat.emptyNoData")}</div>
   {:else}
     <div class="cal">
       <div class="cal__top">
@@ -226,8 +252,8 @@
       </div>
       <div class="cal__body">
         <div class="cal__weekdays">
-          {#each WEEKDAY_LABELS as wd}
-            <span class="cal__wd">{wd}</span>
+          {#each WEEKDAY_KEYS as wd}
+            <span class="cal__wd">{$t(wd)}</span>
           {/each}
         </div>
         <div class="cal__cols">
@@ -251,23 +277,23 @@
       </div>
       <div class="cal__foot">
         <div class="cal__stats">
-          <span class="cal__stat">累计 <b>{formatUsage(grid.total, displayUnit)}</b></span>
-          <span class="cal__stat">峰值 <b>{formatUsage(grid.peak, displayUnit)}</b></span>
-          <span class="cal__stat">活跃 <b>{grid.activeDays} 天</b></span>
+          <span class="cal__stat">{$t("heat.total")} <b>{formatUsage(grid.total, displayUnit)}</b></span>
+          <span class="cal__stat">{$t("heat.peak")} <b>{formatUsage(grid.peak, displayUnit)}</b></span>
+          <span class="cal__stat">{$t("heat.active")} <b>{$t("heat.nDays", { n: grid.activeDays })}</b></span>
         </div>
         <div class="heatmap__legend">
-          <span class="heatmap__legend-text">少</span>
+          <span class="heatmap__legend-text">{$t("heat.less")}</span>
           {#each legendColors as c}
             <span class="heatmap__legend-cell" style={`background:${c.bg}`}></span>
           {/each}
-          <span class="heatmap__legend-text">多</span>
+          <span class="heatmap__legend-text">{$t("heat.more")}</span>
           {#if highlightKey}
             <span class="heatmap__legend-sep"></span>
             <span
               class="heatmap__legend-cell"
               style={`background:rgba(${brandRgb.join(",")},0.66);box-shadow:inset 0 0 0 1px rgba(${brandRgb.join(",")},0.95)`}
             ></span>
-            <span class="heatmap__legend-text">{providerLabel(highlightKey)}</span>
+            <span class="heatmap__legend-text">{$t(providerLabel(highlightKey))}</span>
           {/if}
         </div>
       </div>
@@ -275,10 +301,10 @@
     {#if highlightKey && grid.stats}
       <!-- P2 追加行：总量恒定，焦点 provider 自己的口径单列一行 -->
       <div class="cal__stats cal__stats--focus">
-        <span class="cal__stat">{providerLabel(highlightKey)} 活跃 <b>{grid.stats.days} 天</b></span>
-        <span class="cal__stat">累计 <b>{formatUsage(grid.stats.sum, displayUnit)}</b></span>
-        <span class="cal__stat">峰值 <b>{formatUsage(grid.stats.peak, displayUnit)}</b></span>
-        <span class="cal__stat">占总量 <b>{grid.stats.share}%</b></span>
+        <span class="cal__stat">{$t(providerLabel(highlightKey))} {$t("heat.active")} <b>{$t("heat.nDays", { n: grid.stats.days })}</b></span>
+        <span class="cal__stat">{$t("heat.total")} <b>{formatUsage(grid.stats.sum, displayUnit)}</b></span>
+        <span class="cal__stat">{$t("heat.peak")} <b>{formatUsage(grid.stats.peak, displayUnit)}</b></span>
+        <span class="cal__stat">{$t("heat.share")} <b>{grid.stats.share}%</b></span>
       </div>
     {/if}
   {/if}

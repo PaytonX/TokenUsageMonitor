@@ -13,8 +13,9 @@ pub mod app_meta;
 pub mod dock;
 pub mod exchange;
 pub mod export;
-pub mod ipc;
 pub mod hub;
+pub mod i18n;
+pub mod ipc;
 pub mod local;
 pub mod notify;
 pub mod p2p;
@@ -233,6 +234,17 @@ async fn build_self_device(
     )
 }
 
+/// 按语言构建托盘菜单。启动（setup）与语言切换（ipc::save_settings）两处
+/// 使用；菜单项 id 恒为 "show"/"quit"，on_menu_event 分发不随语言变。
+pub fn build_tray_menu(
+    handle: &AppHandle,
+    lang: i18n::Lang,
+) -> tauri::Result<Menu<tauri::Wry>> {
+    let show_item = MenuItem::with_id(handle, "show", i18n::tray_show(lang), true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(handle, "quit", i18n::tray_quit(lang), true, None::<&str>)?;
+    Menu::with_items(handle, &[&show_item, &quit_item])
+}
+
 /// 从托盘恢复主面板：显示 + 聚焦；若此前处于 compact 胶囊态，把贴边把手
 /// 一并拉起并对齐（close-to-tray 会把把手一起隐藏，否则胶囊无法被唤醒）。
 fn show_dashboard(app: &AppHandle) {
@@ -311,6 +323,11 @@ pub fn run() {
             if let Err(e) = store.migrate_legacy_usage_ledger() {
                 eprintln!("[ledger] legacy usage migration failed: {e}");
             }
+            // 清理路由改记实际模型之前留下的旧行（kind='provider' 的 router:*）。
+            // 只跑一次，幂等；删的是从未被消费的重复台账，工具侧记账不受影响。
+            if let Err(e) = store.purge_legacy_router_ledger() {
+                eprintln!("[ledger] legacy router ledger purge failed: {e}");
+            }
 
             // 启动自愈：自启开启时按设置对账一次注册表项，失败不阻断启动。
             //
@@ -332,9 +349,9 @@ pub fn run() {
             // Releases，发现新版本走系统通知提示。失败一律静默——更新检查
             // 永远不能影响启动，也没有重试的必要（下次启动自然会再查）。
             {
-                let (check_on, proxy) = {
+                let (check_on, proxy, lang) = {
                     let s = settings_store.read_blocking();
-                    (s.check_updates_on_start, s.proxy_url.clone())
+                    (s.check_updates_on_start, s.proxy_url.clone(), i18n::resolve(&s.language))
                 };
                 if check_on {
                     let handle = app.handle().clone();
@@ -345,11 +362,12 @@ pub fn run() {
                         if let Ok(info) = app_meta::fetch_latest_release(&client).await {
                             if info.has_update {
                                 let ver = info.latest.unwrap_or_else(|| "?".into());
-                                let body = match info.url {
-                                    Some(u) => format!("最新版本 {ver}，点击查看：{u}"),
-                                    None => format!("最新版本 {ver}，可在设置 → 关于与诊断 中检查。"),
-                                };
-                                notify::deliver(&handle, "TokenUsageMonitor 有新版本", &body);
+                                let (title, body) = i18n::update_notify(
+                                    lang,
+                                    &ver,
+                                    info.url.as_deref(),
+                                );
+                                notify::deliver(&handle, &title, &body);
                             }
                         }
                     });
@@ -616,12 +634,13 @@ pub fn run() {
             let close_to_tray = Arc::new(AtomicBool::new(settings_store.close_to_tray_now()));
             let edge_snap = Arc::new(AtomicBool::new(settings_store.edge_snap_now()));
 
-            // System tray: lets the app stay resident when the dashboard window
-            // is hidden (close-to-tray) and gives a show/quit menu.
+            // 系统托盘：主面板收进托盘后仍可常驻唤起（close-to-tray），并给
+            // 出显示/退出入口。菜单文案跟随语言设置；运行中切换语言由
+            // ipc::save_settings 重建菜单。
             let tray_mgr = app.handle().clone();
-            let show_item = MenuItem::with_id(&tray_mgr, "show", "显示面板", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(&tray_mgr, "quit", "退出", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(&tray_mgr, &[&show_item, &quit_item])?;
+            let tray_lang =
+                i18n::resolve(&settings_store.read_blocking().language);
+            let tray_menu = build_tray_menu(&tray_mgr, tray_lang)?;
             let tray = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().expect("default window icon").clone())
                 .tooltip("TokenUsageMonitor")

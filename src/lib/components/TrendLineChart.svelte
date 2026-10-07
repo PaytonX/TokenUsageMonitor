@@ -4,6 +4,7 @@
   // 悬停显示十字辅助线 + 当日总量与各 provider 明细。
   import type { TrendDay } from "../trend-data";
   import ColorSwatch from "./atoms/ColorSwatch.svelte";
+  import { t } from "../i18n/store";
 
   interface Props {
     days: TrendDay[];
@@ -144,12 +145,12 @@
     bind:clientWidth={width}
     bind:clientHeight={height}
     role="img"
-    aria-label="用量趋势折线图"
+    aria-label={$t("chart.ariaLabel")}
     onpointermove={onMove}
     onpointerleave={() => (hoverIndex = null)}
   >
   {#if width > 0 && height > 0 && n > 0}
-    <svg class="tl__svg" width={width} height={height} aria-label="用量趋势折线图">
+    <svg class="tl__svg" width={width} height={height} aria-label={$t("chart.ariaLabel")}>
       {#each grid as gy (gy)}
         <line x1={PAD_L} x2={width - PAD_R} y1={gy} y2={gy} class="tl__grid"></line>
       {/each}
@@ -189,12 +190,12 @@
           : `left:${Math.max(4, hoverX + 10)}px`}
       >
         <div class="tl__tip-date">{hover.date}</div>
-        <div class="tl__tip-row"><span class="tl__tip-k">总量</span><b>{hover.total.toLocaleString()}</b></div>
+        <div class="tl__tip-row"><span class="tl__tip-k">{$t("chart.total")}</span><b>{hover.total.toLocaleString()}</b></div>
         {#each hover.parts as p (p.id)}
           <div class="tl__tip-row">
             <span class="tl__tip-k">
               <ColorSwatch color={colors[p.id] ?? "rgb(138,143,152)"} size={8} />
-              {names[p.id] ?? p.id}
+              {$t(names[p.id] ?? p.id)}
             </span>
             <b>{p.value.toLocaleString()}</b>
           </div>
@@ -202,7 +203,7 @@
       </div>
     {/if}
   {:else if width > 0}
-    <div class="tl__empty">暂无数据</div>
+    <div class="tl__empty">{$t("common.noData")}</div>
   {/if}
 </div>
 

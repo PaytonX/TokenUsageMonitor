@@ -6,16 +6,18 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getLocalTools } from "../api";
   import { TOOL_SERIES } from "../series-palette";
+  import { t } from "../i18n/store";
   import type { LocalDay, LocalToolReport, LocalToolsPayload } from "../types";
   import { hexToRgb } from "../types";
   import PillsOrSelect from "./PillsOrSelect.svelte";
   import { PanelHeader, RangePills, ColorSwatch } from "./atoms";
 
   type RangeKey = "7d" | "30d" | "90d";
+  // label 存 i18n 键（与 trend-data.ts RANGES 同约定），渲染处经 $t 取词。
   const RANGES: { key: RangeKey; label: string; days: number }[] = [
-    { key: "7d", label: "近 7 天", days: 7 },
-    { key: "30d", label: "近 30 天", days: 30 },
-    { key: "90d", label: "近 90 天", days: 90 },
+    { key: "7d", label: "tool.range7d", days: 7 },
+    { key: "30d", label: "tool.range30d", days: 30 },
+    { key: "90d", label: "tool.range90d", days: 90 },
   ];
 
   let status: "loading" | "ready" | "empty" = $state("loading");
@@ -47,7 +49,7 @@
     const daily = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
     return {
       id: "__all__",
-      name: "全部工具",
+      name: $t("tool.allTools"),
       daily,
       total_tokens: daily.reduce((s, d) => s + d.total, 0),
       session_count: tools.reduce((s, t) => s + t.session_count, 0),
@@ -135,42 +137,42 @@
 </script>
 
 <div class="tw">
-  <div class="tw__bar" onpointerdown={onDrag} role="toolbar" aria-label="窗口控制" tabindex="-1">
-    <span class="tw__bar-title">工具用量</span>
+  <div class="tw__bar" onpointerdown={onDrag} role="toolbar" aria-label={$t("tool.windowControls")} tabindex="-1">
+    <span class="tw__bar-title">{$t("tool.toolUsage")}</span>
     <div class="tw__bar-controls">
-      <button type="button" class="tw__bar-btn" aria-label="最小化" onclick={minimize} onpointerdown={(e) => e.stopPropagation()}>—</button>
-      <button type="button" class="tw__bar-btn" aria-label="最大化/还原" onclick={toggleMaximize} onpointerdown={(e) => e.stopPropagation()}>▢</button>
-      <button type="button" class="tw__bar-btn tw__bar-btn--close" aria-label="关闭" onclick={close} onpointerdown={(e) => e.stopPropagation()}>✕</button>
+      <button type="button" class="tw__bar-btn" aria-label={$t("tool.minimize")} onclick={minimize} onpointerdown={(e) => e.stopPropagation()}>—</button>
+      <button type="button" class="tw__bar-btn" aria-label={$t("tool.maximizeRestore")} onclick={toggleMaximize} onpointerdown={(e) => e.stopPropagation()}>▢</button>
+      <button type="button" class="tw__bar-btn tw__bar-btn--close" aria-label={$t("common.close")} onclick={close} onpointerdown={(e) => e.stopPropagation()}>✕</button>
     </div>
   </div>
-  <PanelHeader title="工具用量" label="工具用量窗口">
+  <PanelHeader title={$t("tool.toolUsage")} label={$t("tool.toolUsageWindow")}>
     <PillsOrSelect
-      label="选择工具"
+      label={$t("tool.selectTool")}
       items={[
-        { id: "", label: "全部工具" },
+        { id: "", label: $t("tool.allTools") },
         ...(payload?.tools ?? []).map((t) => ({ id: t.id, label: t.name })),
       ]}
       value={activeId ?? ""}
       onPick={(id) => (activeId = id === "" ? null : id)}
     />
     <RangePills
-      options={RANGES}
+      options={RANGES.map((r) => ({ key: r.key, label: $t(r.label) }))}
       value={range}
       onChange={(k) => (range = k)}
-      label="时间区间"
+      label={$t("tool.timeRange")}
     />
-    <span class="tw__stats">本区间 <b>{fmtTokens(rangeTotal)}</b></span>
+    <span class="tw__stats">{$t("tool.thisRange")} <b>{fmtTokens(rangeTotal)}</b></span>
   </PanelHeader>
 
   {#if status === "empty"}
-    <div class="tw__empty">暂无本地工具用量数据</div>
+    <div class="tw__empty">{$t("tool.noData")}</div>
   {:else if status === "loading"}
-    <div class="tw__empty">正在扫描本地工具日志…</div>
+    <div class="tw__empty">{$t("tool.scanning")}</div>
   {:else}
     <div class="tw__body" bind:clientWidth={bodyW}>
       <div class="tw__chart">
         {#each win as d, i (d.date)}
-          <div class="tw__day" title={`${d.date} · 输入 ${fmtTokens(d.input)} / 缓存 ${fmtTokens(d.cache_read)} / 输出 ${fmtTokens(d.output)}`}>
+          <div class="tw__day" title={$t("tool.dayTooltip", { date: d.date, input: fmtTokens(d.input), cache: fmtTokens(d.cache_read), output: fmtTokens(d.output) })}>
             <div class="tw__col">
               {#if d.total > 0}
                 <div class="tw__seg" style={`height:${(d.input / maxTotal) * 100}%;${bandStyle(TOOL_SERIES[0].color)}`}></div>
@@ -188,9 +190,9 @@
 
     <div class="tw__legend">
       {#each TOOL_SERIES as b (b.key)}
-        <span class="tw__key"><ColorSwatch color={b.color} size={9} />{b.label}</span>
+        <span class="tw__key"><ColorSwatch color={b.color} size={9} />{$t(b.label)}</span>
       {/each}
-      <span class="tw__legend-hint">放大本窗口可获得更粗的柱与更多细节</span>
+      <span class="tw__legend-hint">{$t("tool.legendHint")}</span>
     </div>
   {/if}
 </div>

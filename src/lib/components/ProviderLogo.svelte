@@ -5,6 +5,7 @@
     maskUrl,
     normalizeKind,
   } from "../brand-glyphs";
+  import { t } from "../i18n/store";
 
   interface Props {
     kind: string;
@@ -14,7 +15,7 @@
 
   let { kind, size = 18, accent = null }: Props = $props();
 
-  // 没有真实矢量的已知品牌仍用首字母 tile 回退。
+  // 没有真实矢量的已知品牌仍用首字母 tile 回退（拉丁字母在各语言下一致）。
   const INITIAL_OVERRIDES: Record<string, string> = {
     minimax: "M",
     deepseek: "D",
@@ -24,12 +25,16 @@
     anthropic: "A",
     qwen: "Q",
     kimi: "K",
-    doubao: "豆",
     spark: "S",
     xiaomi: "Mi",
     xai: "x",
     codex: "C",
-    local: "本",
+  };
+
+  // 字形随 UI 语言本地化的品牌：中文显示汉字 logo，英文显示拉丁字母（经 i18n 词典取词）。
+  const LOCALIZED_INITIAL_KEYS: Record<string, string> = {
+    doubao: "logo.glyphDoubao",
+    local: "logo.glyphLocal",
   };
 
   const glyph = $derived(glyphFor(kind));
@@ -37,8 +42,10 @@
   // 最后兜底色。Kimi 那种 tile 分支是多色成品（黑底 + 蓝点 + 白 K），无法被单色
   // 强调色套色，仍按自身颜色渲染。
   const brandColor = $derived(accent ?? glyph?.color ?? FALLBACK_BRAND_COLOR);
+  const localizedInitialKey = $derived(LOCALIZED_INITIAL_KEYS[normalizeKind(kind)]);
   const initial = $derived(
-    INITIAL_OVERRIDES[normalizeKind(kind)] ??
+    (localizedInitialKey ? $t(localizedInitialKey) : undefined) ??
+      INITIAL_OVERRIDES[normalizeKind(kind)] ??
       (kind.trim() ? kind.trim().charAt(0).toUpperCase() : "?"),
   );
 </script>

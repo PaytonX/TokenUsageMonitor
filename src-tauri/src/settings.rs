@@ -79,6 +79,11 @@ pub struct Settings {
     /// Currency code used to render estimated costs (USD/CNY/...). Display-only.
     #[serde(default = "default_display_currency")]
     pub display_currency: String,
+    /// UI language: "auto" (follow system), "zh-CN" or "en". Read by the
+    /// frontend (via settings-changed) and by Rust for the tray menu, window
+    /// titles and OS notifications. Display-only.
+    #[serde(default = "default_language")]
+    pub language: String,
     /// Multi-device hub role: "off" | "hub" | "agent" | "lan". "hub" listens on
     /// `hub_port` for other instances to report; "agent" reports up to
     /// `hub_base`; "lan" additionally discovers same-subnet peers via mDNS and
@@ -156,6 +161,10 @@ fn default_display_currency() -> String {
     "auto".to_string()
 }
 
+fn default_language() -> String {
+    "auto".to_string()
+}
+
 fn default_countdown_mode() -> bool {
     false
 }
@@ -205,6 +214,7 @@ impl Default for Settings {
             edge_snap: default_edge_snap(),
             countdown_mode: default_countdown_mode(),
             display_currency: default_display_currency(),
+            language: default_language(),
             hub_mode: default_hub_mode(),
             hub_port: default_hub_port(),
             hub_base: String::new(),
@@ -535,6 +545,28 @@ notify_crit_percent = 90
         assert!(default_dumped.contains("close_to_tray = true"));
         assert!(default_dumped.contains("notify_warn_percent = 80"));
         assert!(default_dumped.contains("notify_crit_percent = 95"));
+    }
+
+    #[test]
+    fn language_field_defaults_to_auto_and_round_trips() {
+        // 旧配置没有 language 键：serde(default) 给 "auto"；显式值往返不丢。
+        let raw = "\
+enabled_providers = []
+poll_interval_seconds = 30
+";
+        let parsed: Settings = toml::from_str(raw).expect("legacy config must parse");
+        assert_eq!(parsed.language, "auto");
+
+        let with_lang = "\
+enabled_providers = []
+poll_interval_seconds = 30
+language = \"en\"
+";
+        let parsed: Settings = toml::from_str(with_lang).expect("config with language");
+        assert_eq!(parsed.language, "en");
+        let dumped = toml::to_string(&parsed).expect("serialize");
+        let back: Settings = toml::from_str(&dumped).expect("reparse");
+        assert_eq!(back.language, "en");
     }
 
     #[test]

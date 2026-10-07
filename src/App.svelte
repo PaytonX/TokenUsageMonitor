@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { fly } from "svelte/transition";
+  import { get } from "svelte/store";
   import { highlightKeyForKind, ledgerSeriesForKind } from "./lib/calendar-linkage";
   import { LogicalSize } from "@tauri-apps/api/dpi";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -55,6 +56,7 @@
   import DevicePanel from "./lib/components/DevicePanel.svelte";
   import PillsOrSelect from "./lib/components/PillsOrSelect.svelte";
   import { brandColorFor, EXPERIMENTAL_KINDS } from "./lib/brand-glyphs";
+  import { t } from "./lib/i18n/store";
 
   type Mode = "dashboard" | "compact";
 
@@ -98,22 +100,22 @@
     void tabsRev;
     const hidden = new Set<PageTab>(readHiddenTabs());
     const defs: { key: PageTab; label: string }[] = [
-      { key: "trend", label: "趋势" },
-      { key: "tools", label: "工具" },
-      { key: "models", label: "模型" },
-      { key: "devices", label: "设备" },
+      { key: "trend", label: "tab.trend" },
+      { key: "tools", label: "tab.tools" },
+      { key: "models", label: "tab.models" },
+      { key: "devices", label: "tab.devices" },
     ];
     return defs
-      .filter((t) => !hidden.has(t.key))
-      .map((t) => ({ key: t.key as ViewMode, label: t.label }));
+      .filter((tab) => !hidden.has(tab.key))
+      .map((tab) => ({ key: tab.key as ViewMode, label: tab.label }));
   });
   const tabs = $derived([
-    { key: "overview", label: "总量" },
+    { key: "overview", label: "tab.overview" },
     ...extraTabs,
   ] as { key: ViewMode; label: string }[]);
   // 当前页签被禁用时回落总量，避免停留在未渲染的页签上。
   $effect(() => {
-    if (view !== "overview" && !extraTabs.some((t) => t.key === view)) {
+    if (view !== "overview" && !extraTabs.some((tab) => tab.key === view)) {
       view = "overview";
     }
   });
@@ -293,10 +295,12 @@
   let routerBindError = $derived(routerStatus?.health.bind_error ?? null);
   let routerTitle = $derived(
     routerBindError
-      ? `TokenRouter：端口异常（${routerBindError}）`
+      ? $t("app.router.bindError", { err: routerBindError })
       : routerOn
-        ? `TokenRouter：已启用${routerListening ? "，监听中" : ""}（点击停用）`
-        : "TokenRouter：已停用（点击启用）",
+        ? routerListening
+          ? $t("app.router.onListening")
+          : $t("app.router.on")
+        : $t("app.router.off"),
   );
 
   /** 快速开关：翻转 router.enabled 并整体保存，settings-changed 事件会带回新态。 */
@@ -559,7 +563,7 @@
           focusedSnapshot.provider_id,
           focusedSnapshot.provider_display_name,
         )
-      : "全部来源",
+      : "app.allSources",
   );
   // 胶囊右侧品牌色芯片：账户强调色的低饱和底 + 同色文字展示完整短名，
   // flex:1 填满分隔线到右缘（固定布局、非自适应），消除右侧空白；
@@ -576,7 +580,7 @@
     ].join("; ");
   });
   const providerFullName = $derived(
-    focusedSnapshot ? focusedSnapshot.provider_display_name : "全部来源",
+    focusedSnapshot ? focusedSnapshot.provider_display_name : $t("app.allSources"),
   );
 
   let pillDragStart: { x: number; y: number; fromControl: boolean } | null = null;
@@ -939,13 +943,14 @@
   }
 
   function formatError(err: ProviderError): string {
-    if (err.Network) return `网络错误 · ${err.Network.message}`;
-    if (err.Auth) return `鉴权失败 · ${err.Auth.message}`;
-    if (err.Parse) return `解析错误 · ${err.Parse.message}`;
-    if (err.RateLimited) return "被限流，稍后重试";
-    if (err.NotConfigured) return "未配置";
-    if (err.Internal) return `内部错误 · ${err.Internal.message}`;
-    return "未知错误";
+    const tr = get(t);
+    if (err.Network) return tr("app.error.network", { msg: err.Network.message });
+    if (err.Auth) return tr("app.error.auth", { msg: err.Auth.message });
+    if (err.Parse) return tr("app.error.parse", { msg: err.Parse.message });
+    if (err.RateLimited) return tr("app.error.rateLimited");
+    if (err.NotConfigured) return tr("app.error.notConfigured");
+    if (err.Internal) return tr("app.error.internal", { msg: err.Internal.message });
+    return tr("app.error.unknown");
   }
 
   function extractErrors(states: Record<string, ProviderState>): Record<string, string> {
@@ -975,13 +980,13 @@
         onpointerup={onPillPointerUp}
         oncontextmenu={(e) => e.preventDefault()}
         role="group"
-        aria-label="迷你用量面板"
+        aria-label={$t("app.pill.ariaLabel")}
       >
         <div class="pill__main">
           <button
             type="button"
             class="pill__restore"
-            aria-label="恢复主面板"
+            aria-label={$t("app.pill.restore")}
             onclick={(e) => {
               e.stopPropagation();
               void toggleMode();
@@ -1018,14 +1023,14 @@
             </span>
             <span class="pill__divider"></span>
             <span class="pill__badge" style={badgeStyle} title={providerFullName}
-              >{focusedName}</span
+              >{$t(focusedName)}</span
             >
           </button>
           <button
             type="button"
             class="pill__close"
-            title="关闭应用"
-            aria-label="关闭应用"
+            title={$t("app.pill.close")}
+            aria-label={$t("app.pill.close")}
             onpointerdown={(e) => e.stopPropagation()}
             onclick={(e) => {
               e.stopPropagation();
@@ -1056,7 +1061,7 @@
         {:else}
           <ProgressRing value={headerMoney ? 0 : ringArcValue} label={headerMoney ?? ringArcLabel} size={28} stroke={3} idle={snapshots.length === 0 || !!headerMoney} countdown={displayRemaining} />
         {/if}
-        <button class="shell__btn" onclick={refresh} title="立即刷新">↻</button>
+        <button class="shell__btn" onclick={refresh} title={$t("app.refreshNow")}>↻</button>
         <button
           type="button"
           class="shell__btn shell__btn--router"
@@ -1071,20 +1076,20 @@
             class:router-dot--err={!!routerBindError}
           ></span>⇄
         </button>
-        <button class="shell__btn" onclick={() => openSettings()} title="设置">⚙</button>
-        <button class="shell__btn" onclick={toggleMode} title="折叠到迷你态">⤢</button>
-        <button class="shell__btn shell__btn--close" onclick={closeApp} title="关闭">×</button>
+        <button class="shell__btn" onclick={() => openSettings()} title={$t("app.settings")}>⚙</button>
+        <button class="shell__btn" onclick={toggleMode} title={$t("app.collapseToMini")}>⤢</button>
+        <button class="shell__btn shell__btn--close" onclick={closeApp} title={$t("common.close")}>×</button>
       </div>
     </header>
 
     <div class="view-row" data-tauri-drag-region={false}>
-      {#each tabs as t (t.key)}
+      {#each tabs as tab (tab.key)}
         <button
           type="button"
           class="view-tab"
-          class:is-active={view === t.key}
-          onclick={() => (view = t.key)}
-        >{t.label}</button>
+          class:is-active={view === tab.key}
+          onclick={() => (view = tab.key)}
+        >{$t(tab.label)}</button>
       {/each}
     </div>
 
@@ -1092,7 +1097,7 @@
       {#if snapshots.length > 0}
       <div class="focus-row" data-tauri-drag-region={false}>
         <PillsOrSelect
-          items={[{ id: "all", label: "全部" }, ...snapshots.map((s) => ({ id: s.provider_id, label: s.provider_display_name }))]}
+          items={[{ id: "all", label: $t("common.all") }, ...snapshots.map((s) => ({ id: s.provider_id, label: s.provider_display_name }))]}
           value={focus}
           onPick={(id) => {
             focus = id;
@@ -1121,8 +1126,8 @@
     >
       {#if snapshots.length === 0}
         <div class="shell__empty">
-          <p>正在拉取最新用量…</p>
-          <p class="shell__hint">首次启动可能需要 1-2 秒</p>
+          <p>{$t("app.loadingUsage")}</p>
+          <p class="shell__hint">{$t("app.loadingHint")}</p>
         </div>
       {:else}
         {#each orderedSnapshots as snap (snap.provider_id)}
@@ -1184,7 +1189,7 @@
              高亮焦点，切到趋势页即生效——卡片↔日历的跨页联动由此保留。 -->
         <TrendPanel bind:highlightKey />
       {:else}
-        <div class="shell__empty"><p>暂无用量数据</p></div>
+        <div class="shell__empty"><p>{$t("app.noUsageData")}</p></div>
       {/if}
     {:else if view === "tools"}
       <ToolPanel />
@@ -1197,10 +1202,10 @@
     <footer class="shell__footer" data-tauri-drag-region>
       <span class="shell__time">{timeLabel}</span>
       <span class="shell__next">
-        <span class="shell__next-label">下次刷新</span>
+        <span class="shell__next-label">{$t("app.nextRefresh")}</span>
         <span class="shell__next-value">{nextRefreshLabel}</span>
       </span>
-      <span class="shell__count">共 {snapshots.length} 个 Provider</span>
+      <span class="shell__count">{$t("app.providerCount", { n: snapshots.length })}</span>
     </footer>
 
     {#if detailSnapshot}

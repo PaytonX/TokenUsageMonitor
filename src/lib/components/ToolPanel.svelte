@@ -7,6 +7,7 @@
   import { buildAggregateToolsPayload, stackColors, staleDetailDevices } from "../device-agg";
   import { dimOthers } from "../trend-data";
   import { TOOL_SERIES } from "../series-palette";
+  import { t, locale } from "../i18n/store";
   import type { LocalDay, LocalToolReport, LocalToolsPayload } from "../types";
   import PillsOrSelect from "./PillsOrSelect.svelte";
   import TrendLineChart from "./TrendLineChart.svelte";
@@ -22,10 +23,11 @@
   let { accent = "#4cc2ff" }: Props = $props();
 
   type RangeKey = "7d" | "30d" | "90d";
+  // label 存 i18n 键（与 trend-data.ts RANGES 同约定），渲染处经 $t 取词。
   const RANGES: { key: RangeKey; label: string; days: number }[] = [
-    { key: "7d", label: "近 7 天", days: 7 },
-    { key: "30d", label: "近 30 天", days: 30 },
-    { key: "90d", label: "近 90 天", days: 90 },
+    { key: "7d", label: "tool.range7d", days: 7 },
+    { key: "30d", label: "tool.range30d", days: 30 },
+    { key: "90d", label: "tool.range90d", days: 90 },
   ];
 
   let range: RangeKey = $state(
@@ -162,7 +164,7 @@
     const daily = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
     return {
       id: ALL_TOOLS_ID,
-      name: "全部工具",
+      name: $t("tool.allTools"),
       daily,
       total_tokens: daily.reduce((s, d) => s + d.total, 0),
       session_count: tools.reduce((s, t) => s + t.session_count, 0),
@@ -246,9 +248,9 @@
 </script>
 
 <div class="tool" data-tauri-drag-region={false}>
-  <PanelHeader title={aggMode ? "全端工具" : "本机工具"}>
+  <PanelHeader title={aggMode ? $t("tool.titleAllDevices") : $t("tool.titleLocal")}>
     <RangePills
-      options={RANGES}
+      options={RANGES.map((r) => ({ key: r.key, label: $t(r.label) }))}
       value={range}
       accent={accent}
       onChange={(k) => { range = k; writePref("tum.tool.range", k); }}
@@ -256,30 +258,30 @@
     <button
       type="button"
       class="tool__refresh"
-      title={aggMode ? "刷新多端数据" : "重新扫描本地日志"}
+      title={aggMode ? $t("tool.refreshAllDevices") : $t("tool.rescanLocalLogs")}
       onclick={() => void load(true)}
     >↻</button>
     {#if !aggMode}
-      <ZoomButton title="放大为独立窗口" onclick={() => void openToolWindow()} />
+      <ZoomButton title={$t("tool.openStandalone")} onclick={() => void openToolWindow()} />
     {/if}
   </PanelHeader>
 
   {#if aggMode && staleDevs.length > 0 && (payload?.tools.length ?? 0) === 0}
     <div class="tool__empty tool__empty--err">
-      参与设备中 {staleDevs.join("、")} 未上报分工具明细（版本过旧），无法合成全端视图
+      {$t("tool.staleDevices", { names: staleDevs.join($locale === "en" ? ", " : "、") })}
     </div>
   {/if}
 
   {#if loading && !payload}
-    <div class="tool__empty">正在扫描本地工具日志…</div>
+    <div class="tool__empty">{$t("tool.scanning")}</div>
   {:else if error && !payload}
-    <div class="tool__empty tool__empty--err">扫描失败：{error}</div>
+    <div class="tool__empty tool__empty--err">{$t("tool.scanFailed", { error })}</div>
   {:else}
     {#if stackIds.length > 0}
     <div class="tool__stack">
       <div class="tool__stack-head">
-        <span class="tool__stack-title">{aggMode ? "全端各设备" : "全部工具"}</span>
-        <span class="tool__stack-sub">按日堆叠 · tokens</span>
+        <span class="tool__stack-title">{$t(aggMode ? "tool.stackDevices" : "tool.allTools")}</span>
+        <span class="tool__stack-sub">{$t("tool.stackSub")}</span>
       </div>
       <TrendLineChart
         days={stackDays}
@@ -294,13 +296,13 @@
   {/if}
 
   {#if !view}
-    <div class="tool__empty">未发现本地工具日志（{payload?.sessions_parsed ?? 0} 会话）</div>
+    <div class="tool__empty">{$t("tool.noLogs", { n: payload?.sessions_parsed ?? 0 })}</div>
   {:else}
     {#if (payload?.tools.length ?? 0) > 0}
       <PillsOrSelect
-        label="选择工具"
+        label={$t("tool.selectTool")}
         items={[
-          { id: "", label: "全部工具" },
+          { id: "", label: $t("tool.allTools") },
           ...(payload!.tools ?? []).map((t) => ({ id: t.id, label: t.name })),
         ]}
         value={activeId ?? ""}
@@ -311,15 +313,15 @@
       />
     {/if}
     <div class="tool__stats">
-      <Stat value={fmtTokens(view.total_tokens)} label="累计 tokens" />
-      <Stat value={view.session_count} label="会话" />
-      <Stat value={view.project_count} label="项目" />
+      <Stat value={fmtTokens(view.total_tokens)} label={$t("tool.totalTokens")} />
+      <Stat value={view.session_count} label={$t("tool.sessions")} />
+      <Stat value={view.project_count} label={$t("tool.projects")} />
     </div>
 
     <div class="tool__breakdown">
-      <span class="tool__bd"><ColorSwatch color={TOOL_SERIES[0].color} size={7} />输入 {fmtTokens(rangeInput)}</span>
-      <span class="tool__bd"><ColorSwatch color={TOOL_SERIES[1].color} size={7} />缓存 {fmtTokens(rangeCache)}</span>
-      <span class="tool__bd"><ColorSwatch color={TOOL_SERIES[2].color} size={7} />输出 {fmtTokens(rangeOutput)}</span>
+      <span class="tool__bd"><ColorSwatch color={TOOL_SERIES[0].color} size={7} />{$t("series.input")} {fmtTokens(rangeInput)}</span>
+      <span class="tool__bd"><ColorSwatch color={TOOL_SERIES[1].color} size={7} />{$t("series.cache")} {fmtTokens(rangeCache)}</span>
+      <span class="tool__bd"><ColorSwatch color={TOOL_SERIES[2].color} size={7} />{$t("series.output")} {fmtTokens(rangeOutput)}</span>
     </div>
 
     <div class="tool__chart">

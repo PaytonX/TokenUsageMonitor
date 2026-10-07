@@ -18,6 +18,7 @@
   import HeatmapGrid from "./HeatmapGrid.svelte";
   import { providerColor, providerLabel } from "../model-provider";
   import { hexToRgbTriplet } from "../calendar-linkage";
+  import { t } from "../i18n/store";
 
   interface Props {
     /** 可高亮的 provider key 序列（来自趋势序列，有数据才能高亮）。 */
@@ -69,8 +70,8 @@
   role="presentation"
 >
   <div class="cal-sec__head">
-    <span class="cal-sec__title">日历热力图</span>
-    <span class="cal-sec__range">近 6 个月</span>
+    <span class="cal-sec__title">{$t("cal.title")}</span>
+    <span class="cal-sec__range">{$t("cal.range6m")}</span>
   </div>
 
   <!-- 高亮药丸条：日历恒为合并口径，高亮在**任何**口径下都成立
@@ -79,33 +80,33 @@
   {#if series.length > 0}
     {#if useSelect}
       <div class="cal-sec__pills cal-sec__pills--select">
-        <span class="cal-sec__pill-label">高亮</span>
+        <span class="cal-sec__pill-label">{$t("cal.highlight")}</span>
         <select
           class="cal-sec__sel cal-sec__sel--focus"
           value={highlightKey ?? ""}
-          aria-label="高亮 Provider"
+          aria-label={$t("cal.highlightProvider")}
           onchange={(e) => {
             const v = e.currentTarget.value;
             highlightKey = v === "" ? null : v;
           }}
         >
-          <option value="">全部</option>
+          <option value="">{$t("common.all")}</option>
           {#each series as key (key)}
-            <option value={key}>{providerLabel(key)}</option>
+            <option value={key}>{$t(providerLabel(key))}</option>
           {/each}
         </select>
       </div>
     {:else}
-      <div class="cal-sec__pills" role="group" aria-label="高亮 Provider">
+      <div class="cal-sec__pills" role="group" aria-label={$t("cal.highlightProvider")}>
         <button
           type="button"
           class="cal-sec__pill"
           class:is-on={highlightKey === null}
-          onclick={(e) => {
+            onclick={(e) => {
             e.stopPropagation();
             highlightKey = null;
           }}
-        >全部</button>
+        >{$t("common.all")}</button>
         {#each series as key (key)}
           <button
             type="button"
@@ -120,7 +121,7 @@
             }}
           >
             <i style={`background:${colors[key] ?? providerColor(key)}`}></i>
-            {providerLabel(key)}
+            {$t(providerLabel(key))}
           </button>
         {/each}
       </div>
@@ -130,7 +131,7 @@
   <div class="cal-sec__grid" onclick={(e) => e.stopPropagation()} role="presentation">
     <HeatmapGrid
       {highlightKey}
-      emptyHint="暂无用量记录——使用 Claude Code / ZCode 等工具后会自动写入账本"
+      emptyHint={$t("cal.emptyHint")}
     />
   </div>
 </section>

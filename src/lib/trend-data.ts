@@ -8,6 +8,11 @@
 // 也不再跨单位相加。
 import { getUsageHistory } from "./api";
 import { providerForModel, providerLabel, providerPalette } from "./model-provider";
+import {
+  collectRouterRowsByDate,
+  routedAttribution,
+  ROUTED_MODEL,
+} from "./router-attribution";
 
 export type RangeKey = "7d" | "30d" | "90d";
 export interface RangeDef {
@@ -17,9 +22,9 @@ export interface RangeDef {
 }
 
 export const RANGES: RangeDef[] = [
-  { key: "7d", label: "近 7 天", days: 7 },
-  { key: "30d", label: "近 30 天", days: 30 },
-  { key: "90d", label: "近 90 天", days: 90 },
+  { key: "7d", label: "range.7d", days: 7 },
+  { key: "30d", label: "range.30d", days: 30 },
+  { key: "90d", label: "range.90d", days: 90 },
 ];
 
 export interface TrendPart {
@@ -70,15 +75,42 @@ export async function fetchProviderCrossToolSeries(
 ): Promise<NamedSeries & { colors: Record<string, string> }> {
   const { rows } = await getUsageHistory(days);
   const byProvider = new Map<string, Map<string, number>>();
-  for (const r of rows) {
-    if (r.kind !== "tool") continue;
-    const key = providerForModel(r.model, r.source);
+  const add = (key: string, date: string, v: number) => {
     let m = byProvider.get(key);
     if (!m) {
       m = new Map();
       byProvider.set(key, m);
     }
-    m.set(r.date, (m.get(r.date) ?? 0) + r.total);
+    m.set(date, (m.get(date) ?? 0) + v);
+  };
+  // 经路由的哨兵行先攒着，遍历完统一按路由台账替换成真实模型。
+  const routed = new Map<string, { total: number; sources: Map<string, number> }>();
+  const routerRows = collectRouterRowsByDate(rows);
+  for (const r of rows) {
+    if (r.kind !== "tool") continue;
+    // 来源总量行（model=''）是**工具**口径，不能与分模型行相加——否则同一个
+    // token 会被算两遍（此前本函数漏了这层过滤，趋势值约为真实值的两倍）。
+    if (r.model === "") continue;
+    if (r.model === ROUTED_MODEL) {
+      let e = routed.get(r.date);
+      if (!e) {
+        e = { total: 0, sources: new Map() };
+        routed.set(r.date, e);
+      }
+      e.total += r.total;
+      e.sources.set(r.source, (e.sources.get(r.source) ?? 0) + r.total);
+      continue;
+    }
+    add(providerForModel(r.model, r.source), r.date, r.total);
+  }
+  for (const [date, e] of routed) {
+    const { slices, fallback } = routedAttribution(e.total, routerRows.get(date) ?? []);
+    for (const s of slices) add(providerForModel(s.model), date, s.total);
+    if (fallback > 0) {
+      for (const [source, v] of e.sources) {
+        add(providerForModel(ROUTED_MODEL, source), date, fallback * (v / e.total));
+      }
+    }
   }
   const totals = [...byProvider.entries()]
     .map(([key, m]) => ({ key, total: [...m.values()].reduce((s, v) => s + v, 0) }))

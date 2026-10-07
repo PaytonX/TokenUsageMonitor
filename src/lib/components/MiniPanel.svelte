@@ -7,6 +7,7 @@
     type UsageSnapshot,
   } from "../types";
   import { brandColorFor } from "../brand-glyphs";
+  import { t } from "../i18n/store";
   import PulseDot from "./PulseDot.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
 
@@ -31,7 +32,7 @@
   class="mini"
   data-tauri-drag-region={false}
   role="list"
-  aria-label="已启用来源用量"
+  aria-label={$t("mini.enabledSourcesUsage")}
 >
   {#each snapshots as s (s.provider_id)}
     {@const critical = mostCriticalWindow(s)}
@@ -63,7 +64,7 @@
       </span>
     </div>
   {:else}
-    <div class="mini__row mini__row--empty" role="listitem">暂无已启用来源</div>
+    <div class="mini__row mini__row--empty" role="listitem">{$t("mini.noEnabledSources")}</div>
   {/each}
 </div>
 

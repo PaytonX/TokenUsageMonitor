@@ -5,9 +5,11 @@
   import { getHubDevices, getUsageHistory, onTabsChanged, onToolsUpdated } from "../api";
   import { readAggMode, readPref, writePref } from "../prefs";
   import { buildAggregateModels, staleDetailDevices } from "../device-agg";
+  import { collectRouterRowsByDate, routedAttribution, ROUTED_MODEL, ROUTED_MODEL_DISPLAY } from "../router-attribution";
   import type { LocalModelUsage, LocalToolsPayload } from "../types";
   import { displayCurrency, formatCost, normalizeCurrency, toUsd } from "../currency";
   import type { Currency } from "../currency";
+  import { t, locale } from "../i18n/store";
   import TrendLineChart from "./TrendLineChart.svelte";
   import {
     PanelHeader,
@@ -22,10 +24,11 @@
   let { accent = "#4cc2ff" }: Props = $props();
 
   type RangeKey = "7d" | "30d" | "90d";
+  // label 存 i18n 键（与 trend-data.ts RANGES 同约定），渲染处经 $t 取词。
   const RANGES: { key: RangeKey; label: string; days: number }[] = [
-    { key: "7d", label: "近 7 天", days: 7 },
-    { key: "30d", label: "近 30 天", days: 30 },
-    { key: "90d", label: "近 90 天", days: 90 },
+    { key: "7d", label: "model.range7d", days: 7 },
+    { key: "30d", label: "model.range30d", days: 30 },
+    { key: "90d", label: "model.range90d", days: 90 },
   ];
 
   let range: RangeKey = $state(
@@ -87,6 +90,15 @@
           days: Map<string, { date: string; input: number; cache_read: number; output: number; total: number }>;
         }>();
         const dayMap = new Map<string, { date: string; input: number; cache_read: number; output: number; total: number }>();
+        // 经路由的哨兵行先攒着（含分列），遍历完按路由台账替换成真实模型名。
+        const routed = new Map<string, { input: number; cache_read: number; output: number; total: number }>();
+        const routerRows = collectRouterRowsByDate(rows);
+        const bumpRouted = (r: (typeof rows)[number]) => {
+          const cur = routed.get(r.date) ?? { input: 0, cache_read: 0, output: 0, total: 0 };
+          cur.input += r.input; cur.cache_read += r.cache_read;
+          cur.output += r.output; cur.total += r.total;
+          routed.set(r.date, cur);
+        };
         for (const r of rows) {
           if (r.kind !== "tool") continue;
           if (r.model === "") {
@@ -94,6 +106,10 @@
             cur.input += r.input; cur.cache_read += r.cache_read;
             cur.output += r.output; cur.total += r.total;
             dayMap.set(r.date, cur);
+            continue;
+          }
+          if (r.model === ROUTED_MODEL) {
+            bumpRouted(r);
             continue;
           }
           let m = byModel.get(r.model);
@@ -111,6 +127,38 @@
           d.input += r.input; d.cache_read += r.cache_read;
           d.output += r.output; d.total += r.total;
           m.days.set(r.date, d);
+        }
+        // 替换归因：路由台账只给**总量**，而模型页按 input/cache/output 分列，
+        // 故按各切片占比把哨兵的分列拆回去。台账覆盖不足时，剩余部分保留在
+        // 哨兵名下——把无法确认的量塞给某个真实模型比诚实单列更糟。
+        const ensure = (name: string) => {
+          let m = byModel.get(name);
+          if (!m) {
+            m = { total: 0, cost: 0, currencies: new Set(), cost_estimated: false, days: new Map() };
+            byModel.set(name, m);
+          }
+          return m;
+        };
+        for (const [date, agg] of routed) {
+          const { slices, fallback } = routedAttribution(agg.total, routerRows.get(date) ?? []);
+          for (const s of slices) {
+            const m = ensure(s.model);
+            const ratio = agg.total > 0 ? s.total / agg.total : 0;
+            const d = m.days.get(date) ?? { date, input: 0, cache_read: 0, output: 0, total: 0 };
+            d.input += agg.input * ratio; d.cache_read += agg.cache_read * ratio;
+            d.output += agg.output * ratio; d.total += s.total;
+            m.days.set(date, d);
+            m.total += s.total;
+          }
+          if (fallback > 0) {
+            const ratio = agg.total > 0 ? fallback / agg.total : 0;
+            const m = ensure(ROUTED_MODEL);
+            const d = m.days.get(date) ?? { date, input: 0, cache_read: 0, output: 0, total: 0 };
+            d.input += agg.input * ratio; d.cache_read += agg.cache_read * ratio;
+            d.output += agg.output * ratio; d.total += fallback;
+            m.days.set(date, d);
+            m.total += fallback;
+          }
         }
         const models: LocalModelUsage[] = [...byModel.entries()].map(([model, m]) => ({
           model,
@@ -175,6 +223,8 @@
   // 归一化模型名：合并 claude("MiniMax-M3") / cherry("MiniMax-M3") /
   // minimax("minimax/MiniMax-M3") 等写法为短名。
   function shortName(raw: string): string {
+    // 哨兵是内部标识，展示前换成可读名（仅台账覆盖不足时会走到这里）。
+    if (raw === ROUTED_MODEL) return ROUTED_MODEL_DISPLAY;
     const idx = raw.lastIndexOf("/");
     return idx >= 0 ? raw.slice(idx + 1) : raw;
   }
@@ -267,7 +317,7 @@
     if (restTotal > 0) {
       picked.push({
         id: "__other__",
-        name: "其他",
+        name: $t("mp.other"),
         total: restTotal,
         share: restTotal / grand,
         color: RING_OTHER_COLOR,
@@ -332,18 +382,18 @@
     if (m.currencies.size > 1) return `≈ ${formatCost(m.costUsd, displayCurrency())}`;
     return formatCost(m.costUsd, displayCurrency());
   }
-  // 成本标签：让 "≈" 有解释（估算 / 跨币种折算）。
+  // 成本标签：让 "≈" 有解释（估算 / 跨币种折算）。返回 i18n 键，由模板 $t 取词。
   function costLabel(m: { currencies: Set<Currency>; cost_estimated: boolean }): string {
-    if (m.cost_estimated) return "成本 · 估算";
-    if (m.currencies.size > 1) return "成本 · 折算";
-    return "成本";
+    if (m.cost_estimated) return "model.costEstimated";
+    if (m.currencies.size > 1) return "model.costConverted";
+    return "common.cost";
   }
 </script>
 
 <div class="mp">
-  <PanelHeader title={aggMode ? "全端模型用量" : "模型用量"}>
+  <PanelHeader title={aggMode ? $t("model.titleAllDevices") : $t("model.title")}>
     <RangePills
-      options={RANGES}
+      options={RANGES.map((r) => ({ key: r.key, label: $t(r.label) }))}
       value={range}
       accent={accent}
       onChange={(k) => { range = k; writePref("tum.model.range", k); }}
@@ -351,27 +401,27 @@
     <button
       type="button"
       class="mp__refresh"
-      title={aggMode ? "刷新多端数据" : "重新扫描本地日志"}
+      title={aggMode ? $t("model.refreshAllDevices") : $t("model.rescanLocalLogs")}
       onclick={() => void load(true)}
     >↻</button>
   </PanelHeader>
 
   {#if aggMode && staleDevs.length > 0 && (modelList.length === 0)}
     <div class="mp__empty mp__empty--err">
-      参与设备中 {staleDevs.join("、")} 未上报分模型明细（版本过旧），无法合成全端视图
+      {$t("model.staleDevices", { names: staleDevs.join($locale === "en" ? ", " : "、") })}
     </div>
   {/if}
 
   {#if loading && !payload}
-    <div class="mp__empty">正在扫描本地工具日志…</div>
+    <div class="mp__empty">{$t("model.scanning")}</div>
   {:else if error && !payload}
-    <div class="mp__empty mp__empty--err">扫描失败：{error}</div>
+    <div class="mp__empty mp__empty--err">{$t("model.scanFailed", { error })}</div>
   {:else if modelList.length === 0}
-    <div class="mp__empty">暂未上报模型级用量</div>
+    <div class="mp__empty">{$t("model.noModelUsage")}</div>
   {:else}
     <div class="mp__ring">
       <div class="ring">
-        <svg viewBox="0 0 110 110" role="img" aria-label="模型用量占比">
+        <svg viewBox="0 0 110 110" role="img" aria-label={$t("model.ringAria")}>
           <g class="ring__dial">
             <circle class="ring__track" cx="55" cy="55" r="42" />
             <!-- svelte-ignore a11y_no_noninteractive_tabindex:
@@ -400,7 +450,9 @@
                 role={a.isOther ? "presentation" : "button"}
                 tabindex={a.isOther ? -1 : 0}
               >
-                <title>{a.isOther ? `其他：${a.members.join("、")}` : `${a.name} · ${fmtTokens(a.total)}（${(a.share * 100).toFixed(1)}%）`}</title>
+                <title>{a.isOther
+                  ? $t("model.otherTooltip", { members: a.members.join($locale === "en" ? ", " : "、") })
+                  : $t("model.sliceTooltip", { name: a.name, tokens: fmtTokens(a.total), pct: (a.share * 100).toFixed(1) })}</title>
               </circle>
             {/each}
           </g>
@@ -408,7 +460,7 @@
         {#if centerSlice}
           <div class="ring__center">
             <span class="ring__center-num">{(centerSlice.share * 100).toFixed(centerSlice.share * 100 >= 10 ? 0 : 1)}%</span>
-            <span class="ring__center-label">{centerSlice.isOther ? "其他" : centerSlice.name}</span>
+            <span class="ring__center-label">{centerSlice.isOther ? $t("mp.other") : centerSlice.name}</span>
           </div>
         {/if}
       </div>
@@ -420,7 +472,9 @@
             class:ring-legend__item--active={activeId === s.id}
             class:ring-legend__item--other={s.isOther}
             disabled={s.isOther}
-            title={s.isOther ? `其他：${s.members.join("、")}` : `${s.name} · ${fmtTokens(s.total)}`}
+            title={s.isOther
+              ? $t("model.otherTooltip", { members: s.members.join($locale === "en" ? ", " : "、") })
+              : $t("model.sliceTitle", { name: s.name, tokens: fmtTokens(s.total) })}
             onpointerenter={() => { hoverSliceId = s.id; }}
             onpointerleave={() => { if (hoverSliceId === s.id) hoverSliceId = null; }}
             onclick={() => { if (!s.isOther) { activeId = s.id; writePref("tum.model.tab", s.id); } }}
@@ -435,10 +489,10 @@
 
     {#if active}
       <div class="mp__stats">
-        <Stat value={fmtTokens(rangeTotal)} label="近 {rangeDays} 天" />
-        <Stat value={fmtTokens(active.total)} label="累计 tokens" />
+        <Stat value={fmtTokens(rangeTotal)} label={$t("model.lastDays", { n: rangeDays })} />
+        <Stat value={fmtTokens(active.total)} label={$t("model.totalTokens")} />
         {#if active.costUsd > 0}
-          <Stat value={fmtCost(active)} label={costLabel(active)} />
+          <Stat value={fmtCost(active)} label={$t(costLabel(active))} />
         {/if}
       </div>
       <div class="mp__chart">

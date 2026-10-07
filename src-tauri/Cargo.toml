@@ -58,6 +58,9 @@ hex = "0.4"
 # dependency; declared directly because settings.rs uses it)
 getrandom = "0.3"
 
+# 语言 "auto" 的系统区域探测（i18n.rs system_lang）
+sys-locale = "0.3"
+
 # Errors
 thiserror = "1"
 anyhow = "1"

@@ -718,6 +718,14 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
     Ok(())
 }
 
+/// 当前设置的语言（窗口标题等 Rust 侧文案用）。读不到应用状态（测试桩）
+/// 或值非法时按默认中文。
+pub(crate) fn current_lang(app: &AppHandle) -> crate::i18n::Lang {
+    app.try_state::<AppState>()
+        .map(|s| crate::i18n::resolve(&s.settings.read_blocking().language))
+        .unwrap_or(crate::i18n::Lang::ZhCn)
+}
+
 /// 创建/定位贴边把手，并把「谁捕获鼠标」交给本命令统一托管（三态）：
 /// `floating`（常态浮动）→ 销毁把手、主窗可交互、不移动主窗；
 /// `revealed`（胶囊已贴边滑入）→ 把手存在但不捕获、主窗捕获、不移动主窗；
@@ -772,7 +780,7 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
                         "peek",
                         tauri::WebviewUrl::App("peek.html".into()),
                     )
-                    .title("TokenUsageMonitor · 贴边把手")
+                    .title(crate::i18n::window_title(current_lang(&app), crate::i18n::WindowPage::PeekHandle))
                     .inner_size(pw, ph)
                     .resizable(false)
                     .decorations(false)
@@ -844,7 +852,7 @@ pub async fn open_settings(app: AppHandle) -> Result<(), String> {
         "settings",
         tauri::WebviewUrl::App("settings.html".into()),
     )
-    .title("TokenUsageMonitor · 设置")
+    .title(crate::i18n::window_title(current_lang(&app), crate::i18n::WindowPage::Settings))
     // 680 宽时内容区实得 680−148(导航)−68(左右内边距)=464px，汇率覆盖的
     // `minmax(180px, 1fr)` 只能排 2 列（6 个币种 = 3 行），通用页因此溢出约
     // 230px、要滚动。拉到 820 让内容区到 604px、同一网格排 3 列（2 行），
@@ -909,7 +917,7 @@ pub async fn open_trend_window(app: AppHandle) -> Result<(), String> {
         "trend",
         tauri::WebviewUrl::App("trend.html".into()),
     )
-    .title("TokenUsageMonitor · 用量趋势")
+    .title(crate::i18n::window_title(current_lang(&app), crate::i18n::WindowPage::Trend))
     // 760×480 是宽而矮的横窗：日历（26 列）在这种比例下每格近 26px，七行就
     // 吃掉大半个窗口，堆叠柱只剩 ~140px——真机验收反馈「日历太大、柱太挤」。
     // 拉高到 720，并把最小尺寸一起抬高，避免用户缩回矮窗时重现同一问题。
@@ -960,7 +968,7 @@ pub async fn open_tool_window(app: AppHandle) -> Result<(), String> {
         "tools",
         tauri::WebviewUrl::App("toolwindow.html".into()),
     )
-    .title("TokenUsageMonitor · 工具用量")
+    .title(crate::i18n::window_title(current_lang(&app), crate::i18n::WindowPage::Tools))
     .inner_size(760.0, 480.0)
     .resizable(true)
     .min_inner_size(520.0, 360.0)
@@ -1055,6 +1063,31 @@ pub async fn save_settings(
     // handlers (close-to-tray, edge snap) pick up the change immediately.
     state.close_to_tray.store(new_settings.close_to_tray, std::sync::atomic::Ordering::SeqCst);
     state.edge_snap.store(new_settings.edge_snap, std::sync::atomic::Ordering::SeqCst);
+
+    // 语言切换：托盘菜单文案随语言重建（已开窗口的标题在重开时生效）。
+    // 菜单项 id 恒定，on_menu_event 分发不受影响；重建失败不回滚落盘设置，
+    // 下次保存语言时自然再试。
+    if old_settings.language != new_settings.language {
+        let lang = crate::i18n::resolve(&new_settings.language);
+        match crate::build_tray_menu(&app, lang) {
+            Ok(menu) => {
+                let _ = state._tray.set_menu(Some(menu));
+            }
+            Err(e) => tracing::warn!(target: "tum.settings", error = %e, "rebuild tray menu after language switch failed"),
+        }
+        // 已开窗口的标题一并即时刷新；未开的窗口下次打开时自然取新语言。
+        let pages = [
+            ("peek", crate::i18n::WindowPage::PeekHandle),
+            ("settings", crate::i18n::WindowPage::Settings),
+            ("trend", crate::i18n::WindowPage::Trend),
+            ("tools", crate::i18n::WindowPage::Tools),
+        ];
+        for (label, page) in pages {
+            if let Some(w) = app.get_webview_window(label) {
+                let _ = w.set_title(&crate::i18n::window_title(lang, page));
+            }
+        }
+    }
 
     // TokenRouter：只有端口变化才需要重启监听；enabled 与路由表每请求现读，
     // 翻转快速开关即时生效，无需重启。
