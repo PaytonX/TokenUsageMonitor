@@ -33,8 +33,9 @@
   // 交集仅 2 天且服务端量微不足道），合并不会双计。
   //
   // 取数天数与展示周数解耦：CAL_DAYS 覆盖取数窗口（含色阶分位所需的样本），
-  // CAL_WEEKS 决定画几列。后者还写死在下方样式块的 grid-template-columns
-  // （纯 CSS 读不到 JS 常量），改这里必须同步改那两处 repeat(26, …)。
+  // CAL_WEEKS 决定画几列。该值还写死在样式块的 grid-template-columns
+  // （纯 CSS 读不到 JS 常量）；2026-10 起日历是单张网格，同步点只剩一处
+  // repeat(26, …)。
   //
   // ⚠️ 本文件的 script 注释里**不得出现 Svelte 的块级标签**（style 块、script
   // 块的尖括号形式），哪怕裹在反引号里也不行。Svelte 解析器不认 JS 注释，
@@ -242,38 +243,37 @@
     <div class="heatmap__empty">{emptyHint ?? $t("heat.emptyNoData")}</div>
   {:else}
     <div class="cal">
-      <div class="cal__top">
+      <!-- 单张网格：第 1 行放月份、第 1 列放星期，格与标签共用同一套行轨道，
+           行高随格宽（aspect-ratio）浮动时对位恒齐（旧版标签定高 10px 会漂移）。 -->
+      <div class="cal__grid">
         <span class="cal__corner"></span>
-        <div class="cal__months">
-          {#each grid.monthLabels as label}
-            <span class="cal__month" class:cal__month--has={!!label}>{label ?? ""}</span>
+        {#each grid.monthLabels as label, ci}
+          <span
+            class="cal__month"
+            class:cal__month--has={!!label}
+            style={`grid-column:${ci + 2};grid-row:1`}
+          >{label ?? ""}</span>
+        {/each}
+        {#each WEEKDAY_KEYS as wd, di}
+          <span class="cal__wd" style={`grid-column:1;grid-row:${di + 2}`}>{$t(wd)}</span>
+        {/each}
+        {#each grid.cols as col, ci}
+          {#each col as day, di}
+            {#if day}
+              {@const p = paint(day)}
+              <div
+                class="cal__cell"
+                style={`grid-column:${ci + 2};grid-row:${di + 2};background:${p.bg};box-shadow:${p.shadow}`}
+                title={titleFor(day)}
+              ></div>
+            {:else}
+              <div
+                class="cal__cell cal__cell--future"
+                style={`grid-column:${ci + 2};grid-row:${di + 2}`}
+              ></div>
+            {/if}
           {/each}
-        </div>
-      </div>
-      <div class="cal__body">
-        <div class="cal__weekdays">
-          {#each WEEKDAY_KEYS as wd}
-            <span class="cal__wd">{$t(wd)}</span>
-          {/each}
-        </div>
-        <div class="cal__cols">
-          {#each grid.cols as col}
-            <div class="cal__col">
-              {#each col as day}
-                {#if day}
-                  {@const p = paint(day)}
-                  <div
-                    class="cal__cell"
-                    style={`background:${p.bg};box-shadow:${p.shadow}`}
-                    title={titleFor(day)}
-                  ></div>
-                {:else}
-                  <div class="cal__cell cal__cell--future"></div>
-                {/if}
-              {/each}
-            </div>
-          {/each}
-        </div>
+        {/each}
       </div>
       <div class="cal__foot">
         <div class="cal__stats">
@@ -366,23 +366,21 @@
     gap: 3px;
   }
 
-  .cal__top {
-    display: flex;
-    gap: 3px;
-    align-items: flex-end;
-    height: 12px;
+  /* 单网格：12px 星期列 + 26 周列；行高由格子的 aspect-ratio 决定，
+     星期标签 align-self:stretch + flex 居中，与所在行恒对齐。
+     改 CAL_WEEKS 时只需同步这里一处 repeat(26, …)。 */
+  .cal__grid {
+    display: grid;
+    grid-template-columns: 12px repeat(26, 1fr);
+    grid-auto-rows: min-content;
+    gap: 2px;
+    align-items: start;
   }
 
   .cal__corner {
+    grid-column: 1;
+    grid-row: 1;
     width: 12px;
-    flex: none;
-  }
-
-  .cal__months {
-    flex: 1;
-    display: grid;
-    grid-template-columns: repeat(26, 1fr);
-    gap: 2px;
   }
 
   .cal__month {
@@ -398,39 +396,15 @@
     visibility: visible;
   }
 
-  .cal__body {
-    display: flex;
-    gap: 3px;
-  }
-
-  .cal__weekdays {
-    width: 12px;
-    flex: none;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
   .cal__wd {
-    height: 10px;
-    line-height: 10px;
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     font-size: 8px;
-    text-align: center;
+    line-height: 1;
     color: var(--tum-text-muted);
     font-family: var(--tum-font);
-  }
-
-  .cal__cols {
-    flex: 1;
-    display: grid;
-    grid-template-columns: repeat(26, 1fr);
-    gap: 2px;
-  }
-
-  .cal__col {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
   }
 
   .cal__cell {

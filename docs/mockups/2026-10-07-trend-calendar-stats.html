@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>趋势窗口 · 日历热力图改版原型（2026-10-07）</title>
+<!-- 真实字体：直接引用应用打包的 MiSans VF（vite dev server 提供） -->
+<link rel="stylesheet" href="/src/styles/fonts/misans/MiSansVF.min.css">
+<style>
+  :root {
+    --bg: #101418; --surface: rgba(255,255,255,.055); --border: rgba(255,255,255,.09);
+    --fg: #e6e8ea; --muted: #8b949e; --accent: #4cc2ff; --amber: #ffc83d;
+    --mono: "Cascadia Code", "Cascadia Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 22px; background: var(--bg); color: var(--fg);
+    font-family: "MiSans VF", "Segoe UI", system-ui, sans-serif; font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 11px; margin-bottom: 16px; }
+  .sub b { color: var(--accent); font-weight: 500; }
+
+  .panel {
+    max-width: 1060px; border: 1px solid var(--border); border-radius: 12px;
+    background: rgba(22,25,31,.6); padding: 14px 16px 12px;
+  }
+  .head { display: flex; align-items: baseline; justify-content: space-between; }
+  .head__title { font-size: 13px; font-weight: 600; }
+  .head__range { font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: .2px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 12px; }
+  .pill {
+    font-size: 11px; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 999px; padding: 2px 10px; cursor: default;
+  }
+  .pill.is-active { color: var(--accent); border-color: var(--accent); background: rgba(76,194,255,.12); }
+  .pill i { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 5px; }
+
+  /* ---- 改版主体：左热力图（58%）+ 分隔线 + 右统计栏（42%） ---- */
+  .layout { display: flex; gap: 18px; }
+  .layout__cal { flex: 0 0 58%; min-width: 0; }
+  .layout__stats { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+  .divider { width: 1px; background: var(--border); }
+
+  /* 热力图：单张网格（与修复后的实现同构），格与星期共用行轨 → 恒对齐 */
+  .cal { border: 1px dashed rgba(255,255,255,.14); border-radius: 8px; padding: 10px 10px 8px; }
+  .cal__grid {
+    display: grid;
+    grid-template-columns: 12px repeat(26, 1fr);
+    grid-auto-rows: min-content;
+    gap: 2px;
+    align-items: start;
+  }
+  .cal__corner { grid-column: 1; grid-row: 1; width: 12px; }
+  .cal__month { font-size: 9px; line-height: 12px; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
+  .cal__wd {
+    align-self: stretch; display: flex; align-items: center; justify-content: center;
+    font-size: 8px; line-height: 1; color: var(--muted);
+  }
+  .cal__cell { width: 100%; aspect-ratio: 1; border-radius: 2px; }
+  .cal__cell.is-future { background: transparent; }
+  .cal__foot { display: flex; justify-content: space-between; margin-top: 8px; font-size: 9px; color: var(--muted); }
+  .cal__foot b { color: var(--fg); font-weight: 500; }
+  .legend { display: flex; align-items: center; gap: 3px; }
+  .legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+
+  /* 统计栏：主值大字 + 说明小字，纵向排布 */
+  .stat { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .stat__label { color: var(--muted); font-size: 11px; flex: none; }
+  .stat__value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .2px; }
+  .stat__value small { font-size: 11px; font-weight: 400; color: var(--muted); margin-left: 4px; }
+  .stat__value--md { font-size: 16px; }
+  .stat__hint { color: var(--muted); font-size: 10px; margin-top: 1px; }
+  .stat + .stat { border-top: 1px dashed var(--border); padding-top: 10px; }
+  .share { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin-top: 6px; }
+  .share i { display: block; height: 100%; }
+  .share-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; font-size: 10px; color: var(--muted); }
+  .share-legend i { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 4px; }
+  .share-legend b { color: var(--fg); font-weight: 500; }
+
+  .note { max-width: 1060px; margin-top: 16px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+  .note b { color: var(--fg); font-weight: 500; }
+</style>
+</head>
+<body>
+<h1>趋势窗口 · 日历热力图改版原型</h1>
+<div class="sub">
+  拍板点：<b>① 日历缩小到约 58% 宽</b>（格子变小、六个月仍完整）；<b>② 右侧新增统计栏</b>（参考 MiniMax 官网总览）；
+  <b>③ 星期轴对位修复</b>（单网格实现，本原型即修复后的对位效果）。数字为示例，实际取自账本真实聚合。
+</div>
+
+<div class="panel">
+  <div class="head">
+    <span class="head__title">日历热力图</span>
+    <span class="head__range">近 6 个月 · 2026-04 ~ 2026-10</span>
+  </div>
+  <div class="pills">
+    <span class="pill is-active">全部</span>
+    <span class="pill"><i style="background:#4c8dff"></i>MiniMax</span>
+    <span class="pill"><i style="background:#ff9f43"></i>GLM 智谱</span>
+    <span class="pill"><i style="background:#3fb950"></i>DeepSeek</span>
+    <span class="pill"><i style="background:#f06a9b"></i>其他</span>
+    <span class="pill"><i style="background:#a371f7"></i>火山方舟</span>
+  </div>
+
+  <div class="layout">
+    <div class="layout__cal">
+      <div class="cal">
+        <div class="cal__grid" id="grid"></div>
+        <div class="cal__foot">
+          <span>累计 <b>6.33B</b></span>
+          <span class="legend">少 <i style="background:rgba(76,194,255,.15)"></i><i style="background:rgba(76,194,255,.35)"></i><i style="background:rgba(76,194,255,.6)"></i><i style="background:rgba(76,194,255,.95)"></i> 多</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="layout__stats">
+      <div class="stat">
+        <span class="stat__label">累计总量</span>
+        <span class="stat__value">6.33B<small>tokens</small></span>
+      </div>
+      <div class="stat">
+        <div>
+          <div class="stat__label">日均用量</div>
+          <div class="stat__hint">按 181 天自然日摊平 · 活跃日均 71.1M</div>
+        </div>
+        <span class="stat__value stat__value--md">35.2M</span>
+      </div>
+      <div class="stat">
+        <div>
+          <div class="stat__label">单日峰值</div>
+          <div class="stat__hint">2026-09-30</div>
+        </div>
+        <span class="stat__value stat__value--md">367.0M</span>
+      </div>
+      <div class="stat">
+        <div>
+          <div class="stat__label">活跃天数</div>
+          <div class="stat__hint">占跨度 49% · 当前连续活跃 27 天</div>
+        </div>
+        <span class="stat__value stat__value--md">89<small>天</small></span>
+      </div>
+      <div class="stat" style="display:block">
+        <div class="stat__label">来源占比（按 tokens）</div>
+        <div class="share">
+          <i style="width:58%;background:#4c8dff"></i>
+          <i style="width:23%;background:#ff9f43"></i>
+          <i style="width:11%;background:#3fb950"></i>
+          <i style="width:8%;background:#f06a9b"></i>
+        </div>
+        <div class="share-legend">
+          <span><i style="background:#4c8dff"></i>MiniMax <b>58%</b></span>
+          <span><i style="background:#ff9f43"></i>GLM 智谱 <b>23%</b></span>
+          <span><i style="background:#3fb950"></i>DeepSeek <b>11%</b></span>
+          <span><i style="background:#f06a9b"></i>其他 <b>8%</b></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <b>实现口径</b>：① 热力图网格与星期轴已在应用内重构为单张 CSS Grid（本原型即该实现对位效果）；
+  ② 统计栏全部数据来自现有账本聚合——累计/峰值/活跃天数由 HeatmapGrid 已算出的
+  total/peak/activeDays 上移到右栏，日均 = 累计 ÷ 自然日跨度（hover 说明口径），来源占比复用
+  breakdown 按 kind 聚合；③ 底部原有「累计/峰值/活跃」小字随之移除，避免重复；
+  ④ 嵌入面板（总览页签）与独立趋势窗口共用该组件，改版同时生效；provider 过滤切换时统计栏同步刷新。
+</div>
+
+<script>
+// 生成示例格阵：5 月 ~ 10 月，周末偏淡、9 月末起密集（模拟截图形态）。
+const grid = document.getElementById("grid");
+const WEEKS = 26, cell = document.createElement.bind(document);
+const DOWS = ["一","二","三","四","五","六","日"];
+// 星期列
+for (let d = 0; d < 7; d++) {
+  const s = cell("span"); s.className = "cal__wd"; s.textContent = DOWS[d];
+  s.style.gridColumn = 1; s.style.gridRow = d + 2; grid.appendChild(s);
+}
+// 月份标签（26 周里第 0/4/9/13/18/22/25 周有标签）
+const months = { 0: "5月", 4: "6月", 9: "7月", 13: "8月", 18: "9月", 22: "10月" };
+for (let w = 0; w < WEEKS; w++) {
+  const s = cell("span"); s.className = "cal__month";
+  if (months[w]) { s.textContent = months[w]; s.style.visibility = "visible"; }
+  s.style.gridColumn = w + 2; s.style.gridRow = 1; grid.appendChild(s);
+}
+// 种子随机（稳定形态）
+let seed = 42;
+const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+for (let w = 0; w < WEEKS; w++) {
+  for (let d = 0; d < 7; d++) {
+    const c = cell("div"); c.className = "cal__cell";
+    c.style.gridColumn = w + 2; c.style.gridRow = d + 2;
+    const progress = w / WEEKS;
+    const weekend = d >= 5;
+    let p = rnd() * (0.25 + progress * 0.9) * (weekend ? 0.5 : 1);
+    const lvl = p > 0.82 ? 4 : p > 0.6 ? 3 : p > 0.38 ? 2 : p > 0.18 ? 1 : 0;
+    const alpha = [0.08, 0.25, 0.45, 0.7, 0.95][lvl];
+    c.style.background = `rgba(76,194,255,${alpha})`;
+    grid.appendChild(c);
+  }
+}
+</script>
+</body>
+</html>
