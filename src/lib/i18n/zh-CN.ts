@@ -83,6 +83,11 @@ export const zhCN: Record<string, string> = {
   "settings.nav.network": "网络",
   "settings.nav.router": "路由",
   "settings.nav.about": "关于与诊断",
+  "settings.pane.general": "通用",
+  "settings.pane.accounts": "账户与额度",
+  "settings.pane.interaction": "交互与通知",
+  "settings.pane.network": "网络",
+  "settings.pane.about": "关于与诊断",
 
   // 通用：轮询 / 环形窗口 / 语言 / 币种 / 汇率 / 页签
   "settings.polling.title": "轮询间隔",

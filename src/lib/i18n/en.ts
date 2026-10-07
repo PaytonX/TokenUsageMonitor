@@ -76,11 +76,16 @@ export const en: Record<string, string> = {
 
   // Navigation
   "settings.nav.general": "General",
-  "settings.nav.accounts": "Accounts & Quota",
-  "settings.nav.interaction": "Interaction & Notifications",
+  "settings.nav.accounts": "Accounts",
+  "settings.nav.interaction": "Interaction",
   "settings.nav.network": "Network",
   "settings.nav.router": "Router",
-  "settings.nav.about": "About & Diagnostics",
+  "settings.nav.about": "About",
+  "settings.pane.general": "General",
+  "settings.pane.accounts": "Accounts & Quota",
+  "settings.pane.interaction": "Interaction & Notifications",
+  "settings.pane.network": "Network",
+  "settings.pane.about": "About & Diagnostics",
 
   // General: polling / ring window / language / currency / rates / tabs
   "settings.polling.title": "Polling interval",

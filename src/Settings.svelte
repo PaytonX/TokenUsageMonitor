@@ -1101,7 +1101,7 @@ async function handleMinimize() {
 
       {#if tab === "general"}
         <div class="pane">
-          <h2 class="pane__title">{$t("settings.nav.general")}</h2>
+          <h2 class="pane__title">{$t("settings.pane.general")}</h2>
 
           <div class="section">
             <h3 class="section__title">{$t("settings.general.language")}</h3>
@@ -1252,7 +1252,7 @@ async function handleMinimize() {
 
       {:else if tab === "accounts"}
         <div class="pane">
-          <h2 class="pane__title">{$t("settings.nav.accounts")}</h2>
+          <h2 class="pane__title">{$t("settings.pane.accounts")}</h2>
           <p class="hint">
             {$t("settings.accounts.hint")}
           </p>
@@ -1604,7 +1604,7 @@ async function handleMinimize() {
 
       {:else if tab === "interaction"}
         <div class="pane">
-          <h2 class="pane__title">{$t("settings.nav.interaction")}</h2>
+          <h2 class="pane__title">{$t("settings.pane.interaction")}</h2>
 
           <div class="section">
             <h3 class="section__title">{$t("settings.behavior.title")}</h3>
@@ -1734,7 +1734,7 @@ async function handleMinimize() {
 
       {:else if tab === "network"}
         <div class="pane">
-          <h2 class="pane__title">{$t("settings.nav.network")}</h2>
+          <h2 class="pane__title">{$t("settings.pane.network")}</h2>
 
           <div class="section">
             <h3 class="section__title">{$t("settings.proxy.title")}</h3>
@@ -2140,7 +2140,7 @@ async function handleMinimize() {
 
       {:else}
         <div class="pane">
-          <h2 class="pane__title">{$t("settings.nav.about")}</h2>
+          <h2 class="pane__title">{$t("settings.pane.about")}</h2>
 
           <div class="section">
             <h3 class="section__title">
@@ -2274,9 +2274,13 @@ async function handleMinimize() {
     display: flex;
     align-items: center;
     gap: var(--tum-space-2);
+    /* 窗口拖窄时标题降级为省略号，不挤压右侧窗口按钮 */
+    min-width: 0;
+    flex: 0 1 auto;
   }
 
   .settings__dot {
+    flex-shrink: 0;
     width: 6px;
     height: 6px;
     border-radius: 50%;
@@ -2291,6 +2295,10 @@ async function handleMinimize() {
     text-transform: uppercase;
     font-family: var(--tum-font-mono);
     color: var(--tum-text-primary);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .settings__close {
@@ -2361,6 +2369,10 @@ async function handleMinimize() {
   .nav-item {
     all: unset;
     cursor: pointer;
+    /* 极端语言/超长标签下降级为省略号，不越过右边界硬裁 */
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     padding: 9px 12px;
     border-radius: var(--tum-radius-sm);
     font-size: var(--tum-font-size-base);
