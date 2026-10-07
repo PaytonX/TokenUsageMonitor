@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>TokenUsageMonitor · 字体配对预览（2026-10-07）</title>
+<!-- 开源可商用候选字体（SIL OFL）：Noto Sans SC / Inter / Maple Mono 走 CDN；
+     更纱黑体、MiSans 等未在 CDN 的字体用「本机已装检测」——没装会回退并提示。 -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Maple+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface-hover: #1f2630;
+    --border: #30363d; --fg: #e6edf3; --muted: #8b949e;
+    --accent: #4cc2ff; --amber: #ffcc66; --green: #3fb950; --red: #f85149;
+    --font-size-xs: 10px; --font-size-sm: 11px; --font-size-base: 13px;
+    --font-size-lg: 16px; --font-size-xl: 20px;
+    /* 方案可切换的两根字体令牌（对应应用 tokens.css 75-76 行） */
+    --tum-font: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    --tum-font-mono: "Cascadia Code", "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 28px 64px; background: var(--bg); color: var(--fg);
+    font-family: var(--tum-font); font-size: var(--font-size-base);
+    line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: var(--font-size-lg); margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: var(--font-size-sm); margin-bottom: 20px; }
+  .schemes { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
+  .schemes button {
+    appearance: none; border: 1px solid var(--border); background: var(--surface);
+    color: var(--fg); border-radius: 6px; padding: 6px 12px; font-size: var(--font-size-sm);
+    cursor: pointer; font-family: inherit;
+  }
+  .schemes button.on { border-color: var(--accent); color: var(--accent); background: var(--surface-hover); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 14px; max-width: 1200px; }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .panel__head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+  }
+  .panel__title {
+    font-family: var(--tum-font-mono); font-size: var(--font-size-xs);
+    text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted);
+  }
+  .panel__title--cjkfix { letter-spacing: .2px; text-transform: none; }
+  .panel__body { padding: 14px; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
+  .row + .row { border-top: 1px dashed var(--border); }
+  .stat b { font-size: var(--font-size-lg); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: var(--font-size-xs); margin-left: 6px; }
+  .pill {
+    font-size: var(--font-size-sm); border: 1px solid var(--border);
+    border-radius: 999px; padding: 2px 10px; color: var(--muted);
+  }
+  .pill b { color: var(--fg); font-weight: 600; }
+  .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--surface-hover); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 82%; background: var(--amber); }
+  .mono-tip {
+    font-family: var(--tum-font-mono); font-size: var(--font-size-sm);
+    background: #010409; border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; color: var(--muted); margin-top: 10px;
+  }
+  .hint { color: var(--muted); font-size: var(--font-size-xs); }
+  .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
+  select {
+    background: var(--surface-hover); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px; font-family: inherit; font-size: var(--font-size-sm);
+  }
+  .sizes td { padding: 3px 10px 3px 0; }
+  .caps {
+    font-family: var(--tum-font-mono); font-size: var(--font-size-xs);
+    text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted);
+  }
+  .tag { font-size: var(--font-size-xs); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: var(--muted); }
+  .note { max-width: 1200px; margin-top: 22px; color: var(--muted); font-size: var(--font-size-sm); }
+  .note code { color: var(--accent); font-family: var(--tum-font-mono); }
+  .fallback-warn { color: var(--amber); }
+</style>
+</head>
+<body>
+<h1>字体配对预览 · 中英混排</h1>
+<div class="sub">切换下方方案，观察真实字号（10/11/13/16/20px）下中文与英文的灰度、字重与节奏。样本取自应用真实组件与真实文案。</div>
+
+<div class="schemes" id="schemes"></div>
+
+<div class="grid">
+  <div class="panel">
+    <div class="panel__head">
+      <div class="panel__title" id="t-title-zh">用量趋势 · 本机工具</div>
+      <span class="tag" id="t-range">近 7 天</span>
+    </div>
+    <div class="panel__body">
+      <div class="row stat"><b>1,284,003</b><span>累计 tokens</span><span>·</span><b>29</b><span>连续活跃（天）</span></div>
+      <div class="row"><span class="pill"><b>MiniMax</b> 已用 82%</span><span class="pill">Claude Code <b>¥3.42</b></span><div class="bar"><i></i></div></div>
+      <div class="mono-tip">2026-10-07 · 输入 1.2M / 缓存 0.3M / 输出 0.8M —— 会话 47 个</div>
+      <div class="hint" style="margin-top:8px">等宽区中文兜底对比：上行是泛型 monospace（宋体兜底），下行显式追加中文字体。</div>
+      <div class="mono-tip" style="font-family:Consolas, monospace">泛型 monospace：配额告急 95% · 已用尽</div>
+      <div class="mono-tip" id="mono-mixed">显式混排栈：配额告急 95% · 已用尽 · cooldown 300s</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel__head">
+      <div class="panel__title">Trend Dashboard · Local Tools</div>
+      <span class="tag">Last 7 days</span>
+    </div>
+    <div class="panel__body">
+      <div class="row stat"><b>1,284,003</b><span>total tokens</span><span>·</span><b>29</b><span>active streak (days)</span></div>
+      <div class="row"><span class="pill"><b>MiniMax</b> used 82%</span><span class="pill">Claude Code <b>¥3.42</b></span><div class="bar"><i></i></div></div>
+      <div class="settings-row">
+        <div><div>界面语言 / Language</div><div class="hint">切换立即生效，并同步到所有窗口。</div></div>
+        <select><option>自动（跟随系统）</option><option>简体中文</option><option>English</option></select>
+      </div>
+      <table class="sizes" style="margin-top:6px">
+        <tr><td class="hint" style="font-size:20px">20px 标题 摘要 Total</td></tr>
+        <tr><td style="font-size:16px">16px：用量告急通知 Usage alerts</td></tr>
+        <tr><td>13px 正文：每个账户独立轮询、独立启停 / Each account polls independently</td></tr>
+        <tr><td class="hint" style="font-size:11px">11px 提示：凭证保存在 Windows 凭据管理器 / stored in Windows Credential Manager</td></tr>
+        <tr><td class="caps" style="font-size:10px">10px 大写标题 Quota Pool / 额度池（大写对中文无效，字距仍在）</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="note" id="note"></div>
+
+<script>
+const CDN = {
+  noto: '"Noto Sans SC"',
+  inter: '"Inter", "Noto Sans SC"',
+};
+const SCHEMES = [
+  {
+    id: "baseline", label: "A · 现状基线",
+    sans: '"Segoe UI Variable", "Segoe UI", system-ui, sans-serif',
+    mono: '"Cascadia Code", "Cascadia Mono", Consolas, monospace',
+    monoMixed: null,
+    note: '现状：Segoe UI 无中文字形 → 中文全部回退微软雅黑；等宽泛型 monospace 的中文回退是<b class="fallback-warn">宋体</b>。中西文灰度与节奏断裂即来源于此。',
+  },
+  {
+    id: "noto-full", label: "B · Noto Sans SC 全量（推荐）",
+    sans: '"Noto Sans SC", system-ui, sans-serif',
+    mono: '"Cascadia Code", "Noto Sans SC", Consolas, monospace',
+    monoMixed: '"Cascadia Code", "Noto Sans SC", monospace',
+    note: '思源黑体同源（Google 发行版，SIL OFL 可商用）。中拉丁都由它出：灰度统一、字重齐全（300–700 可变字体）。等宽栈里显式插入中文字体，宋体兜底消失。打包体积：可变 woff2 约 5–8MB。',
+  },
+  {
+    id: "segoe-noto", label: "C · Segoe UI + Noto SC 只兜中文",
+    sans: '"Segoe UI", "Noto Sans SC", system-ui, sans-serif',
+    mono: '"Cascadia Code", "Noto Sans SC", Consolas, monospace',
+    monoMixed: '"Cascadia Code", "Noto Sans SC", monospace',
+    note: '英文保持 Segoe（Windows 原生观感），仅中文落到 Noto Sans SC。零 Latin 改动、迁移最小；代价是中西文仍是两个家族（灰度接近但非同族）。',
+  },
+  {
+    id: "inter-noto", label: "D · Inter + Noto Sans SC",
+    sans: '"Inter", "Noto Sans SC", system-ui, sans-serif',
+    mono: '"Maple Mono", "Noto Sans SC", Consolas, monospace',
+    monoMixed: '"Maple Mono", "Noto Sans SC", monospace',
+    note: 'Inter（OFL）+ 思源黑体的经典开源组合，数字/等宽换 Maple Mono（OFL，圆润、含中文）。观感最「现代应用」，但与系统 Segoe 割裂，且需一并打包两款字体。',
+  },
+  {
+    id: "sarasa", label: "E · 更纱黑体（本机已装生效）",
+    sans: '"Sarasa UI SC", "Sarasa Gothic SC", "Noto Sans SC", sans-serif',
+    mono: '"Sarasa Mono SC", "Cascadia Code", "Noto Sans SC", monospace',
+    monoMixed: '"Sarasa Mono SC", "Noto Sans SC", monospace',
+    note: '更纱黑体（OFL）：中文宽 = 2×英文宽，等宽混排的对齐王者，天然适合本应用的等宽面板标题。未安装本机字体时回退 Noto。分发体积大（单权重数十 MB），若选中建议只打包 Mono SC 一款用于等宽区。',
+  },
+  {
+    id: "misans", label: "F · MiSans（可商用·非开源，本机已装生效）",
+    sans: '"MiSans", "Noto Sans SC", system-ui, sans-serif',
+    mono: '"Cascadia Code", "MiSans", Consolas, monospace',
+    monoMixed: '"Cascadia Code", "MiSans", monospace',
+    note: '小米 MiSans：免费可商用但<b class="fallback-warn">不是开源许可</b>（自定义许可）。中性感强、屏显优秀。同为可商用非开源的还有 HarmonyOS Sans、阿里巴巴普惠体。',
+  },
+];
+
+const box = document.getElementById("schemes");
+for (const s of SCHEMES) {
+  const b = document.createElement("button");
+  b.textContent = s.label;
+  b.onclick = () => apply(s);
+  box.appendChild(b);
+}
+function apply(s) {
+  document.documentElement.style.setProperty("--tum-font", s.sans);
+  document.documentElement.style.setProperty("--tum-font-mono", s.mono);
+  const mixed = document.getElementById("mono-mixed");
+  mixed.style.fontFamily = s.monoMixed || s.mono;
+  document.querySelectorAll(".schemes button").forEach(b => b.classList.toggle("on", b.textContent === s.label));
+  document.getElementById("note").innerHTML = "<b>" + s.label + "</b> — " + s.note;
+}
+apply(SCHEMES[1]); // 默认展示推荐方案，便于与 A 对比
+</script>
+</body>
+</html>

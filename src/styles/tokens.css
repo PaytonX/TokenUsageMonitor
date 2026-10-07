@@ -7,6 +7,11 @@
  * settings brand dot and the heatmap "today" stroke.
  */
 
+/* MiSans 可变字体（wght 150-700，unicode-range 分片 56 片 ≈ 4.6MB）。
+ * 字体版权归小米，随应用分发遵循 MiSans 字体许可（免费商用）；
+ * 来源与许可说明见本目录 LICENSE.md。@import 必须先于其余规则。 */
+@import "./fonts/misans/MiSansVF.min.css";
+
 :root {
   /* Window body - Mica is applied at the Tauri window level (Win11);
      these are the solid fallback colors on older systems / when Mica fails */
@@ -71,9 +76,12 @@
   --tum-radius-lg: 16px;
   --tum-radius-pill: 999px;
 
-  /* Typography */
-  --tum-font: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --tum-font-mono: "Cascadia Code", "Cascadia Mono", Consolas, monospace;
+  /* Typography
+   * 正文全量 MiSans VF（中英同族，灰度统一）；Segoe 仅作字体加载失败的兜底。
+   * 等宽区：拉丁/数字仍走 Cascadia（数字表格特性好），中文字形显式落到
+   * MiSans VF —— 否则泛型 monospace 的中文兜底是宋体（切换前的主要违和源）。 */
+  --tum-font: "MiSans VF", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --tum-font-mono: "Cascadia Code", "Cascadia Mono", "MiSans VF", Consolas, monospace;
   --tum-font-size-xs: 10px;
   --tum-font-size-sm: 11px;
   --tum-font-size-base: 13px;
