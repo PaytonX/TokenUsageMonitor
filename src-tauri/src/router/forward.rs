@@ -111,9 +111,23 @@ pub enum UsageShape {
     OpenAiResponses,
 }
 
+/// 把「已包含缓存命中」的输入 token 数扣出缓存部分，得到账本口径的净 input。
+///
+/// OpenAI 两个协议里 `prompt_tokens` / `input_tokens` 都是**总量**，
+/// `*_tokens_details.cached_tokens` 是其中的**子集**；而 Anthropic 的
+/// `input_tokens` 本就不含缓存读取。账本的 `cache_read` 单独成列、
+/// `total = input + cache_read + output`，所以 OpenAI 形状必须在这里扣一次，
+/// 否则缓存命中被算两遍。
+///
+/// 口径与工具侧扫描器一致（`local::codex` 的 `(prompt - cached).max(0.0)`）。
+fn split_cached_input(prompt_total: f64, cache_read: f64) -> f64 {
+    (prompt_total - cache_read).max(0.0)
+}
+
 /// 非流式 JSON 响应的 `(input, cache_read, output)` 提取。
 /// Anthropic 的 cache_creation（缓存写入）计入 input——订阅配额按全部
-/// 处理 token 计费，账本的 cache_read 列只装缓存命中。
+/// 处理 token 计费，账本的 cache_read 列只装缓存命中。OpenAI 形状的输入
+/// token 已含缓存命中，扣减见 [`split_cached_input`]。
 pub fn extract_usage_json(
     shape: UsageShape,
     v: &serde_json::Value,
@@ -134,22 +148,22 @@ pub fn extract_usage_json(
             Some((input, cache_read, output))
         }
         UsageShape::OpenAiChat => {
-            let input = json_num(usage.get("prompt_tokens")?)?;
+            let prompt = json_num(usage.get("prompt_tokens")?)?;
             let cache_read = usage
                 .pointer("/prompt_tokens_details/cached_tokens")
                 .and_then(json_num)
                 .unwrap_or(0.0);
             let output = json_num(usage.get("completion_tokens")?)?;
-            Some((input, cache_read, output))
+            Some((split_cached_input(prompt, cache_read), cache_read, output))
         }
         UsageShape::OpenAiResponses => {
-            let input = json_num(usage.get("input_tokens")?)?;
+            let prompt = json_num(usage.get("input_tokens")?)?;
             let cache_read = usage
                 .pointer("/input_tokens_details/cached_tokens")
                 .and_then(json_num)
                 .unwrap_or(0.0);
             let output = json_num(usage.get("output_tokens")?)?;
-            Some((input, cache_read, output))
+            Some((split_cached_input(prompt, cache_read), cache_read, output))
         }
     }
 }
@@ -204,7 +218,19 @@ impl SseUsageScanner {
     }
 
     pub fn totals(&self) -> (f64, f64, f64) {
-        (self.input, self.cache_read, self.output)
+        // 累加器内部保持上游原样（各形状都是"累计值覆盖"，帧里带哪个字段就
+        // 覆盖哪个），**在出口统一归一**成账本口径。这样不必关心某一帧是否
+        // 同时带了缓存字段，也不必在两处分支里各写一遍扣减逻辑。
+        match self.shape {
+            // OpenAI 两形状的 input 字段本身已含缓存命中；Anthropic 的
+            // `input_tokens` 本就不含缓存读取，原样返回。
+            UsageShape::OpenAiChat | UsageShape::OpenAiResponses => (
+                split_cached_input(self.input, self.cache_read),
+                self.cache_read,
+                self.output,
+            ),
+            UsageShape::Anthropic => (self.input, self.cache_read, self.output),
+        }
     }
 
     fn absorb_line(&mut self, line: &[u8]) {
@@ -437,7 +463,35 @@ mod tests {
         )
         .unwrap();
         let (i, c, o) = extract_usage_json(UsageShape::OpenAiChat, &v).unwrap();
-        assert_eq!((i, c, o), (80.0, 60.0, 20.0));
+        // prompt_tokens=80 是**含缓存**的总量：60 命中缓存 + 20 新输入。
+        // cache_read 单独成列，input 必须已扣除，否则总量算成 160 而非 100。
+        assert_eq!((i, c, o), (20.0, 60.0, 20.0));
+        assert_eq!(i + c + o, 100.0, "总量必须等于上游口径 prompt+completion");
+    }
+
+    /// 回归：缓存命中不得在 input 与 cache_read 里各算一次。修复前 Codex 经
+    /// 路由的日账被顶到真实用量的约两倍（实测 10-09：路由台账 32.3M /
+    /// 工具侧真实 15.5M，差额恰为当日缓存量 14.5M）。
+    #[test]
+    fn openai_shapes_do_not_double_count_cached_tokens() {
+        let cases = [
+            (
+                UsageShape::OpenAiChat,
+                &br#"data: {"usage":{"prompt_tokens":500,"completion_tokens":30,"prompt_tokens_details":{"cached_tokens":450}}}"#[..],
+            ),
+            (
+                UsageShape::OpenAiResponses,
+                &br#"data: {"type":"response.completed","response":{"usage":{"input_tokens":500,"output_tokens":30,"input_tokens_details":{"cached_tokens":450}}}}"#[..],
+            ),
+        ];
+        for (shape, frame) in cases {
+            let mut sc = SseUsageScanner::new(shape);
+            sc.feed(frame);
+            sc.finish();
+            let (i, c, o) = sc.totals();
+            assert_eq!((i, c, o), (50.0, 450.0, 30.0), "{shape:?} 流式口径");
+            assert_eq!(i + c + o, 530.0, "{shape:?} 缓存只能算一次");
+        }
     }
 
     #[test]
@@ -448,7 +502,8 @@ mod tests {
         .unwrap();
         let (i, c, o) = extract_usage_json(UsageShape::OpenAiResponses, &v).unwrap();
         // reasoning 已含在 output_tokens 内，不需要单独计。
-        assert_eq!((i, c, o), (80.0, 50.0, 25.0));
+        // input_tokens 含 cached 50，净输入为 30。
+        assert_eq!((i, c, o), (30.0, 50.0, 25.0));
     }
 
     #[test]
@@ -470,7 +525,7 @@ mod tests {
 
 ");
         sc.finish();
-        assert_eq!(sc.totals(), (12.0, 7.0, 5.0));
+        assert_eq!(sc.totals(), (5.0, 7.0, 5.0));
     }
 
     #[test]
@@ -514,7 +569,8 @@ data: [DONE]
         sc.feed(b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":5}}}\n\n");
         sc.feed(b"data: [DONE]\n\n");
         sc.finish();
-        assert_eq!(sc.totals(), (9.0, 5.0, 3.0));
+        // prompt_tokens=9 含 cached 5 → 净输入 4。
+        assert_eq!(sc.totals(), (4.0, 5.0, 3.0));
     }
 
     #[test]

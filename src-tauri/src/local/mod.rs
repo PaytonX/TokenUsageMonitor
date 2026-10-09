@@ -59,6 +59,68 @@ pub fn is_routed_placeholder(model: &str) -> bool {
     m.starts_with("custom_provider:") || m == "LocalRouter"
 }
 
+/// 解析一行用量最终归属的模型名。
+///
+/// 优先级：**行内自带 > 会话级回填 > 未标记模型**。Codex 的用量事件
+/// （新版 `token_count`）不带模型，模型只记在同会话文件的 `turn_context` 里，
+/// 所以调用方先解析出会话模型再传进来。
+///
+/// 指向本地路由的占位名统一打成 [`ROUTED_MODEL`] 哨兵——真实承载模型由
+/// TokenRouter 自己的记账行给出，前端做**替换**归因（见
+/// `src/lib/router-attribution.ts`）。这一步必须只有一处实现：全量扫描
+/// （`local::codex`）与增量扫描（`local::delta`）共用，否则同一批 token
+/// 会在两条路径上落到不同模型上。
+pub fn resolve_model(line_model: &str, session_model: Option<&str>) -> String {
+    let m = if !line_model.trim().is_empty() {
+        line_model.trim().to_string()
+    } else if let Some(sm) = session_model.map(str::trim).filter(|s| !s.is_empty()) {
+        sm.to_string()
+    } else {
+        UNCLASSIFIED_MODEL.to_string()
+    };
+    if is_routed_placeholder(&m) {
+        ROUTED_MODEL.to_string()
+    } else {
+        m
+    }
+}
+
+/// 以**只读**方式打开一个可能正在被写入的 SQLite 库，读到最近一次提交的数据。
+///
+/// 绝不退回 `immutable=1`：那个模式让 SQLite **完全忽略 `-wal` 文件**，读到的是
+/// 上次 checkpoint 留下的旧快照（实测 MiniMax 的运行时库当日少读 19% 的行）。
+/// 而工具扫描结果走 [`persist_all_tools`] 的**全量 REPLACE**——一份偏小的陈旧
+/// 快照会直接覆盖账本里已经正确的数字，且全程没有任何提示。
+///
+/// 写者只在提交那几毫秒持锁，加长 `busy_timeout` 重试足够。真的读不到就返回
+/// `None`，让该数据源**本轮不出数**：账本按来源批量删除（[`crate::storage::Storage::replace_usage_daily`]
+/// 只删本批出现的来源），缺源等于保留上一轮的旧行——比写入一个偏小的陈旧值安全得多。
+pub(crate) fn open_sqlite_readonly(path: &std::path::Path) -> Option<rusqlite::Connection> {
+    use rusqlite::{Connection, OpenFlags};
+    use std::time::Duration;
+
+    const ATTEMPTS: u64 = 4;
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
+    for attempt in 0..ATTEMPTS {
+        if let Ok(conn) = Connection::open_with_flags(path, flags) {
+            // 逐次放宽：多数情况第一次就过，长锁才需要退避。
+            let _ = conn.busy_timeout(Duration::from_millis(120 * (attempt + 1)));
+            let readable = conn
+                .query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
+                .is_ok();
+            if readable {
+                return Some(conn);
+            }
+        }
+    }
+    tracing::warn!(
+        target: "tum.local",
+        path = %path.display(),
+        "sqlite 只读打开失败（写者长期持锁），本轮跳过该数据源，不写入陈旧快照"
+    );
+    None
+}
+
 /// Scan every supported local tool in parallel (each tool owns independent I/O),
 /// then drop tools with no usage. Used by `get_local_tools` and the startup
 /// pre-warm so the first open of the tools view is instant.

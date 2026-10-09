@@ -11,7 +11,7 @@
 //! 新增行只影响"最近一天"的用量：把增量合并进缓存中该工具的今日 `LocalDay`（以及对应
 //! 模型的今日 `LocalDay`），历史由全量缓存兜底。这样秒级轮询时不再反复解析几百个历史文件。
 
-use super::{LocalModelUsage, LocalToolReport, SharedLocalCache, UNCLASSIFIED_MODEL};
+use super::{LocalModelUsage, LocalToolReport, SharedLocalCache};
 use crate::storage::Storage;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -62,9 +62,14 @@ fn parse_line(tool_id: &str, line: &str) -> Option<(f64, f64, f64, String, Strin
 }
 
 /// 把一行增量并入 `by_day` / `by_model` 桶（空日期、零用量由解析器自行筛掉）。
+///
+/// `session_model` 是**文件级**的会话模型：codex 的用量事件不带模型，只记在
+/// 同文件的 `turn_context` 里，而增量续读永远读不到会话头部——不预先解析出来
+/// 就会把增量行全打成「未标记模型」，与全量扫描归到不同模型上。
 fn ingest_line(
     tool_id: &str,
     line: &str,
+    session_model: Option<&str>,
     by_day: &mut BTreeMap<String, (f64, f64, f64)>,
     by_model: &mut BTreeMap<String, BTreeMap<String, (f64, f64, f64)>>,
 ) {
@@ -78,17 +83,26 @@ fn ingest_line(
     e.0 += input;
     e.1 += cache_read;
     e.2 += output;
-    // 无模型的行归入"未标记模型"桶，保证按日总量与按模型汇总一致。
-    let model = if model.is_empty() {
-        UNCLASSIFIED_MODEL.to_string()
-    } else {
-        model
-    };
+    // 与全量扫描共用 `resolve_model`：行内自带 > 会话级回填 > 未标记，
+    // 指向本地路由的占位名打成哨兵交由路由自记账归因。
+    let model = super::resolve_model(&model, session_model);
     let m = by_model.entry(model).or_default();
     let de = m.entry(date).or_insert((0.0, 0.0, 0.0));
     de.0 += input;
     de.1 += cache_read;
     de.2 += output;
+}
+
+/// 解析一个 jsonl 文件的会话级模型。
+///
+/// 只有 codex 需要：它的用量事件不带模型，模型只记在同文件的 `turn_context`
+/// 里。claude 的 assistant 行自带模型，无需回填。预扫在首个 `turn_context`
+/// 处早退，只读会话头部。
+fn file_session_model(tool_id: &str, path: &Path) -> Option<String> {
+    match tool_id {
+        "codex" => super::codex::session_model_of(path),
+        _ => None,
+    }
 }
 
 /// 从 `offset` 处 seek 续读一个 jsonl 文件的**新增**字节，解析其中所有完整行，并入桶。
@@ -98,6 +112,7 @@ fn read_appended(
     path: &Path,
     offset: u64,
     tool_id: &str,
+    session_model: Option<&str>,
     by_day: &mut BTreeMap<String, (f64, f64, f64)>,
     by_model: &mut BTreeMap<String, BTreeMap<String, (f64, f64, f64)>>,
 ) -> u64 {
@@ -124,7 +139,7 @@ fn read_appended(
             continue;
         }
         if let Ok(s) = std::str::from_utf8(line) {
-            ingest_line(tool_id, s, by_day, by_model);
+            ingest_line(tool_id, s, session_model, by_day, by_model);
         }
     }
     new_offset
@@ -134,6 +149,7 @@ fn read_appended(
 fn scan_file_into(
     path: &Path,
     tool_id: &str,
+    session_model: Option<&str>,
     by_day: &mut BTreeMap<String, (f64, f64, f64)>,
     by_model: &mut BTreeMap<String, BTreeMap<String, (f64, f64, f64)>>,
 ) {
@@ -143,7 +159,7 @@ fn scan_file_into(
             continue;
         }
         if let Ok(s) = std::str::from_utf8(line) {
-            ingest_line(tool_id, s, by_day, by_model);
+            ingest_line(tool_id, s, session_model, by_day, by_model);
         }
     }
 }
@@ -298,7 +314,8 @@ pub async fn refresh_jsonl_tool(
         match stored {
             None => {
                 // 新出现的文件：全量解析（其用量基本都是当次会话的今日新增）。
-                scan_file_into(path, tool_id, &mut by_day, &mut by_model);
+                let sm = file_session_model(tool_id, path);
+                scan_file_into(path, tool_id, sm.as_deref(), &mut by_day, &mut by_model);
                 let _ = storage.upsert_tool_file_offset(
                     tool_id, &path_str, cur_len, cur_len, cur_mtime,
                 );
@@ -318,7 +335,10 @@ pub async fn refresh_jsonl_tool(
                     continue;
                 }
                 // cur_len > offset：尾部追加 → 只续读新增行。
-                let new_offset = read_appended(path, offset, tool_id, &mut by_day, &mut by_model);
+                let sm = file_session_model(tool_id, path);
+                let new_offset = read_appended(
+                    path, offset, tool_id, sm.as_deref(), &mut by_day, &mut by_model,
+                );
                 let _ = storage.upsert_tool_file_offset(
                     tool_id, &path_str, new_offset, cur_len, cur_mtime,
                 );
@@ -354,7 +374,7 @@ mod tests {
 
         let (mut d, mut dm) = (BTreeMap::new(), BTreeMap::new());
         // offset=0：读到第一条完整行并推进指针至文件末尾。
-        let off1 = read_appended(&f, 0, "claude-code", &mut d, &mut dm);
+        let off1 = read_appended(&f, 0, "claude-code", None, &mut d, &mut dm);
         assert_eq!(off1, len);
         assert_eq!(d.len(), 1);
 
@@ -366,14 +386,14 @@ mod tests {
             .write_all(format!("{ADDED}\n").as_bytes())
             .unwrap();
         let (mut d2, mut dm2) = (BTreeMap::new(), BTreeMap::new());
-        let off2 = read_appended(&f, off1, "claude-code", &mut d2, &mut dm2);
+        let off2 = read_appended(&f, off1, "claude-code", None, &mut d2, &mut dm2);
         assert_eq!(d2.len(), 1);
         assert_eq!(d2.iter().next().unwrap().1 .0, 100.0); // 只有 input=100 的追加行
         assert!(off2 > off1);
 
         // 从 off2 无新增时，不推进指针。
         let (mut d3, mut dm3) = (BTreeMap::new(), BTreeMap::new());
-        let off3 = read_appended(&f, off2, "claude-code", &mut d3, &mut dm3);
+        let off3 = read_appended(&f, off2, "claude-code", None, &mut d3, &mut dm3);
         assert_eq!(d3.len(), 0);
         assert_eq!(off3, off2);
         let _ = std::fs::remove_dir_all(&dir);
@@ -398,5 +418,47 @@ mod tests {
         let usage = report.models.iter().find(|u| u.model == "m").unwrap();
         assert!(usage.daily.iter().any(|d| d.date == "2026-01-03"));
         assert_eq!(usage.total_tokens, 150.0);
+    }
+
+    /// 回归：增量续读与全量扫描必须把 codex 的用量归到**同一个模型**。
+    ///
+    /// 增量只读文件尾部，永远读不到会话头部的 `turn_context`，若不预先解析
+    /// 会话模型，新增行会落进「未标记模型」——同一批 token 在 watch 刷新和
+    /// 全量重扫之间来回换模型，账本里也会分裂成两个分模型行。
+    #[test]
+    fn appended_codex_lines_inherit_the_session_model() {
+        let dir = std::env::temp_dir().join(format!("tum_delta_sm_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("rollout.jsonl");
+        // 头部（已在上一次扫描消费过）：真实上游形状，模型在 payload 下。
+        std::fs::write(
+            &f,
+            "{\"type\":\"turn_context\",\"payload\":{\"model\":\"LocalRouter\"}}\n",
+        )
+        .unwrap();
+        let head_len = std::fs::metadata(&f).unwrap().len();
+
+        const USAGE: &str = r#"{"timestamp":"2026-10-05T13:11:15Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10}}}}"#;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&f)
+            .unwrap()
+            .write_all(format!("{USAGE}\n").as_bytes())
+            .unwrap();
+
+        // 关键：从 head_len 续读——解析器看不到 turn_context 那一行。
+        let sm = file_session_model("codex", &f);
+        assert_eq!(sm.as_deref(), Some("LocalRouter"));
+        let (mut d, mut dm) = (BTreeMap::new(), BTreeMap::new());
+        read_appended(&f, head_len, "codex", sm.as_deref(), &mut d, &mut dm);
+
+        assert_eq!(d.len(), 1, "应读到一条新增用量");
+        assert_eq!(
+            dm.keys().collect::<Vec<_>>(),
+            vec![&super::super::ROUTED_MODEL.to_string()],
+            "LocalRouter 会话的增量行须打成哨兵，而不是未标记模型"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -13,7 +13,7 @@
 //! report.
 
 use super::{day_from_epoch_ms, finalize_days, finalize_models, LocalToolReport};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -55,24 +55,11 @@ fn legacy_db() -> PathBuf {
         .unwrap_or_default()
 }
 
+/// 只读打开 MiniMax 的 SQLite 库。走 `local::open_sqlite_readonly` 的共享实现：
+/// 只读连接能看见 `-wal`，因此读到的是最近一次提交的数据；读不到就本轮不出数，
+/// 而不是拿 `immutable=1` 的旧快照去覆盖账本。
 fn open_ro(path: &PathBuf) -> Option<Connection> {
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
-    // A running MiniMax Code can hold the DB for a checkpoint, letting us
-    // *open* read-only yet return Busy on the first query. Verify readability,
-    // and fall back to an immutable view so a locked window never yields an
-    // empty scan (which would silently drop the tool from the models view).
-    if let Some(conn) = Connection::open_with_flags(path, flags).ok() {
-        let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
-        let readable = conn
-            .query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
-            .is_ok();
-        if readable {
-            return Some(conn);
-        }
-        drop(conn);
-    }
-    let url = format!("file:{}?immutable=1", path.to_string_lossy());
-    Connection::open_with_flags(&url, flags).ok()
+    super::open_sqlite_readonly(path)
 }
 
 /// `local_runtime_sessions.extra_data_json` 里与模型归因相关的字段。上游运行时

@@ -185,23 +185,41 @@ fn scan_tree(
 /// 取自 `turn_context` 事件——那是 Codex 每轮开始时落盘的上下文，其中带
 /// `model`。用法量事件本身不带模型，配置直连上游时这里是真实模型名；配置
 /// 指向 TokenRouter 时这里是占位名 `LocalRouter`（由调用方转成哨兵）。
-fn session_model_of(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    for line in text.lines() {
+///
+/// 流式读取并在**首个** `turn_context` 处早退：该事件落在会话头部，没有必要
+/// 把几 MB 的 rollout 整个读进来——每个会话文件都会被预扫一次。
+///
+/// `pub(crate)` 供字节级增量扫描复用（`delta.rs`），保证两条路径口径一致。
+pub(crate) fn session_model_of(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    let reader = BufReader::with_capacity(64 * 1024, file);
+    for line in reader.lines().flatten() {
         if !line.contains("\"turn_context\"") {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        if let Some(m) = v.get("model").and_then(|m| m.as_str()) {
-            let m = m.trim();
-            if !m.is_empty() {
-                return Some(m.to_string());
-            }
+        if let Some(m) = turn_context_model(&v) {
+            return Some(m);
         }
     }
     None
+}
+
+/// 从一行 `turn_context` 里取模型名。
+///
+/// 上游把事件内容放在 `payload` 下：`{"type":"turn_context","payload":
+/// {"model":"LocalRouter",…}}`。行根的 `model` 是更早版本的形态，一并认掉
+/// ——真实 rollout 只在 `payload` 下，而旧单测恰好把模型写在行根，两者都能过，
+/// 于是「读行根」的实现长期绿灯却读不到任何真实数据。
+fn turn_context_model(v: &Value) -> Option<String> {
+    let m = v
+        .pointer("/payload/model")
+        .or_else(|| v.get("model"))?
+        .as_str()?
+        .trim();
+    (!m.is_empty()).then(|| m.to_string())
 }
 
 fn scan_file(
@@ -227,20 +245,9 @@ fn scan_file(
             e.0 += input;
             e.1 += cache_read;
             e.2 += output;
-            // 优先级：行内自带 > 会话级回填 > 未标记。回填出来的若是指向本地
-            // 路由的占位名（`LocalRouter`），再打成哨兵交由路由自记账归因。
-            let model = if !model.is_empty() {
-                model
-            } else if let Some(sm) = &session_model {
-                sm.clone()
-            } else {
-                crate::local::UNCLASSIFIED_MODEL.to_string()
-            };
-            let model = if crate::local::is_routed_placeholder(&model) {
-                crate::local::ROUTED_MODEL.to_string()
-            } else {
-                model
-            };
+            // 优先级与哨兵转换统一走 `resolve_model`——增量扫描（`delta.rs`）
+            // 用的是同一份实现，否则两条路径会把同一批 token 归到不同模型上。
+            let model = super::resolve_model(&model, session_model.as_deref());
             let m = by_model.entry(model).or_default();
             let me = m.entry(date).or_insert((0.0, 0.0, 0.0));
             me.0 += input;
@@ -331,13 +338,14 @@ mod tests {
     #[test]
     fn session_model_comes_from_turn_context() {
         // Codex 的用量事件不带 model，模型只在 turn_context 里。
+        // fixture 用**真实上游形状**：事件内容在 `payload` 下。
         let dir = std::env::temp_dir().join(format!("tum-codex-sm-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = write_session(
             &dir,
             "s1.jsonl",
             &[
-                r#"{"type":"turn_context","model":"LocalRouter","cwd":"D:/x"}"#,
+                r#"{"type":"turn_context","payload":{"model":"LocalRouter","cwd":"D:/x"}}"#,
                 r#"{"timestamp":"2026-10-05T13:11:15Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"total_tokens":90}}}}"#,
             ],
         );
@@ -354,6 +362,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 回归：真实 Codex rollout 把模型写在 `payload.model`，不是行根 `model`。
+    /// 修复前实现只读行根，于是**每条测试都绿、每条真实会话都读不到模型**，
+    /// Codex 全量用量落进「未标记模型」，路由归因的替换逻辑永不触发。
+    /// 行根形态一并保留，容忍更早版本。
+    #[test]
+    fn turn_context_model_is_read_from_payload_and_legacy_root() {
+        let real: Value =
+            serde_json::from_str(r#"{"type":"turn_context","payload":{"model":"LocalRouter"}}"#).unwrap();
+        assert_eq!(turn_context_model(&real).as_deref(), Some("LocalRouter"));
+
+        let legacy: Value = serde_json::from_str(r#"{"type":"turn_context","model":"gpt-5"}"#).unwrap();
+        assert_eq!(turn_context_model(&legacy).as_deref(), Some("gpt-5"));
+
+        // 空模型名不算命中，否则会把「没记模型」误当成有模型。
+        let blank: Value =
+            serde_json::from_str(r#"{"type":"turn_context","payload":{"model":"  "}}"#).unwrap();
+        assert_eq!(turn_context_model(&blank), None);
+    }
+
+    /// 预扫必须在首个 turn_context 处早退——会话文件里 turn_context 之后还有
+    /// 几万行响应内容，全读进来会让每次全量扫描都退化成 O(文件总量)。
+    #[test]
+    fn session_model_scan_stops_at_first_turn_context() {
+        let dir = std::env::temp_dir().join(format!("tum-codex-sm4-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = write_session(
+            &dir,
+            "s4.jsonl",
+            &[
+                r#"{"type":"turn_context","payload":{"model":"LocalRouter"}}"#,
+                // 故意放一条会解析失败的行在后面：早退则完全不必碰它。
+                "{not-json",
+            ],
+        );
+        assert_eq!(session_model_of(&p).as_deref(), Some("LocalRouter"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn scan_file_attributes_usage_to_session_model_and_marks_routed() {
         // 端到端：无模型的用量行按会话模型归因；`LocalRouter` 是路由占位名，
@@ -365,7 +411,7 @@ mod tests {
                 &dir,
                 name,
                 &[
-                    &format!(r#"{{"type":"turn_context","model":"{ctx}"}}"#),
+                    &format!(r#"{{"type":"turn_context","payload":{{"model":"{ctx}"}}}}"#),
                     r#"{"timestamp":"2026-10-05T13:11:15Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"total_tokens":90}}}}"#,
                 ],
             );

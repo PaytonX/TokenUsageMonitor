@@ -34,26 +34,11 @@ const KEEP_DAYS: usize = 90;
 const DB_FILE: &str = "state.db";
 
 fn open_reader(db_path: &std::path::Path) -> Option<Connection> {
-    use rusqlite::OpenFlags;
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
-    // 1) Read-only view: stays fresh with a live WAL writer. A running Hermes
-    //    gateway holds the DB under an exclusive lock during writes, so a
-    //    read-only connection can *open* yet return `DatabaseBusy` on the very
-    //    first query. Verify it's actually readable before trusting it.
-    if let Ok(conn) = Connection::open_with_flags(db_path, flags) {
-        let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
-        let readable = conn
-            .query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
-            .is_ok();
-        if readable {
-            return Some(conn);
-        }
-        drop(conn);
-    }
-    // 2) Writer held the lock for the whole window → immutable view reads the
-    //    on-disk DB without locking (best-effort; may miss un-checkpointed WAL).
-    let url = format!("file:{}?immutable=1", db_path.to_string_lossy());
-    Connection::open_with_flags(&url, flags).ok()
+    // 只读连接能看见 `-wal`（Hermes 的 gateway 常驻在线），读到的是最近一次提交
+    // 的数据。写者长时间持锁时宁可本轮不出数——账本按来源批量删除，缺源等于保留
+    // 上一轮的旧行——也不要退回 `immutable=1`：那会忽略 WAL、拿到旧快照并覆盖
+    // 账本里已正确的数字（见 `local::open_sqlite_readonly`）。
+    super::open_sqlite_readonly(db_path)
 }
 
 /// 一条会话的原始读数（已按当前展示口径拆分，output 含 reasoning，cost 取 max(实际,估算)）。
