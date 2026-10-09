@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getUsageHistory, forceRefresh } from "../api";
+  import { getUsageHistory, forceRefresh, loadInstanceKinds } from "../api";
   import { t, locale } from "../i18n/store";
   import {
     displayCurrency,
@@ -137,7 +137,8 @@
     }
     noDailyNote = null;
     getUsageHistory(PROBE_DAYS)
-      .then(({ rows }) => {
+      .then(({ rows }) => loadInstanceKinds().then((kindByInstance) => ({ rows, kindByInstance })))
+      .then(({ rows, kindByInstance }) => {
         if (seq !== weekSeq) return;
         if (series.mode === "account-daily") {
           // 服务端日账：单位可能是 tokens / usd / cny / afp，保留行上单位。
@@ -163,7 +164,8 @@
           return;
         }
         // 跨工具：与日历高亮同一拆解（合并口径，服务端优先），口径一致。
-        const map = buildUnifiedBreakdown(rows);
+        // 账户映射让经路由的行按计费账户而非模型名归因。
+        const map = buildUnifiedBreakdown(rows, kindByInstance);
         const key = series.providerKey;
         const appears = [...map.values()].some((d) => (d.byProvider[key] ?? 0) > 0);
         if (!appears) {

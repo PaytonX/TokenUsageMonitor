@@ -15,6 +15,7 @@
     detectCodexToken,
     upsertAccount,
     removeAccount,
+    invalidateInstanceKinds,
     closeSettings,
     forceRefresh,
     getDeviceReport,
@@ -221,6 +222,9 @@
   async function refreshAll() {
     try {
       const [cat, s] = await Promise.all([getProviders(), getSettings()]);
+      // 账户目录变了：趋势/日历里经路由用量的「计费账户」映射必须跟着失效，
+      // 否则新增账户要等下次重启才会被正确归因。
+      invalidateInstanceKinds();
       catalog = cat;
       settings = s;
       pollInterval = s.poll_interval_seconds ?? 0;

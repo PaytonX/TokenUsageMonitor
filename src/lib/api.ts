@@ -33,6 +33,30 @@ export async function getProviders(): Promise<ProviderCatalog> {
   return invoke<ProviderCatalog>("get_providers");
 }
 
+/**
+ * `instance_id → provider_kind` 映射，来自设置里的账户目录。
+ *
+ * 趋势/日历要把经路由的用量归到**计费账户**而不是模型名（见
+ * `providerForRouterSource`），而这三个视图各自都不持有账户列表。账户配置
+ * 改动极少，这里做进程内缓存，变更时由 {@link invalidateInstanceKinds} 显式
+ * 失效——账户增删后必须调用，否则新账户的路由用量会一直退回模型名归因。
+ */
+let instanceKindsCache: Promise<Map<string, string>> | null = null;
+
+export function loadInstanceKinds(): Promise<Map<string, string>> {
+  if (!instanceKindsCache) {
+    instanceKindsCache = getProviders()
+      .then((c) => new Map(c.accounts.map((a) => [a.instance_id, a.provider_kind])))
+      .catch(() => new Map<string, string>());
+  }
+  return instanceKindsCache;
+}
+
+/** 账户增删后调用，使下一次 {@link loadInstanceKinds} 重新读取。 */
+export function invalidateInstanceKinds(): void {
+  instanceKindsCache = null;
+}
+
 /** Add a new account (or update an existing one by `instance_id`). A brand-new
  * account is passed with an empty `instance_id`; the backend assigns one and
  * it is returned here. */

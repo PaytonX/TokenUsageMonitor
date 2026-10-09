@@ -6,8 +6,13 @@
 // 各工具的 token 日序列（getUsageHistory），全端汇总模式 = 各设备的工具日序列
 // （get_hub_devices）。provider 差分序列（percent/cny）不再进入趋势视图，
 // 也不再跨单位相加。
-import { getUsageHistory } from "./api";
-import { providerForModel, providerLabel, providerPalette } from "./model-provider";
+import { getUsageHistory, loadInstanceKinds } from "./api";
+import {
+  providerForModel,
+  providerForRoutedSlice,
+  providerLabel,
+  providerPalette,
+} from "./model-provider";
 import {
   collectRouterRowsByDate,
   routedAttribution,
@@ -67,13 +72,20 @@ export async function fetchToolSeries(days: number): Promise<NamedSeries> {
 
 /**
  * 本机模式趋势数据源：**按 Provider 跨工具**聚合的日序列。
- * 归因顺序：模型名前缀 → 单 Provider 工具兜底 → other（见 model-provider.ts）。
+ *
+ * 归因顺序（见 model-provider.ts）：模型名前缀 → 单 Provider 工具兜底 →
+ * other；**经路由的行改由计费账户决定**——`glm-5.3-flash` 走火山方舟时必须
+ * 记在火山名下，不能按模型名记到智谱。
+ *
  * ids 按窗口内总量降序（图例与堆叠顺序一致），颜色取 provider 品牌色。
  */
 export async function fetchProviderCrossToolSeries(
   days: number,
 ): Promise<NamedSeries & { colors: Record<string, string> }> {
-  const { rows } = await getUsageHistory(days);
+  const [{ rows }, kindByInstance] = await Promise.all([
+    getUsageHistory(days),
+    loadInstanceKinds(),
+  ]);
   const byProvider = new Map<string, Map<string, number>>();
   const add = (key: string, date: string, v: number) => {
     let m = byProvider.get(key);
@@ -105,7 +117,9 @@ export async function fetchProviderCrossToolSeries(
   }
   for (const [date, e] of routed) {
     const { slices, fallback } = routedAttribution(e.total, routerRows.get(date) ?? []);
-    for (const s of slices) add(providerForModel(s.model), date, s.total);
+    // 按**计费账户**归因，而不是模型名——这正是"我明明调的是火山、趋势却
+    // 显示智谱"的根因。
+    for (const s of slices) add(providerForRoutedSlice(s.model, s.source, kindByInstance), date, s.total);
     if (fallback > 0) {
       for (const [source, v] of e.sources) {
         add(providerForModel(ROUTED_MODEL, source), date, fallback * (v / e.total));

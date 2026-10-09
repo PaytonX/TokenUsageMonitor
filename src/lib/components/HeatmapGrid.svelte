@@ -27,7 +27,7 @@
 
 <script lang="ts">
   import { untrack } from "svelte";
-  import { getUsageHistory } from "../api";
+  import { getUsageHistory, loadInstanceKinds } from "../api";
   import { formatUsage, type HeatmapCell, type UsageUnit } from "../types";
   import {
     buildUnifiedBreakdown,
@@ -100,11 +100,12 @@
     loaded = false;
     cells = [];
     breakdown = new Map();
-    getUsageHistory(CAL_DAYS)
-      .then(({ rows }) => {
+    Promise.all([getUsageHistory(CAL_DAYS), loadInstanceKinds()])
+      .then(([{ rows }, kindByInstance]) => {
         // 一次性拆解：合并口径（服务端日账优先，逐 provider 判定），
         // 总量与 provider 归因来自同一次遍历，不再二选一。
-        const map = buildUnifiedBreakdown(rows);
+        // kindByInstance 让经路由的行按**计费账户**归因，而非模型名。
+        const map = buildUnifiedBreakdown(rows, kindByInstance);
         if (seq !== fetchSeq) return;
         breakdown = map;
         return [...map.entries()]

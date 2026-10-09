@@ -196,3 +196,51 @@ export function providerForModel(model: string, source?: string): string {
   if (source && TOOL_DEFAULT_PROVIDER[source]) return TOOL_DEFAULT_PROVIDER[source];
   return "other";
 }
+
+/** 路由台账来源键前缀。镜像后端 `router::ledger_source` 的 `router:`。 */
+export const ROUTER_SOURCE_PREFIX = "router:";
+
+/**
+ * 路由台账来源键 `router:<instance_id>` → provider key；认不出返回 null。
+ *
+ * 经 TokenRouter 的用量必须按**计费账户**归因，不能只看模型名。
+ * 模型名回答"这是谁家的模型"，账户回答"谁出的钱"——两者经常不一致：
+ * `glm-5.3-flash` 是智谱的模型，但本机是通过**火山方舟**账户调它的。
+ * 按模型名前缀归因会把它算进「GLM 智谱」层，于是：
+ * - 趋势/日历里 Codex 的大头用量挂在智谱名下，实际账单却是火山；
+ * - 点火山卡片看不到经路由的量，点智谱卡片却看到一堆自己没调过的量。
+ *
+ * `kindByInstance` 来自设置里的账户目录（`getProviders()`），是权威来源。
+ * 账户已被删除、或台账行早于账户创建时查不到，退回 instance_id 的首个
+ * 连字符段——本项目生成的 id 形如 `volcengine-1791169791-0` / `minimax`，
+ * 首段即 provider kind。仍认不出就返回 null，由调用方退回模型名归因。
+ */
+export function providerForRouterSource(
+  source: string | undefined,
+  kindByInstance: ReadonlyMap<string, string>,
+): string | null {
+  if (!source || !source.startsWith(ROUTER_SOURCE_PREFIX)) return null;
+  const id = source.slice(ROUTER_SOURCE_PREFIX.length).trim();
+  if (!id) return null;
+  const kind = kindByInstance.get(id);
+  if (kind) return kind;
+  const head = id.split("-")[0]?.toLowerCase() ?? "";
+  return head && Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, head)
+    ? head
+    : null;
+}
+
+/**
+ * 经路由用量的 provider key：**账户优先，模型名兜底**。
+ *
+ * 顺序与 {@link providerForRouterSource} 的理由一致——账户权威、模型名兜底，
+ * 两者都拿不到才落到 "other"。`source` 不是路由来源时直接走模型名，
+ * 保证直连行（如 MiniMax Code 的 `minimax/...`）行为完全不变。
+ */
+export function providerForRoutedSlice(
+  model: string,
+  source: string | undefined,
+  kindByInstance: ReadonlyMap<string, string>,
+): string {
+  return providerForRouterSource(source, kindByInstance) ?? providerForModel(model);
+}

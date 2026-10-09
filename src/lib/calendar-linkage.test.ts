@@ -253,6 +253,83 @@ describe("buildLedgerBreakdown", () => {
     expect(d.total).toBe(500);
     expect(d.byProvider).toEqual({ openai: 300 });
   });
+
+  // ---- 经路由：按计费账户而非模型名归因 ----
+
+  /** 本机真实账户目录（config.toml 的 accounts 段裁剪）。 */
+  const VOLCENGINE = new Map([["volcengine-1791169791-0", "volcengine"]]);
+
+  /** 真实路由台账行：火山账户承载的 glm-5.3-flash。 */
+  const glmViaVolc = (date: string, total: number) => ({
+    ...routerRow(date, "glm-5.3-flash", total),
+    source: "router:volcengine-1791169791-0",
+  });
+
+  it("路由切片按计费账户归因，不按模型名（回归：glm 走方舟曾被记到智谱名下）", () => {
+    const rows = [
+      row("codex", "2026-10-09", "", 15_454_785),
+      row("codex", "2026-10-09", "__via_router__", 15_454_785),
+      glmViaVolc("2026-10-09", 15_454_785),
+    ];
+    const d = buildLedgerBreakdown(rows, VOLCENGINE).get("2026-10-09")!;
+    // 关键断言：模型叫 glm-5.3-flash，但账户是火山方舟 → 归 volcengine，
+    // 绝不能出现 glm 层（那是智谱，本机根本没配它的账户）。
+    expect(d.byProvider).toEqual({ volcengine: 15_454_785 });
+    expect(d.byProvider).not.toHaveProperty("glm");
+    expect(Object.values(d.byProvider).reduce((s, v) => s + v, 0)).toBe(d.total);
+  });
+
+  it("同一模型由不同账户承载时按账户分开归因", () => {
+    const kinds = new Map([
+      ["volcengine-1791169791-0", "volcengine"],
+      ["minimax", "minimax"],
+    ]);
+    const rows = [
+      row("codex", "2026-10-09", "", 1000),
+      row("codex", "2026-10-09", "__via_router__", 1000),
+      glmViaVolc("2026-10-09", 600),
+      { ...routerRow("2026-10-09", "glm-5.3-flash", 400), source: "router:minimax" },
+    ];
+    const d = buildLedgerBreakdown(rows, kinds).get("2026-10-09")!;
+    expect(d.byProvider).toEqual({ volcengine: 600, minimax: 400 });
+    expect(Object.values(d.byProvider).reduce((s, v) => s + v, 0)).toBe(d.total);
+  });
+
+  it("账户目录缺失时退回 instance_id 前缀，仍能认出火山", () => {
+    const rows = [
+      row("codex", "2026-10-09", "", 500),
+      row("codex", "2026-10-09", "__via_router__", 500),
+      glmViaVolc("2026-10-09", 500),
+    ];
+    // 空表（默认参数）→ 走前缀兜底。
+    expect(buildLedgerBreakdown(rows).get("2026-10-09")!.byProvider).toEqual({
+      volcengine: 500,
+    });
+  });
+
+  it("认不出账户时才退回模型名（直连行行为不受影响）", () => {
+    // `router:acct-1` 既不在账户目录、前缀也不是已知 provider →
+    // 退回模型名归因，老链路（routerProxy 之类测试源）保持原行为。
+    const rows = [
+      row("minimax-code", "2026-10-05", "", 1000),
+      row("minimax-code", "2026-10-05", "__via_router__", 1000),
+      routerRow("2026-10-05", "ark-seed-1.6", 500),
+      routerRow("2026-10-05", "deepseek-v4-flash", 500),
+    ];
+    const d = buildLedgerBreakdown(rows, VOLCENGINE).get("2026-10-05")!;
+    expect(d.byProvider).toEqual({ volcengine: 500, deepseek: 500 });
+  });
+
+  it("直连的 glm 行仍按模型名归智谱，不受路由账户逻辑影响", () => {
+    // 没有走路由的 glm（用户真调了智谱）必须保持智谱，否则会把直连量也吞掉。
+    const rows = [
+      row("zcode", "2026-10-09", "", 300),
+      row("zcode", "2026-10-09", "GLM-4.7", 300),
+    ];
+    expect(buildLedgerBreakdown(rows, VOLCENGINE).get("2026-10-09")!.byProvider).toEqual({
+      glm: 300,
+    });
+  });
 });
 
 describe("providerKeyForKind", () => {

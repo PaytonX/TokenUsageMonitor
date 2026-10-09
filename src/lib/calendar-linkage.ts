@@ -9,7 +9,7 @@
 
 import { normalizeKind } from "./brand-glyphs";
 import type { UsageDailyRow } from "./api";
-import { providerForModel } from "./model-provider";
+import { providerForModel, providerForRoutedSlice } from "./model-provider";
 import {
   collectRouterRowsByDate,
   routedAttribution,
@@ -132,6 +132,10 @@ export interface FocusStats {
  */
 export function buildLedgerBreakdown(
   rows: UsageDailyRow[],
+  /** `instance_id → provider kind`，来自账户目录。经路由的行按它归因到
+   *  **计费账户**而非模型名（见 `providerForRouterSource`）。缺省为空表，
+   *  此时退回 instance_id 前缀 → 模型名的既有链路。 */
+  kindByInstance: ReadonlyMap<string, string> = new Map(),
 ): Map<string, DayBreakdown> {
   const out = new Map<string, DayBreakdown>();
   const slot = (date: string): DayBreakdown => {
@@ -167,7 +171,8 @@ export function buildLedgerBreakdown(
     for (const v of bySource.values()) sentinel += v;
     const { slices, fallback } = routedAttribution(sentinel, routerRows.get(date) ?? []);
     for (const s of slices) {
-      const key = providerForModel(s.model);
+      // 按**计费账户**归因：`glm-5.3-flash` 由火山方舟承载时不能记到智谱名下。
+      const key = providerForRoutedSlice(s.model, s.source, kindByInstance);
       e.byProvider[key] = (e.byProvider[key] ?? 0) + s.total;
     }
     // 路由台账覆盖不足（或没有）：差额按各工具占比回退到工具兜底归因，
@@ -236,8 +241,9 @@ function absorbedLayers(canonical: string): string[] {
  */
 export function buildUnifiedBreakdown(
   rows: UsageDailyRow[],
+  kindByInstance: ReadonlyMap<string, string> = new Map(),
 ): Map<string, DayBreakdown> {
-  const out = buildLedgerBreakdown(rows);
+  const out = buildLedgerBreakdown(rows, kindByInstance);
   // 服务端行按 (规范层, date) 归集。别名层不做反向映射：若将来豆包自己出了
   // 服务端日账，那**是另一个账户**，不该并进火山。
   const server = new Map<string, Map<string, number>>();
