@@ -6,6 +6,7 @@
   import { readAggMode, readPref, writePref } from "../prefs";
   import { buildAggregateModels, staleDetailDevices } from "../device-agg";
   import { collectRouterRowsByDate, routedAttribution, ROUTED_MODEL, ROUTED_MODEL_DISPLAY } from "../router-attribution";
+import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../model-name";
   import type { LocalModelUsage, LocalToolsPayload } from "../types";
   import { displayCurrency, formatCost, normalizeCurrency, toUsd } from "../currency";
   import type { Currency } from "../currency";
@@ -225,8 +226,7 @@
   function shortName(raw: string): string {
     // 哨兵是内部标识，展示前换成可读名（仅台账覆盖不足时会走到这里）。
     if (raw === ROUTED_MODEL) return ROUTED_MODEL_DISPLAY;
-    const idx = raw.lastIndexOf("/");
-    return idx >= 0 ? raw.slice(idx + 1) : raw;
+    return stripModelPrefix(raw);
   }
 
   // 跨工具归并同一模型：汇总 total/cost，并合并逐日序列。
@@ -235,12 +235,26 @@
   // 折算只发生在"合并"这一步；展示仍按用户所选展示币种（见 fmtCost）。
   let modelList = $derived.by(() => {
     const byName = new Map<string, { id: string; name: string; total: number; costUsd: number; currencies: Set<Currency>; cost_estimated: boolean; daily: Map<string, LocalModelUsage["daily"][number]> }>();
+    // 归并键（小写）→ 该键下各写法的累计量，用于挑展示名。同一模型被不同
+    // 工具用不同大小写记录（zcode 的 GLM-5.3-Flash vs 路由台账的
+    // glm-5.3-flash）时，不归并就会在模型页裂成两条。
+    const variants = new Map<string, Map<string, number>>();
+    const note = (key: string, display: string, total: number) => {
+      let v = variants.get(key);
+      if (!v) {
+        v = new Map();
+        variants.set(key, v);
+      }
+      v.set(display, (v.get(display) ?? 0) + total);
+    };
     for (const tool of payload?.tools ?? []) {
       for (const mu of tool.models) {
-        const key = shortName(mu.model);
+        const short = shortName(mu.model);
+        const key = canonicalModelKey(short);
+        note(key, short, mu.total_tokens);
         let agg = byName.get(key);
         if (!agg) {
-          agg = { id: key, name: key, total: 0, costUsd: 0, currencies: new Set(), cost_estimated: false, daily: new Map() };
+          agg = { id: key, name: short, total: 0, costUsd: 0, currencies: new Set(), cost_estimated: false, daily: new Map() };
           byName.set(key, agg);
         }
         agg.total += mu.total_tokens;
@@ -262,6 +276,11 @@
           }
         }
       }
+    }
+    // 展示名取该归并键下用量最大的写法，与归并键解耦。
+    for (const [key, agg] of byName) {
+      const v = variants.get(key);
+      if (v && v.size > 0) agg.name = dominantDisplayName(v);
     }
     return [...byName.values()]
       .sort((a, b) => b.total - a.total)

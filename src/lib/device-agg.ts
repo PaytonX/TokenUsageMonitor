@@ -19,6 +19,7 @@ import type {
   LocalModelUsage,
   LocalToolsPayload,
 } from "./types";
+import { canonicalModelKey, dominantDisplayName } from "./model-name";
 
 /** 全端汇总的设备配色（稳定哈希，与设备页图例共用一套）。 */
 const DEV_COLORS = ["#4cc2ff", "#f2b35b", "#5fd4a2", "#f27b9b", "#b58cf5", "#6fd1d1"];
@@ -133,29 +134,48 @@ export function buildAggregateToolsPayload(devices: HubDevice[]): LocalToolsPayl
 /**
  * 合并各设备的分模型序列（仅总量）：模型名取并集，逐日求和。
  * cost 恒为 0（成本不跨设备同步），模型页在汇总态自动隐藏成本位。
+ *
+ * 按 `canonicalModelKey`（小写）归并：本机与远端设备对同一模型的大小写
+ * 写法可能不同（`GLM-5.3-Flash` vs `glm-5.3-flash`），不分设备一律按原样
+ * 分组会让全端汇总把同一个模型拆成两条。展示名取用量最大的写法。
  */
 export function buildAggregateModels(devices: HubDevice[]): LocalModelUsage[] {
   const byModel = new Map<string, Map<string, number>>();
+  const variants = new Map<string, Map<string, number>>();
   for (const d of dedupeDevices(devices)) {
     for (const [model, series] of Object.entries(d.models ?? {})) {
-      let days = byModel.get(model);
+      const key = canonicalModelKey(model);
+      let days = byModel.get(key);
       if (!days) {
         days = new Map();
-        byModel.set(model, days);
+        byModel.set(key, days);
+      }
+      let v = variants.get(key);
+      if (!v) {
+        v = new Map();
+        variants.set(key, v);
       }
       for (const [date, total] of foldTotals(series.daily ?? [])) {
         days.set(date, (days.get(date) ?? 0) + total);
+        v.set(model, (v.get(model) ?? 0) + total);
       }
     }
   }
   const out: LocalModelUsage[] = [];
-  for (const [model, days] of byModel) {
+  for (const [key, days] of byModel) {
     const daily = [...days.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([date, total]) => ({ date, input: 0, cache_read: 0, output: 0, total }));
     const total_tokens = daily.reduce((s, d) => s + d.total, 0);
     if (total_tokens > 0) {
-      out.push({ model, total_tokens, cost: 0, currency: "", cost_estimated: false, daily });
+      out.push({
+        model: dominantDisplayName(variants.get(key) ?? new Map()),
+        total_tokens,
+        cost: 0,
+        currency: "",
+        cost_estimated: false,
+        daily,
+      });
     }
   }
   out.sort((a, b) => b.total_tokens - a.total_tokens);
