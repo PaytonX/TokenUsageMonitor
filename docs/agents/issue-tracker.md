@@ -2,9 +2,10 @@
 
 Issues and specs for this repo live as markdown files in `.scratch/`.
 
-This repo has **no git remote**, so there is no external issue tracker to call.
-`.scratch/` is committed alongside the code (it is deliberately *not* in
-`.gitignore`), so issue history travels with the repository.
+There is a GitHub remote (`PaytonX/TokenUsageMonitor`), but issues are still tracked
+locally rather than via GitHub Issues. `.scratch/` is **gitignored** (`.gitignore:39`,
+added in 8adc898) — issue history is working scratch, deliberately not shipped with the
+code. Anything that must survive a fresh clone belongs in `docs/`, not here.
 
 ## Conventions
 
