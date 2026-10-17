@@ -65,6 +65,7 @@ export const en: Record<string, string> = {
   // Window buttons / footer
   "settings.win.minimize": "Minimize",
   "settings.win.maximize": "Maximize/Restore",
+  "settings.preview.title": "Live preview",
   "settings.footer.saveClose": "Save and close",
   "settings.footer.saving": "Saving…",
   "settings.footer.saveSettings": "Save settings",

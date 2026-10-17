@@ -67,6 +67,7 @@ export const zhCN: Record<string, string> = {
   // 窗口按钮 / 页脚
   "settings.win.minimize": "最小化",
   "settings.win.maximize": "最大化/还原",
+  "settings.preview.title": "实时预览",
   "settings.footer.saveClose": "保存并关闭",
   "settings.footer.saving": "保存中…",
   "settings.footer.saveSettings": "保存设置",

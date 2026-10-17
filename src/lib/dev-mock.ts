@@ -1,3 +1,7 @@
+// 类型引入编译期擦除，不产生运行时依赖——本文件对 IPC 模块仍然是零引用，
+// 契约测试会断言这一点（见 dev-mock.contract.test.ts）。
+import type { UsageSnapshot } from "./types";
+
 // 开发期 Tauri IPC 桩 —— 让真实组件在浏览器里直接跑。
 //
 // 为什么需要：App.svelte / HeatmapGrid / TrendPanel 等全部通过
@@ -168,7 +172,17 @@ const ACCOUNTS = [
 const now = Date.now();
 const iso = (offsetH: number) => new Date(now + offsetH * 3600_000).toISOString();
 
-function snapshot() {
+/**
+ * 生成一整套与真机同构的用量桩。
+ *
+ * `base` 是所有时间戳的锚点：设置窗口的实时预览（见 PreviewFrame.svelte）
+ * 每次调用都以「当下」为锚重新生成，这样倒计时读数总是合理——若沿用模块
+ * 加载时刻的锚，应用跑久了预览会显示「重置剩余 -3h」这种明显坏掉的数字。
+ * 形状本身逐字段固定，所以每次调用的**布局完全一致**，不会掩盖设置改动
+ * 带来的排版差异。
+ */
+function snapshot(base: number = now) {
+  const iso = (offsetH: number) => new Date(base + offsetH * 3600_000).toISOString();
   interface W {
     h5: number; h5q: number; wk: number; wkq: number;
     mo: number; moq: number; unit: "tokens" | "afp" | "cny" | "credits" | "usd";
@@ -216,6 +230,23 @@ function snapshot() {
 }
 
 const USAGE = snapshot();
+
+/**
+ * 设置窗口实时预览用的用量桩（方案 .scratch/glance-bench/issues/02）。
+ *
+ * 与 `installDevMock` 的区别：后者劫持 `invoke` 让整棵应用树在浏览器里跑，
+ * 会**替换整个数据源**；这里只产出一份数组，供 PreviewFrame 直接喂给真实的
+ * ProviderCard，不接管任何 IPC。预览因此不会把 IPC 拖进自己的渲染树。
+ *
+ * 以调用时刻为时间锚（见 `snapshot` 的注释），保证倒计时读数合理。
+ * 逐字段形状与真机一致：`provider_id` 用 instance_id（含 `volcengine-9-0`
+ * 这种带序号的），`windows.daily` 只给 AgentPlan 类，差分类 provider
+ * 刻意不带按日账本——否则预览会长期走不到 DetailCard 的空态分支。
+ */
+export function previewSnapshots(): UsageSnapshot[] {
+  return snapshot(Date.now()) as UsageSnapshot[];
+}
+
 const STATES = Object.fromEntries(
   USAGE.map((s) => [s.provider_id, { snapshot: s, last_error: null, last_updated_at: iso(0) }]),
 );

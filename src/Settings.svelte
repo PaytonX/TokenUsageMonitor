@@ -54,6 +54,7 @@
   import { CURRENCIES, USD_RATES, applyRatesSnapshot, type Currency } from "./lib/currency";
   import { applyLocaleSetting, t, type LangSetting } from "./lib/i18n/store";
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
+import PreviewFrame from "./lib/components/PreviewFrame.svelte";
 
   type Tab = "general" | "accounts" | "interaction" | "network" | "router" | "about";
 
@@ -2236,6 +2237,18 @@ async function handleMinimize() {
         </div>
       {/if}
     </section>
+
+    <!--
+      实时预览（方案 .scratch/glance-bench/issues/02）。只在与「外观」有关的
+      两个页签出现：账号、网络、路由器这些设置与面板长相无关，塞个预览
+      上去只是噪音。
+    -->
+    {#if tab === "general" || tab === "interaction"}
+      <aside class="settings__preview">
+        <h2 class="preview-title">{$t("settings.preview.title")}</h2>
+        <PreviewFrame {settings} pollIntervalSec={pollInterval} />
+      </aside>
+    {/if}
   </div>
 
   <footer class="settings__footer">
@@ -2408,6 +2421,36 @@ async function handleMinimize() {
     padding: 22px 34px 32px;
     scrollbar-width: thin;
     scrollbar-color: var(--tum-border) transparent;
+  }
+
+  /* --- 右侧实时预览栏（issues/02）-------------------------------------------
+     固定 420px：里面按 dashboard 的原始 400px 宽度渲染，不缩放——
+     transform 会改 backdrop root 与 containing block，玻璃层保真就没了
+     （见 PreviewFrame.svelte 头部）。所以是**加宽设置窗口**而不是缩小内容。 */
+  .settings__preview {
+    flex: 0 0 420px;
+    width: 420px;
+    /* min-width:0 是必须的：flex 子项默认 min-width:auto 会拒绝收缩到内容
+       以下。缺了它，窗口拖窄时这一栏会撑破 .settings__body 的横向布局，
+       把中间的内容区挤出可视范围（导航 148 + 预览 420 已占去 568）。 */
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--tum-space-2);
+    padding: var(--tum-space-3);
+    border-left: 1px solid var(--tum-border);
+    background: rgba(15, 23, 42, 0.28);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--tum-border) transparent;
+  }
+
+  .preview-title {
+    font-size: var(--tum-font-size-sm);
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    color: var(--tum-text-muted);
+    text-transform: uppercase;
   }
 
   .pane {
