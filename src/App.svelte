@@ -45,6 +45,7 @@
     isPayAsYouGo,
     hexToRgb,
   } from "./lib";
+  import { markIpc, markFrameStart, observeLongFrames } from "./lib/perf";
   import ProviderCard from "./lib/components/ProviderCard.svelte";
   import ProgressRing from "./lib/components/ProgressRing.svelte";
   import MiniPanel from "./lib/components/MiniPanel.svelte";
@@ -357,15 +358,20 @@
   let unlistenFns: Array<() => void> = [];
 
   onMount(async () => {
+    // 帧成本通道：这是唯一与 Glance 的 SLOW_FRAME 语义对等的指标
+    // （真正含 style/layout/paint/composite）。不支持的 WebView2 上返回 false，
+    // 此时只有 frameStart（更新到帧开始的延迟）可用。别拿它冒充帧成本。
+    observeLongFrames();
     // 并行拉取用量 + 状态 + 设置，减少启动等待。
-    const [usage, states] = await Promise.all([
-      getUsage(),
-      getProviderStates(),
-    ]);
+    // 三条通道量纲不同、不可互替：见 ./lib/perf 的文件头。
+    const [usage, states] = await markIpc(() =>
+      Promise.all([getUsage(), getProviderStates()]),
+    );
     snapshots = usage;
     errors = extractErrors(states);
     settings = await getSettings();
     lastRefreshAt = Date.now();
+    void markFrameStart();
 
     // TokenRouter 状态点：初始拉取 + 切换事件刷新。
     getRouterStatus()
@@ -381,6 +387,7 @@
 
 
     // Live updates.
+    // 这是**主路径**：数据由后端推送，没有 IPC 等待，所以只有 render span 有意义。
     unlistenFns.push(
       await onUsageUpdated((update) => {
         const snap = update.snapshot;
@@ -392,6 +399,9 @@
         actives = { ...actives, [snap.provider_id]: update.active };
         errors = { ...errors, [snap.provider_id]: "" };
         lastRefreshAt = Date.now();
+        // 量「数据写入 state → 下一帧提交前」。连续推送时后一次会让前一次判为
+        // stale 丢弃，不会把两帧串成一条样本（见 ./lib/perf）。
+        void markFrameStart();
       }),
     );
 
@@ -410,10 +420,11 @@
     unlistenFns.push(
       await onSettingsChanged(async (next) => {
         settings = next;
-        snapshots = await getUsage();
+        snapshots = await markIpc(() => getUsage());
         const states = await getProviderStates();
         errors = extractErrors(states);
         lastRefreshAt = Date.now();
+        void markFrameStart();
       }),
     );
 
@@ -934,8 +945,9 @@
 
   async function refresh() {
     await forceRefresh();
-    snapshots = await getUsage();
+    snapshots = await markIpc(() => getUsage());
     lastRefreshAt = Date.now();
+    void markFrameStart();
   }
 
   async function closeApp() {
@@ -1273,13 +1285,15 @@
     inset: 0;
     display: flex;
     flex-direction: column;
-    transition: transform 150ms var(--tum-ease-spring);
+    /* 兜底值：token 缺失时退化成原行为，而不是过渡整体静默消失
+       （未定义的自定义属性会让 transition-duration 回落 0s）。 */
+    transition: transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
   }
 
   /* 贴边收起的滑出走 ease-in 曲线（200ms，加速钻边）：CSS transition 读取的是
      变化后的目标状态，基态规则只服务滑入（spring），本规则只服务滑出。 */
   .pill-layer.is-docked {
-    transition: transform 200ms var(--tum-ease-dock-exit);
+    transition: transform var(--tum-dur-base, 200ms) var(--tum-ease-dock-exit);
   }
 
   .pill-layer.is-docked[data-side="right"] {

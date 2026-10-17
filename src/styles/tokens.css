@@ -100,6 +100,16 @@
   --tum-ease-dock-exit: cubic-bezier(0.32, 0, 0.67, 0); /* 收起滑出：加速钻边 */
   --tum-ease-ring: cubic-bezier(0.2, 0.8, 0.2, 1);
 
+  /* 时长 token（方案 .scratch/glance-bench/issues/01）。
+     此前时长全部硬编码散落在 App.svelte（150ms/200ms）与 dockPill() 的时间线里，
+     导致渲染耗时（lib/perf）测出的 p95 无法归因到某条具体动效——没有表可比。
+     量级对齐 Glance 的 SLIDE/FLIP/GLIDE/SETTLE（240/160/200/180ms）。
+     新增动效一律引用这些 token，不要再写字面量。 */
+  --tum-dur-instant: 120ms; /* dockPill 三段线的第一段；细节展开延迟 */
+  --tum-dur-fast: 150ms; /* 胶囊滑入 */
+  --tum-dur-base: 200ms; /* 胶囊滑出 / 通用 */
+  --tum-dur-slow: 240ms; /* 选项滑块 */
+
   /* Kept for compatibility; no component currently references it */
   --tum-scanline: none;
 }
