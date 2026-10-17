@@ -52,6 +52,7 @@
     type PageTab,
   } from "./lib";
   import { CURRENCIES, USD_RATES, applyRatesSnapshot, type Currency } from "./lib/currency";
+  import { readCardOrder } from "./lib/prefs";
   import { applyLocaleSetting, t, type LangSetting } from "./lib/i18n/store";
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
 import PreviewFrame from "./lib/components/PreviewFrame.svelte";
@@ -95,6 +96,24 @@ import PreviewFrame from "./lib/components/PreviewFrame.svelte";
   };
 
   let tab = $state<Tab>("general");
+
+  /**
+   * 卡片顺序偏好。**必须搬进 `$state`**：localStorage 的读取不是 Svelte 的
+   * 响应式来源，直接在子组件的 `$derived.by` 里调 `readCardOrder()`，
+   * 主面板拖动改顺序时预览永远不会重算——「改排序 → 预览变化」这条验收
+   * 就成了摆设。切 tab 会卸载并重建预览（见下方 `{#if tab === ...}`），
+   * 因此这里在 tab 切换时重读一次即可覆盖常规路径。
+   *
+   * 已知未覆盖：设置窗**一直开着**、用户去主面板拖了卡片的情况——跨 WebView
+   * 的 localStorage 是否共享、`storage` 事件是否跨窗口派发，都需要真机验证，
+   * 在此之前不做假设。
+   */
+  let cardOrder = $state<string[]>(readCardOrder());
+  $effect(() => {
+    // 依赖 tab：切页签时重读，覆盖「主面板改了顺序 → 回到设置」这条路径。
+    void tab;
+    cardOrder = readCardOrder();
+  });
   let catalog = $state<ProviderCatalog | null>(null);
   let settings = $state<Settings | null>(null);
   let forms = $state<AccountForm[]>([]);
@@ -2246,7 +2265,7 @@ async function handleMinimize() {
     {#if tab === "general" || tab === "interaction"}
       <aside class="settings__preview">
         <h2 class="preview-title">{$t("settings.preview.title")}</h2>
-        <PreviewFrame {settings} pollIntervalSec={pollInterval} />
+        <PreviewFrame {settings} {cardOrder} pollIntervalSec={pollInterval} />
       </aside>
     {/if}
   </div>

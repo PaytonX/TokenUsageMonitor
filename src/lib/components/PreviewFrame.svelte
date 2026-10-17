@@ -37,39 +37,55 @@
 <script lang="ts">
   import ProviderCard from "./ProviderCard.svelte";
   import { previewSnapshots } from "../dev-mock";
-  import { readCardOrder } from "../prefs";
-  import type { UsageSnapshot } from "../types";
-  import type { Settings } from "../types";
+  import type { UsageSnapshot, Settings } from "../types";
 
   interface Props {
     /** 预览要展示的快照序列。默认用 fixture。 */
     snapshots?: UsageSnapshot[];
     /** 当前设置——取账户强调色的来源，与 App.svelte 的 accentById 同源。 */
     settings?: Settings | null;
+    /**
+     * 卡片顺序偏好。由调用方以 `$state` 持有并传入。
+     *
+     * **不要在这里直接调 `readCardOrder()`**：它读的是 localStorage，不是
+     * Svelte 的响应式信号，放进 `$derived.by` 不构成依赖——主面板里拖动
+     * 卡片改了顺序，预览永远不会重算。这条验收（「改排序 → 预览变化」）就
+     * 是个摆设。值的归属交给调用方，它才知道何时该刷新。
+     */
+    cardOrder?: string[];
     /** 轮询周期（秒）。决定新鲜度徽章的分档。 */
     pollIntervalSec?: number;
-    /**
-     * 预览里的时钟。不跟着真实时间跑，否则倒计时一直在跳，会掩盖
-     * 「设置改动导致的排版变化」——那才是预览要让人看清的东西。
-     */
-    now?: number;
   }
 
   const {
     snapshots = previewSnapshots(),
     settings = null,
+    cardOrder = [],
     pollIntervalSec = 300,
-    now = Date.now(),
   }: Props = $props();
 
   /**
-   * 与 App.svelte 同源的排序：按 `cardOrder` 偏好排，未列入的保持原序，
-   * 不自行发明第二套排序规则。
+   * 预览自己的时钟。**必须走定时器**：早先把它写成 `$props()` 的解构默认值
+   * （`now = Date.now()`），那只在组件创建时求值一次，于是 `lastRefreshAt`
+   * 与倒计时的差值随真实时间持续漂移，几分钟后显示的就是明显错误的数字。
+   * `lastRefreshAt` 另行冻结在桩数据的锚点上，所以「距上次更新 X 秒」会
+   * 正常增长，而倒计时随时钟平滑走——两者都不再是死值。
    */
+  let now = $state(Date.now());
+  $effect(() => {
+    const t = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(t);
+  });
+
+  /** 桩数据的生成时刻，作为「上次刷新」的锚点。用桩自带的时间戳，
+   *  这样即使调用方换了一套 snapshots，lastRefreshAt 也跟着换，
+   *  不会指向一个不属于这批数据的时间。 */
+  const anchor = $derived(snapshots[0] ? Date.parse(snapshots[0].timestamp) : Date.now());
+
+  /** 与 App.svelte 同源的排序：按传入的 cardOrder 排，未列入的保持原序。 */
   const ordered = $derived.by(() => {
-    const order = readCardOrder();
-    if (order.length === 0) return snapshots;
-    const pos = new Map(order.map((id, i) => [id, i]));
+    if (cardOrder.length === 0) return snapshots;
+    const pos = new Map(cardOrder.map((id, i) => [id, i]));
     return [...snapshots].sort(
       (a, b) => (pos.get(a.provider_id) ?? Infinity) - (pos.get(b.provider_id) ?? Infinity),
     );
@@ -92,7 +108,7 @@
         accent={accentById[snap.provider_id]}
         {pollIntervalSec}
         {now}
-        lastRefreshAt={now}
+        lastRefreshAt={anchor}
         countdown={true}
       />
     {/each}

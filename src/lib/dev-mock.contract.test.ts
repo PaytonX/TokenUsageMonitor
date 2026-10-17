@@ -116,3 +116,40 @@ describe("dev-mock.ts 不得引入运行时依赖", () => {
     expect(body).not.toMatch(/invoke|__TAURI__/);
   });
 });
+
+describe("预览组件的响应式约束", () => {
+  const frameSrc = readFileSync(join(HERE, "components", "PreviewFrame.svelte"), "utf8");
+  /**
+   * 只扫 `<script>`/`<style>` 块，并剥掉其中的注释。
+   * 文件头注释与 Props 的 JSDoc 里**正好**要写 readCardOrder、localStorage、
+   * transform:scale 这些词（解释为什么不用它们），不剥注释必然误报。
+   */
+  const blocks = [
+    frameSrc.match(/<script[\s\S]*?<\/script>/)?.[0] ?? "",
+    frameSrc.match(/<style[\s\S]*?<\/style>/)?.[0] ?? "",
+  ].join("\n");
+  const code = blocks
+    .replace(/\/\*[\s\S]*?\*\//g, "") // 块注释
+    .replace(/^\s*\/\/.*$/gm, ""); // 行注释
+
+  it("不在组件内部读 localStorage 的排序偏好", () => {
+    // 踩过的坑：$derived.by 里调 readCardOrder() 看似能排序，实际 localStorage
+    // 不是 Svelte 的响应式来源，主面板改顺序时预览永远不会重算——
+    // 「改排序 → 预览变化」这条验收就静默失效。排序必须由调用方以 prop 传入。
+    expect(code).not.toMatch(/readCardOrder|writeCardOrder|localStorage/);
+    expect(blocks).toMatch(/cardOrder\?: string\[\]/);
+  });
+
+  it("时钟走定时器，不是解构默认值", () => {
+    // 同类的第二个坑：`now = Date.now()` 写在 $props() 解构默认值里只求值
+    // 一次，倒计时与 lastRefreshAt 的差值会随真实时间持续漂移。
+    expect(code).not.toMatch(/now\s*=\s*Date\.now\(\)\s*[,}]/);
+    expect(code).toMatch(/setInterval/);
+  });
+
+  it("不使用 transform/zoom 缩放内容", () => {
+    // transform 会改 backdrop root 与 containing block，玻璃层（backdrop-filter）
+    // 的采样范围随之改变，预览就「看着像真的其实不是」。
+    expect(code).not.toMatch(/transform:\s*scale|zoom:/);
+  });
+});
