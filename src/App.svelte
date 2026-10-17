@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { fly } from "svelte/transition";
   import { get } from "svelte/store";
@@ -652,21 +652,40 @@
     hoverState = reduceHover([event], hoverState);
     clearHoverTimer();
     if (hoverState.hideAt !== null) {
+      // 快照进闭包：delay 与被 reduce 的初态必须来自同一时刻，否则
+      // 「旧定时器套到新状态上」的时序耦合就藏在闭包里看不见了。
+      const at = hoverState.hideAt;
+      const snap = $state.snapshot(hoverState);
       hoverTimer = setTimeout(() => {
         hoverTimer = null;
-        hoverState = reduceHover([{ type: "tick", at: Date.now() }], hoverState);
-      }, Math.max(0, hoverState.hideAt - Date.now()));
+        hoverState = reduceHover([{ type: "tick", at: Date.now() }], snap);
+      }, Math.max(0, at - Date.now()));
     }
   }
-  // 展开态窗口够宽，藏按钮是倒退；无悬停能力的设备（触屏）一律常驻。
-  const stripVisible = $derived(!canHover || pillExpanded || hoverState.visible);
-  // 胶囊是否可交互：收起贴边时指针不在它身上，按钮条无从谈起。
+  // 胶囊是否可交互——**显隐与 hover 判定必须同源**。原先两个表达式各算各的：
+  // stripVisible 看 `pillExpanded`，interactive 看 `pillExpanded && !pillDocked`，
+  // 后者多一条 `!pillDocked`，于是某些组合下按钮被显示出来、hover 逻辑却认为
+  // 它不可交互（enter 被解析成 visible=false，leave 被提前 break）。
+  const pillInteractive = $derived(pillExpanded && !pillDocked);
+  // 无悬停能力的设备（触屏）一律常驻；展开且未贴边时也常驻（窗口够宽，
+  // 藏按钮是倒退）。
+  const stripVisible = $derived(!canHover || pillInteractive || hoverState.visible);
   $effect(() => {
-    pushHover({ type: "structure", visible: pillExpanded && !pillDocked, at: Date.now() });
+    pushHover({ type: "structure", interactive: pillInteractive, at: Date.now() });
   });
   $effect(() => {
-    pushHover({ type: "drag", active: pillDragActive, at: Date.now() });
+    // pointerInside 取既有的 pillHovered：冻结期丢弃的 enter 要靠它在
+    // 解冻时补回，否则「拖完停在胶囊上准备关闭」这个最自然的序列会失灵。
+    pushHover({
+      type: "drag",
+      active: pillDragActive,
+      pointerInside: pillHovered,
+      at: Date.now(),
+    });
   });
+  // 与既有的 clearDockTimer / clearMiniTimer 同一纪律：在途的宽限计时器
+  // 不能跨组件卸载/模式切换存活。
+  onDestroy(clearHoverTimer);
   let pillResizeGen = 0;
   let peekGen = 0;
   let dockTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1041,7 +1060,7 @@
         onpointerdown={onPillPointerDown}
         onpointermove={onPillPointerMove}
         onpointerup={onPillPointerUp}
-        onpointerenter={() => pushHover({ type: "enter", zone: "pill", at: Date.now() })}
+        onpointerenter={() => pushHover({ type: "enter", at: Date.now() })}
         onpointerleave={() => pushHover({ type: "leave", at: Date.now() })}
         oncontextmenu={(e) => e.preventDefault()}
         role="group"
