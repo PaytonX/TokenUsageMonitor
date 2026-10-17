@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { flip } from "svelte/animate";
   import { fly } from "svelte/transition";
   import { get } from "svelte/store";
@@ -649,7 +649,18 @@
   }
   /** 推一个事件进状态机，并在需要时挂上宽限计时。 */
   function pushHover(event: HoverEvent) {
-    hoverState = reduceHover([event], hoverState);
+    // untrack：读当前状态**不能**成为调用方 effect 的依赖。两个 effect 在
+    // 同步调用链里调 pushHover，而 pushHover 读 hoverState、写 hoverState——
+    // 不 untrack 的话，Svelte 会把 hoverState 算进依赖，而两个 effect 读的不是
+    // hoverState（structure 读 pillInteractive、drag 读 pillDragActive/pillHovered），
+    // 于是形成「写 hoverState → 触发 effect → 又写 hoverState」。
+    //
+    // 眼下之所以没死循环，纯粹是因为 reducer 的 no-op 分支返回**同一个引用**，
+    // Svelte 5 对同引用赋值不再调度。那是条隐式的、未成文的不变量——任何常规
+    // 重构（给 reducer 加个 lastEventAt 字段、no-op 时顺手展开一次）都会让每次
+    // effect 运行产出新对象，随即 effect_update_depth_exceeded 把组件搞崩。
+    // untrack 让正确性不再依赖它。回归由 pill-hover-state.test.ts 钉住。
+    hoverState = reduceHover([event], untrack(() => hoverState));
     clearHoverTimer();
     if (hoverState.hideAt !== null) {
       // 快照进闭包：delay 与被 reduce 的初态必须来自同一时刻，否则

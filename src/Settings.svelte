@@ -2265,6 +2265,7 @@ async function handleMinimize() {
     {#if tab === "general" || tab === "interaction"}
       <aside class="settings__preview">
         <h2 class="preview-title">{$t("settings.preview.title")}</h2>
+        <p class="preview-note">{$t("settings.preview.note")}</p>
         <PreviewFrame {settings} {cardOrder} pollIntervalSec={pollInterval} />
       </aside>
     {/if}
@@ -2470,6 +2471,26 @@ async function handleMinimize() {
     letter-spacing: 0.3px;
     color: var(--tum-text-muted);
     text-transform: uppercase;
+  }
+
+  /* 窄窗让位：预览栏是不可收缩的固定 420px，窗口拖到 148+420=568 以下时内容区
+     会被压成负数。与其因此把窗口下限抬到 980（那等于禁止用户拖到 540–980 宽，
+     是回收既有合法尺寸），不如在够窄时整栏收起——预览是增强，不是内容。 */
+  @media (max-width: 979px) {
+    .settings__preview {
+      display: none;
+    }
+  }
+
+  /* 预览恒为健康态（fixture 不含 error/burn/active，见 PreviewFrame 头部）。
+     这条限制原先只写在源码注释里——用户看不见，于是把「示意」当成
+     「真机就是这样」。把它放到标题正下方，调参前先读到。 */
+  .preview-note {
+    margin: 0 0 var(--tum-space-2);
+    font-size: var(--tum-font-size-xs, 11px);
+    line-height: 1.45;
+    color: var(--tum-text-muted);
+    opacity: 0.72;
   }
 
   .pane {

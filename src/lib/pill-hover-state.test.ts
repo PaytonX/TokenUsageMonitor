@@ -133,6 +133,40 @@ describe("pill-hover: 结构性变化", () => {
   });
 });
 
+describe("pill-hover: no-op 必须返回同一引用", () => {
+  // 这条不是风格偏好，是 App.svelte 的**硬依赖**。两个 effect 在同步调用链里
+  // 调 pushHover，pushHover 写 hoverState；若 reducer 在无变化时也产出新对象，
+  // Svelte 5 会判定依赖变化 → 自我重触发 → effect_update_depth_exceeded
+  // 把组件搞崩。接线侧已用 untrack 摘掉该依赖，但这条性质仍应钉住，
+  // 免得有人顺手「优化」出一份新对象。
+  it("interactive 未变的 structure 事件返回同一引用", () => {
+    const start = runHover(interactive());
+    expect(reduceHover([{ type: "structure", interactive: true, at: 999 }], start)).toBe(start);
+  });
+
+  it("frozen 未变的 drag 事件返回同一引用", () => {
+    const start = runHover(interactive());
+    expect(
+      reduceHover([{ type: "drag", active: false, pointerInside: false, at: 999 }], start),
+    ).toBe(start);
+  });
+
+  it("无可收起时的 tick 返回同一引用", () => {
+    const start = runHover(interactive());
+    expect(reduceHover([{ type: "tick", at: 999 }], start)).toBe(start);
+  });
+
+  it("冻结期的 enter/leave 返回同一引用", () => {
+    const start = runHover([
+      ...interactive(),
+      { type: "drag", active: true, pointerInside: true, at: 0 },
+    ]);
+    expect(reduceHover([{ type: "enter", at: 10 }], start)).toBe(start);
+    expect(reduceHover([{ type: "leave", at: 10 }], start)).toBe(start);
+    expect(reduceHover([{ type: "tick", at: 10 }], start)).toBe(start);
+  });
+});
+
 describe("pill-hover: 状态是不可变的", () => {
   it("reduceHover 不修改传入的初态", () => {
     const start = initialHoverState();

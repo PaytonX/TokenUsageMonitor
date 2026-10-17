@@ -868,10 +868,13 @@ pub async fn open_settings(app: AppHandle) -> Result<(), String> {
     // 780 超出，首次打开时底部（含预览末卡）会落到屏幕外，用户得先手动缩小。
     .inner_size(1120.0, 720.0)
     .resizable(true)
-    // 下限必须是「导航 + 内容 + 预览」的硬需求之和。预览栏是 flex:0 0 420px、
-    // 导航是 flex:0 0 148px，两者都不可收缩；下限还留在旧的 540 时，窗口一
-    // 拖窄，内容区实得 540−148−420 = −28px，内容被压成一条（或横向溢出）。
-    .min_inner_size(980.0, 600.0)
+    // 下限**维持 540**：预览栏是 flex:0 0 420px、导航是 flex:0 0 148px，两者都
+    // 不可收缩。若把下限抬到 980，等于禁止用户把窗拖到 540–980 宽——那是回收
+    // 既有合法尺寸（想把设置窗缩到角落挂着的人会直接受影响），属于行为回归。
+    // 正确做法是让预览在窄窗主动让位：见 Settings.svelte 的
+    // `@media (max-width: 979px)`，到那儿整栏 display:none，
+    // 而不是把下限抬上去把用户的手脚捆住。
+    .min_inner_size(540.0, 600.0)
     .visible(false)
     .decorations(false)
     .transparent(true)
