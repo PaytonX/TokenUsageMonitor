@@ -46,6 +46,11 @@
     hexToRgb,
   } from "./lib";
   import { markIpc, markFrameStart, observeLongFrames } from "./lib/perf";
+  import {
+    initialHoverState,
+    reduceHover,
+    type HoverEvent,
+  } from "./lib/pill-hover-state";
   import ProviderCard from "./lib/components/ProviderCard.svelte";
   import ProgressRing from "./lib/components/ProgressRing.svelte";
   import MiniPanel from "./lib/components/MiniPanel.svelte";
@@ -617,6 +622,51 @@
   // 会被收边链路（collapsePill + syncPeek("docked")）拽回屏幕边缘。
   let pillDragActive = $state(false);
   let pillExpanded = $state(false);
+
+  // ── 按钮条显隐（方案 .scratch/glance-bench/issues/03）───────────────────
+  // 原先只靠 CSS 的 `.pill:hover .pill__close { opacity: 1 }`。两个问题：
+  //   1. **触摸设备上 `:hover` 永不触发**，关闭按钮永久不可达——不是
+  //      「观感差一点」，是功能缺失。
+  //   2. 指针一离开胶囊立刻消失，没有宽限期；胶囊顶角上划过去时按钮会闪。
+  // 判定交给 pill-hover-state.ts 的纯函数（带 13 例单测），这里只做接线。
+  let canHover = $state(true);
+  $effect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(hover: hover)");
+    const sync = () => (canHover = mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  });
+
+  let hoverState = $state(initialHoverState());
+  let hoverTimer: ReturnType<typeof setTimeout> | null = null;
+  function clearHoverTimer() {
+    if (hoverTimer !== null) {
+      clearTimeout(hoverTimer);
+      hoverTimer = null;
+    }
+  }
+  /** 推一个事件进状态机，并在需要时挂上宽限计时。 */
+  function pushHover(event: HoverEvent) {
+    hoverState = reduceHover([event], hoverState);
+    clearHoverTimer();
+    if (hoverState.hideAt !== null) {
+      hoverTimer = setTimeout(() => {
+        hoverTimer = null;
+        hoverState = reduceHover([{ type: "tick", at: Date.now() }], hoverState);
+      }, Math.max(0, hoverState.hideAt - Date.now()));
+    }
+  }
+  // 展开态窗口够宽，藏按钮是倒退；无悬停能力的设备（触屏）一律常驻。
+  const stripVisible = $derived(!canHover || pillExpanded || hoverState.visible);
+  // 胶囊是否可交互：收起贴边时指针不在它身上，按钮条无从谈起。
+  $effect(() => {
+    pushHover({ type: "structure", visible: pillExpanded && !pillDocked, at: Date.now() });
+  });
+  $effect(() => {
+    pushHover({ type: "drag", active: pillDragActive, at: Date.now() });
+  });
   let pillResizeGen = 0;
   let peekGen = 0;
   let dockTimer: ReturnType<typeof setTimeout> | null = null;
@@ -987,9 +1037,12 @@
       <div
         class="pill"
         data-tone={pillTone}
+        class:is-strip-visible={stripVisible}
         onpointerdown={onPillPointerDown}
         onpointermove={onPillPointerMove}
         onpointerup={onPillPointerUp}
+        onpointerenter={() => pushHover({ type: "enter", zone: "pill", at: Date.now() })}
+        onpointerleave={() => pushHover({ type: "leave", at: Date.now() })}
         oncontextmenu={(e) => e.preventDefault()}
         role="group"
         aria-label={$t("app.pill.ariaLabel")}
@@ -1675,7 +1728,9 @@
   }
 
   .pill__close {
-    /* 关闭钮悬浮右上角（不占布局空间，悬停时淡入），为品牌芯片让出宽度 */
+    /* 关闭钮悬浮右上角（不占布局空间）。显隐由 .is-strip-visible 驱动，
+       **不再交给 CSS `:hover`**——触摸设备上它永不触发，按钮会永久不可达，
+       那是功能缺失而不是观感问题。时长引用 token，不写字面量（issues/01）。 */
     position: absolute;
     top: 4px;
     right: 4px;
@@ -1690,12 +1745,12 @@
     cursor: pointer;
     opacity: 0;
     transition:
-      opacity 0.2s ease,
-      background 0.2s ease,
-      color 0.2s ease;
+      opacity var(--tum-dur-fast, 150ms) var(--tum-ease-spring),
+      background var(--tum-dur-fast, 150ms) ease,
+      color var(--tum-dur-fast, 150ms) ease;
   }
 
-  .pill:hover .pill__close {
+  .pill.is-strip-visible .pill__close {
     opacity: 1;
   }
 
