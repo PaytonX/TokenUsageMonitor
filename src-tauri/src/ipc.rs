@@ -758,24 +758,9 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
 
     match state.as_str() {
         "floating" => {
-            // 常态浮动：主窗接管鼠标，位置保持不变（用户可自由拖动）。
-            //
-            // 把手窗此前在这里 **destroy**，于是每次贴边都要重建一个 WebView
-            // 窗口；而重建恰好落在 dockPill 的三段式时间线里（t≈120ms 滑出
-            // 正播到一半），在动画中途创建一个 WebView 窗口就是卡顿的来源。
-            // Glance 没有这个问题：它是原生 Direct2D 单窗口绘制，没有第二棵
-            // WebView 可建。
-            //
-            // 改为 hide + 穿透：贴边时就只剩 show()，不再有窗口创建开销。
-            // 复用是安全的——把手页的边由 peek-show 事件动态纠正
-            // （见 src/peek/main.ts 的注释：__PEEK_SIDE__ 只在建窗时注入过一次，
-            // 用户把胶囊拖到另一侧后靠事件纠正），不依赖每次重建。
+            // 常态浮动：不需要把手窗口，主窗接管鼠标，位置保持不变（用户可自由拖动）。
             if let Some(peek) = app.get_webview_window("peek") {
-                // 先断开鼠标再隐藏：隐藏窗口通常不再接收输入，但显式置穿透
-                // 可以保证「常驻但不可见」的把手绝不会在屏幕边缘吃掉点击
-                // （桌面图标点不动是最难排查的一类故障）。
-                let _ = peek.set_ignore_cursor_events(true);
-                let _ = peek.hide();
+                let _ = peek.destroy();
             }
             if let Err(e) = dash.set_ignore_cursor_events(false) {
                 tracing::warn!(target: "tum.window", "dashboard set_ignore_cursor_events failed: {e}");

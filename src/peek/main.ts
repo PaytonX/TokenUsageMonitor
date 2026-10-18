@@ -103,30 +103,9 @@ if (host) {
   //   把手在胶囊旁边凭空冒出来。
   let announced = false;
   let interacted = false;
-  /**
-   * 自愈兜底：Rust 建窗后会立刻 emit("peek-show")，但 webview 加载完
-   * peek.html + main.ts 并注册监听之前，事件会被**静默丢弃**——把手于是永远
-   * 停在 opacity:0，而胶囊已经滑出且主窗穿透，用户看到「贴边了却没有把手」，
-   * 既看不见也点不回来。
-   *
-   * 判据用「有没有人宣布过要显形」而不是无脑超时自显：
-   * - 收到过 peek-show → 正常滑出时间线在跑，清掉兜底；
-   * - 指针已经进过把手 → 它正被 hover 隐藏着（胶囊正在外面），此时自显会让
-   *   把手在胶囊旁边凭空冒出来。
-   *
-   * ⚠️ 定时器**必须反复重挂**。2026-10-18 之前 Rust 在浮动态是 destroy 把手窗，
-   * 每次贴边都重建一个全新页面，这个兜底每次都在。改成 hide 复用之后页面会
-   * 常驻，一次性定时器只够第一次用——之后若 peek-show 漏发（窗口已加载、监听
-   * 已注册，理论上不该丢，但代价是一次「应用不可达」），就再没有兜底了。
-   * 反复重挂是安全的：浮动态下整个窗口是隐藏的，自显看不见。
-   */
-  const armSelfReveal = () => {
-    window.setTimeout(() => {
-      if (!announced && !interacted) host.classList.remove("is-hidden");
-      if (!announced) armSelfReveal();
-    }, 600);
-  };
-  armSelfReveal();
+  const selfReveal = window.setTimeout(() => {
+    if (!announced && !interacted) host.classList.remove("is-hidden");
+  }, 600);
 
   host.addEventListener("pointerenter", () => {
     interacted = true;
@@ -155,6 +134,7 @@ if (host) {
   // 靠这里纠正 4px 圆角朝向（拖动期间把手处于 is-hidden，不会被看到）。
   void listen("peek-show", (event) => {
     announced = true;
+    window.clearTimeout(selfReveal);
     const next = event.payload as Side | undefined;
     if (next === "left" || next === "right" || next === "top" || next === "bottom") {
       host.dataset.side = next;
