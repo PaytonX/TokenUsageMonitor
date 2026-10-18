@@ -246,12 +246,19 @@ export interface SpanRecord {
 }
 
 /**
- * 生产构建下**完全零开销**：不记录、不分配、不进数组。
+ * 探针开关。
  *
- * 原方案写「函数本身保留（零成本）」是错的——调用点是无条件的，长期驻留进程
- * 里每次贴边都会 push 对象，无界增长。
+ * **不是 `import.meta.env.DEV`**：dev 开着 DevTools/HMR，性能形态与 release
+ * 不同，方案 §1.4 要求 dev 与 release 各测一遍才下结论。若探针只在 dev 可用，
+ * release 那一次根本做不了。
+ *
+ * 用法：release 构建时 `VITE_PERF=1 npm run tauri:build` 即带上探针；
+ * 默认的 `npm run tauri:build` 不带，生产包里没有任何痕迹。
  */
-const SPANS_ENABLED = !import.meta.env.PROD;
+export const PERF_PROBE_ENABLED =
+  import.meta.env.DEV || import.meta.env.VITE_PERF === "1";
+
+const SPANS_ENABLED = PERF_PROBE_ENABLED;
 const spanLog: SpanRecord[] = [];
 let spanSeq = 0;
 
@@ -311,7 +318,7 @@ export function perfReset(): void {
  *   __perf.snapshot()  → PerfSnapshot
  *   __perf.reset()     → 清空重来
  */
-if (import.meta.env.DEV && typeof window !== "undefined") {
+if (PERF_PROBE_ENABLED && typeof window !== "undefined") {
   (window as unknown as Record<string, unknown>).__perf = {
     snapshot: perfSnapshot,
     reset: perfReset,
