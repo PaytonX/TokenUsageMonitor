@@ -53,6 +53,7 @@
     markSpan,
     markEnd,
     spanList,
+    loafEntries,
     loafSelfCheck,
     perfSnapshot,
     PERF_PROBE_ENABLED,
@@ -396,6 +397,7 @@
           at: new Date().toISOString(),
           loafSupported: loafSelfCheck(),
           spans: spanList(),
+          loaf: loafEntries(),
           snapshot: perfSnapshot(),
         };
         void writePerfProbe(JSON.stringify(payload)).catch(() => {});

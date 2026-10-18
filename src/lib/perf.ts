@@ -61,6 +61,13 @@ type Store = ReturnType<typeof newStore>;
 const ipc = newStore();
 const frame = newStore();
 const longFrames = newStore();
+/**
+ * LoAF 条目的 `startTime`，与 longFrames **同序成对**（同一次 record 调用里写）。
+ *
+ * 缺了它就无法把长帧和 span 时间线对齐——判读表第 2 行（「peekLead 的 LoAF
+ * 占比」）需要「这条长帧发生在哪个区间里」，只有 duration 是答不出来的。
+ */
+const loafStarts = newStore();
 
 /** 因「同帧合并」被丢弃的测量数。门槛判定要求它为 0。 */
 let dropped = 0;
@@ -201,7 +208,9 @@ export function observeLongFrames(): boolean {
   try {
     longObserver = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
+        // duration 与 startTime 必须成对写，否则对齐无从谈起。
         record(longFrames, entry.duration);
+        record(loafStarts, entry.startTime);
       }
     });
     longObserver.observe({ type: "long-animation-frame", buffered: true });
@@ -284,6 +293,21 @@ export function spanList(): SpanRecord[] {
 }
 
 /**
+ * 全部长帧条目（duration > 50ms），带 `start`，可用于与 span 时间线对齐。
+ * 环形缓冲里 start 与 duration 是同序成对的。
+ */
+export function loafEntries(): Array<{ start: number; duration: number }> {
+  if (!SPANS_ENABLED) return [];
+  const out: Array<{ start: number; duration: number }> = [];
+  for (let i = 0; i < longFrames.len; i++) {
+    const d = longFrames.buf[i];
+    if (d < 50) continue;
+    out.push({ start: loafStarts.buf[i], duration: d });
+  }
+  return out.sort((a, b) => a.start - b.start);
+}
+
+/**
  * LoAF 能力自检（方案 §1.5）。
  *
  * 判读表依赖 `long-animation-frame`，但本机 WebView2 版本是否支持不能假设。
@@ -302,6 +326,8 @@ export function perfReset(): void {
   frame.cursor = 0;
   longFrames.len = 0;
   longFrames.cursor = 0;
+  loafStarts.len = 0;
+  loafStarts.cursor = 0;
   dropped = 0;
   unreliable = 0;
   ipcFails = 0;
@@ -325,6 +351,7 @@ if (PERF_PROBE_ENABLED && typeof window !== "undefined") {
     markSpan,
     markEnd,
     spanList,
+    loafEntries,
     loafSelfCheck,
   };
 }
