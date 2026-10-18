@@ -45,7 +45,7 @@
     isPayAsYouGo,
     hexToRgb,
   } from "./lib";
-  import { markIpc, markFrameStart, observeLongFrames } from "./lib/perf";
+  import { markIpc, markFrameStart, observeLongFrames, markSpan, markEnd } from "./lib/perf";
   import {
     initialHoverState,
     reduceHover,
@@ -806,8 +806,13 @@
     const gen = ++peekGen;
     clearDockTimer();
     clearMiniTimer();
+    const span = markSpan("revealPill");
     pillRevealed = true;
-    await syncPeek(); // 贴边滑入态：主窗接管鼠标，把手退出交互
+    try {
+      await syncPeek(); // 贴边滑入态：主窗接管鼠标，把手退出交互
+    } finally {
+      markEnd(span);
+    }
     if (gen !== peekGen) return;
     scheduleExpandPill();
   }
@@ -839,23 +844,41 @@
     if (pillDragActive) return;
     const gen = ++peekGen;
     clearMiniTimer();
+    // 时间线探针（issues/05 §1.3）：只打标记，不改时序、不改行为。
+    // span 测的是**宿主侧 wall-clock**，与 LoAF（主窗渲染进程主线程）互补——
+    // 把手窗创建发生在宿主事件循环线程，可能占住宿主却不产生任何主窗 LoAF。
+    const span = markSpan("dockPill");
     pillCollapsing = true;
-    pillRevealed = false; // t=0：立即触发 .pill-layer.is-docked 的 200ms 滑出
+    pillRevealed = false; // t=0：立即触发 .pill-layer.is-docked 的 180ms 滑出
     setTimeout(async () => {
-      if (gen !== peekGen) return;
-      // t=120ms：滑出未结束就把主窗切回 docked 布局，让把手提前接管。
-      // 先取回最新贴靠边（用户可能刚把胶囊拖到屏幕另一侧），再把边随
-      // peek-show 发给把手页，让它纠正圆角朝向并复现自己。
-      await syncPeek(); // docked=true：把手接回鼠标
-      if (gen !== peekGen) return;
-      void emitPeekShow(pillSide).catch(() => {});
+      const lead = markSpan("dockPill.peekLead");
+      // ⚠️ 世代守卫早退也必须 markEnd（放在 finally）：快速悬停/收起的 churn
+      // 高频触发 gen 冲突，而「有时会卡顿」恰恰最可能伴随 churn——
+      // 只在正常路径闭合会系统性丢弃最相关的样本，测量结果偏向顺利路径。
+      try {
+        if (gen !== peekGen) return;
+        // t=120ms：滑出未结束就把主窗切回 docked 布局，让把手提前接管。
+        // 先取回最新贴靠边（用户可能刚把胶囊拖到屏幕另一侧），再把边随
+        // peek-show 发给把手页，让它纠正圆角朝向并复现自己。
+        await syncPeek(); // docked=true：把手接回鼠标
+        if (gen !== peekGen) return;
+        void emitPeekShow(pillSide).catch(() => {});
+      } finally {
+        markEnd(lead);
+      }
     }, PILL_PEEK_LEAD_MS);
     setTimeout(async () => {
-      // t=200ms：滑出播完再缩窗。先清锁再校验代际：即便本代已被唤醒取代，
-      // 也不能让 pillCollapsing 永久卡在 true（否则 revealPill 被永久抑制）。
-      pillCollapsing = false;
-      if (gen !== peekGen) return;
-      await collapsePill();
+      const shrink = markSpan("dockPill.shrink");
+      try {
+        // t=180ms：滑出播完再缩窗。先清锁再校验代际：即便本代已被唤醒取代，
+        // 也不能让 pillCollapsing 永久卡在 true（否则 revealPill 被永久抑制）。
+        pillCollapsing = false;
+        if (gen !== peekGen) return;
+        await collapsePill();
+      } finally {
+        markEnd(shrink);
+        markEnd(span);
+      }
     }, PILL_SLIDE_MS);
   }
 

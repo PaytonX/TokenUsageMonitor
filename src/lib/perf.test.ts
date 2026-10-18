@@ -9,11 +9,15 @@ import {
   PERF_MIN_N_FOR_P95,
   PERF_SAMPLE_MAX_MS,
   PERF_SLOW_MS,
-  markFrameStart,
+  loafSelfCheck,
+  markEnd,
+  markSpan,
   markIpc,
+  markFrameStart,
   perfClock,
   perfReset,
   perfSnapshot,
+  spanList,
 } from "./perf";
 
 /** 可推进的假时钟 + 手动触发帧的假 rAF。 */
@@ -237,6 +241,81 @@ describe("perf: 统计量", () => {
       expect(span.max).toBe(0);
       expect(span.n).toBe(0);
     }
+  });
+});
+
+describe("perf: 时间线探针（issues/05 §1.2）", () => {
+  beforeEach(() => {
+    perfReset();
+    installClock();
+  });
+  afterEach(() => {
+    perfClock.now = realNow;
+    perfClock.raf = realRaf;
+  });
+
+  it("markSpan/markEnd 记录区间的起止", () => {
+    const c = installClock();
+    const id = markSpan("dockPill.peekLead");
+    c.advance(50);
+    markEnd(id);
+    const s = spanList().find((x) => x.id === id);
+    expect(s).toBeDefined();
+    expect(s!.label).toBe("dockPill.peekLead");
+    expect(s!.end! - s!.start).toBe(50);
+  });
+
+  it("未闭合的区间 end 为 null（早退路径必须也能闭合）", () => {
+    const id = markSpan("never-closed");
+    const s = spanList().find((x) => x.id === id);
+    expect(s!.end).toBeNull();
+    markEnd(id);
+    expect(spanList().find((x) => x.id === id)!.end).not.toBeNull();
+  });
+
+  it("markEnd 对重复闭合是幂等的（取第一次）", () => {
+    const c = installClock();
+    const id = markSpan("x");
+    c.advance(10);
+    markEnd(id);
+    const first = spanList().find((s) => s.id === id)!.end;
+    c.advance(999);
+    markEnd(id);
+    expect(spanList().find((s) => s.id === id)!.end).toBe(first);
+  });
+
+  it("markEnd 对 -1（生产）空操作，不抛", () => {
+    expect(() => markEnd(-1)).not.toThrow();
+  });
+
+  it("perfReset 清空时间线", () => {
+    markSpan("a");
+    markSpan("b");
+    expect(spanList().length).toBeGreaterThan(0);
+    perfReset();
+    expect(spanList()).toEqual([]);
+  });
+
+  it("环形上限 400：长期驻留进程不无界增长", () => {
+    for (let i = 0; i < 450; i++) {
+      const id = markSpan(`s${i}`);
+      markEnd(id);
+    }
+    expect(spanList().length).toBeLessThanOrEqual(400);
+    // 最旧的被丢掉，最新的还在
+    expect(spanList().some((s) => s.label === "s449")).toBe(true);
+    expect(spanList().some((s) => s.label === "s0")).toBe(false);
+  });
+
+  it("spanList 返回副本，改它不影响内部状态", () => {
+    markSpan("a");
+    const list = spanList();
+    list.length = 0;
+    expect(spanList().length).toBeGreaterThan(0);
+  });
+
+  it("loafSelfCheck 返回布尔（不支持时为 false，判读表据此降级）", () => {
+    expect(typeof loafSelfCheck()).toBe("boolean");
   });
 });
 

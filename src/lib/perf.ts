@@ -227,16 +227,79 @@ export function perfSnapshot(): PerfSources {
   };
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// 时间线探针（方案 issues/05 §1.2）
+//
+// 与上面三条通道不同：**span 测的是宿主侧 wall-clock**，而 LoAF 测的是主窗
+// 渲染进程的主线程。把手窗的创建发生在宿主事件循环线程，它可以占住宿主主线程
+// 却**不必然产生主窗任何 LoAF 条目**。所以「贴边卡顿」到底是宿主开销还是渲染
+// 掉帧，只有把 span 时长一并看才能判——只绑 LoAF 的判读表两个方向都会判错，
+// 而且都带着测量数据背书。
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface SpanRecord {
+  id: number;
+  label: string;
+  start: number;
+  /** null = 尚未闭合。早退路径必须也闭合，否则样本会被静默丢弃。 */
+  end: number | null;
+}
+
+/**
+ * 生产构建下**完全零开销**：不记录、不分配、不进数组。
+ *
+ * 原方案写「函数本身保留（零成本）」是错的——调用点是无条件的，长期驻留进程
+ * 里每次贴边都会 push 对象，无界增长。
+ */
+const SPANS_ENABLED = !import.meta.env.PROD;
+const spanLog: SpanRecord[] = [];
+let spanSeq = 0;
+
+/** 开始一个区间标记，返回 id（生产下恒为 -1，`markEnd` 对 -1 是空操作）。 */
+export function markSpan(label: string): number {
+  if (!SPANS_ENABLED) return -1;
+  const id = spanSeq++;
+  spanLog.push({ id, label, start: perfClock.now(), end: null });
+  if (spanLog.length > 400) spanLog.splice(0, spanLog.length - 400);
+  return id;
+}
+
+/** 闭合一个区间。对 -1（生产）与重复闭合都是空操作。 */
+export function markEnd(id: number): void {
+  if (!SPANS_ENABLED || id < 0) return;
+  const s = spanLog.find((x) => x.id === id);
+  if (s && s.end === null) s.end = perfClock.now();
+}
+
+/** 读出全部区间。 */
+export function spanList(): SpanRecord[] {
+  return SPANS_ENABLED ? spanLog.map((s) => ({ ...s })) : [];
+}
+
+/**
+ * LoAF 能力自检（方案 §1.5）。
+ *
+ * 判读表依赖 `long-animation-frame`，但本机 WebView2 版本是否支持不能假设。
+ * 返回 supported=false 时，调用方应把判读表里依赖 LoAF 的行标为不可用，
+ * 退化为「只看 span wall-clock」。
+ */
+export function loafSelfCheck(): boolean {
+  return supportsLongFrames();
+}
+
 /** 清空全部样本与计数器。仅供测试与显式重置。 */
 export function perfReset(): void {
-  for (const store of [ipc, frame, longFrames]) {
-    store.len = 0;
-    store.cursor = 0;
-  }
+  ipc.len = 0;
+  ipc.cursor = 0;
+  frame.len = 0;
+  frame.cursor = 0;
+  longFrames.len = 0;
+  longFrames.cursor = 0;
   dropped = 0;
   unreliable = 0;
   ipcFails = 0;
   pendingFrame = null;
+  if (SPANS_ENABLED) spanLog.length = 0;
 }
 
 /**
@@ -252,5 +315,9 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
   (window as unknown as Record<string, unknown>).__perf = {
     snapshot: perfSnapshot,
     reset: perfReset,
+    markSpan,
+    markEnd,
+    spanList,
+    loafSelfCheck,
   };
 }
