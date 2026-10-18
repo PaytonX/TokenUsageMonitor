@@ -55,7 +55,6 @@
   import { readCardOrder } from "./lib/prefs";
   import { applyLocaleSetting, t, type LangSetting } from "./lib/i18n/store";
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
-import PreviewFrame from "./lib/components/PreviewFrame.svelte";
 import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draft";
 
   type Tab = "general" | "accounts" | "interaction" | "network" | "router" | "about";
@@ -2365,18 +2364,6 @@ async function handleMinimize() {
       {/if}
     </section>
 
-    <!--
-      实时预览（方案 .scratch/glance-bench/issues/02）。只在与「外观」有关的
-      两个页签出现：账号、网络、路由器这些设置与面板长相无关，塞个预览
-      上去只是噪音。
-    -->
-    {#if tab === "general" || tab === "interaction"}
-      <aside class="settings__preview">
-        <h2 class="preview-title">{$t("settings.preview.title")}</h2>
-        <p class="preview-note">{$t("settings.preview.note")}</p>
-        <PreviewFrame {settings} {cardOrder} pollIntervalSec={pollInterval} />
-      </aside>
-    {/if}
   </div>
 
   {#if conflictWarning && conflictWarning.length > 0}
@@ -2582,55 +2569,11 @@ async function handleMinimize() {
     scrollbar-color: var(--tum-border) transparent;
   }
 
-  /* --- 右侧实时预览栏（issues/02）-------------------------------------------
-     固定 420px：里面按 dashboard 的原始 400px 宽度渲染，不缩放——
-     transform 会改 backdrop root 与 containing block，玻璃层保真就没了
-     （见 PreviewFrame.svelte 头部）。所以是**加宽设置窗口**而不是缩小内容。 */
-  .settings__preview {
-    flex: 0 0 420px;
-    width: 420px;
-    /* min-width:0 是必须的：flex 子项默认 min-width:auto 会拒绝收缩到内容
-       以下。缺了它，窗口拖窄时这一栏会撑破 .settings__body 的横向布局，
-       把中间的内容区挤出可视范围（导航 148 + 预览 420 已占去 568）。 */
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--tum-space-2);
-    padding: var(--tum-space-3);
-    border-left: 1px solid var(--tum-border);
-    background: rgba(15, 23, 42, 0.28);
-    overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: var(--tum-border) transparent;
-  }
+  /* 预览栏已于 2026-10-18 移除（用户判断其实用不上）。历史记录：
+     它固定占 420px，且必须按 dashboard 原始 400px 渲染——transform 会改
+     backdrop root 与 containing block，玻璃层的保真就没了，所以当初是加宽
+     设置窗口而不是把内容缩小。移除后窗口回到 820 宽。 */
 
-  .preview-title {
-    font-size: var(--tum-font-size-sm);
-    font-weight: 600;
-    letter-spacing: 0.3px;
-    color: var(--tum-text-muted);
-    text-transform: uppercase;
-  }
-
-  /* 窄窗让位：预览栏是不可收缩的固定 420px，窗口拖到 148+420=568 以下时内容区
-     会被压成负数。与其因此把窗口下限抬到 980（那等于禁止用户拖到 540–980 宽，
-     是回收既有合法尺寸），不如在够窄时整栏收起——预览是增强，不是内容。 */
-  @media (max-width: 979px) {
-    .settings__preview {
-      display: none;
-    }
-  }
-
-  /* 预览恒为健康态（fixture 不含 error/burn/active，见 PreviewFrame 头部）。
-     这条限制原先只写在源码注释里——用户看不见，于是把「示意」当成
-     「真机就是这样」。把它放到标题正下方，调参前先读到。 */
-  .preview-note {
-    margin: 0 0 var(--tum-space-2);
-    font-size: var(--tum-font-size-xs, 11px);
-    line-height: 1.45;
-    color: var(--tum-text-muted);
-    opacity: 0.72;
-  }
 
   .pane {
     display: flex;

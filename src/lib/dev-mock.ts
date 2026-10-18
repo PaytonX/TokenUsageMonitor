@@ -231,22 +231,6 @@ function snapshot(base: number = now) {
 
 const USAGE = snapshot();
 
-/**
- * 设置窗口实时预览用的用量桩（方案 .scratch/glance-bench/issues/02）。
- *
- * 与 `installDevMock` 的区别：后者劫持 `invoke` 让整棵应用树在浏览器里跑，
- * 会**替换整个数据源**；这里只产出一份数组，供 PreviewFrame 直接喂给真实的
- * ProviderCard，不接管任何 IPC。预览因此不会把 IPC 拖进自己的渲染树。
- *
- * 以调用时刻为时间锚（见 `snapshot` 的注释），保证倒计时读数合理。
- * 逐字段形状与真机一致：`provider_id` 用 instance_id（含 `volcengine-9-0`
- * 这种带序号的），`windows.daily` 只给 AgentPlan 类，差分类 provider
- * 刻意不带按日账本——否则预览会长期走不到 DetailCard 的空态分支。
- */
-export function previewSnapshots(): UsageSnapshot[] {
-  return snapshot(Date.now()) as UsageSnapshot[];
-}
-
 const STATES = Object.fromEntries(
   USAGE.map((s) => [s.provider_id, { snapshot: s, last_error: null, last_updated_at: iso(0) }]),
 );

@@ -69,8 +69,6 @@ export const en: Record<string, string> = {
   "settings.footer.discarded": "Discarded — restored to what's currently saved",
   "settings.footer.conflictTitle": "Saving will overwrite settings changed elsewhere: ",
   "settings.footer.saveAnyway": "Save anyway",
-  "settings.preview.title": "Live preview",
-  "settings.preview.note": "Sample data · always healthy — error and active states are not shown",
   "settings.footer.saveClose": "Save and close",
   "settings.footer.saving": "Saving…",
   "settings.footer.saveSettings": "Save settings",
