@@ -876,6 +876,7 @@ pub fn run() {
             ipc::set_window_mode,
             ipc::dock_side_of,
             ipc::sync_peek_window,
+            ipc::write_perf_probe,
             ipc::set_pill_dragging,
             ipc::open_settings,
             ipc::close_settings,

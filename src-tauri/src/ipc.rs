@@ -724,6 +724,27 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
     Ok(())
 }
 
+/// 把前端性能探针的当前读数写到应用数据目录（方案 issues/05 §1）。
+///
+/// **为什么需要它**：探针数据只活在 WebView 的 JS 上下文里，宿主侧读不到；
+/// release 构建又不带 DevTools 面板。让人在控制台手敲命令既容易错、也不可复现。
+/// 探针开启时前端周期性调这个命令，测量就变成「应用自己写文件」，
+/// 剩下的分析在宿主侧做。
+///
+/// ⚠️ 仅在 `VITE_PERF=1`（或 dev）构建下才会被前端调用；命令本身始终存在，
+/// 但写出的文件名带 `perf-probe`，不会与任何真实数据混淆。
+#[tauri::command]
+pub async fn write_perf_probe(app: AppHandle, json: String) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("perf-probe.json");
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// 当前设置的语言（窗口标题等 Rust 侧文案用）。读不到应用状态（测试桩）
 /// 或值非法时按默认中文。
 pub(crate) fn current_lang(app: &AppHandle) -> crate::i18n::Lang {

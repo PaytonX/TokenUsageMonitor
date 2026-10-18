@@ -8,6 +8,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import {
     getUsage,
+  writePerfProbe,
     getProviderStates,
     getSettings,
     getRouterStatus,
@@ -45,7 +46,17 @@
     isPayAsYouGo,
     hexToRgb,
   } from "./lib";
-  import { markIpc, markFrameStart, observeLongFrames, markSpan, markEnd } from "./lib/perf";
+  import {
+    markIpc,
+    markFrameStart,
+    observeLongFrames,
+    markSpan,
+    markEnd,
+    spanList,
+    loafSelfCheck,
+    perfSnapshot,
+    PERF_PROBE_ENABLED,
+  } from "./lib/perf";
   import {
     initialHoverState,
     reduceHover,
@@ -374,6 +385,24 @@
     // （真正含 style/layout/paint/composite）。不支持的 WebView2 上返回 false，
     // 此时只有 frameStart（更新到帧开始的延迟）可用。别拿它冒充帧成本。
     observeLongFrames();
+
+    // 探针落盘（issues/05 §1）：探针数据只活在 WebView 的 JS 上下文里，
+    // 宿主读不到；release 又不带 DevTools 面板。周期性写文件，测量就变成
+    // 「应用自己写」，剩下的分析在宿主侧做，不需要任何 GUI 操作。
+    // PERF_PROBE_ENABLED 为假时整个定时器不建（默认 release 构建）。
+    if (PERF_PROBE_ENABLED) {
+      const dump = setInterval(() => {
+        const payload = {
+          at: new Date().toISOString(),
+          loafSupported: loafSelfCheck(),
+          spans: spanList(),
+          snapshot: perfSnapshot(),
+        };
+        void writePerfProbe(JSON.stringify(payload)).catch(() => {});
+      }, 2000);
+      unlistenFns.push(() => clearInterval(dump));
+    }
+
     // 并行拉取用量 + 状态 + 设置，减少启动等待。
     // 三条通道量纲不同、不可互替：见 ./lib/perf 的文件头。
     const [usage, states] = await markIpc(() =>

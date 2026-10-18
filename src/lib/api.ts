@@ -418,3 +418,11 @@ export async function openUrl(url: string): Promise<void> {
 export async function checkAppUpdate(): Promise<UpdateInfo> {
   return invoke<UpdateInfo>("check_app_update");
 }
+
+/**
+ * 把性能探针的当前读数写到应用数据目录（方案 issues/05 §1）。
+ * 返回落盘路径。仅探针构建会调用。
+ */
+export async function writePerfProbe(json: string): Promise<string> {
+  return invoke<string>("write_perf_probe", { json });
+}
