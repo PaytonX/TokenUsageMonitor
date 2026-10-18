@@ -99,6 +99,12 @@
   --tum-ease-spring: cubic-bezier(0.33, 1, 0.68, 1);
   --tum-ease-dock-exit: cubic-bezier(0.32, 0, 0.67, 0); /* 收起滑出：加速钻边 */
   --tum-ease-ring: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* 贴边滑入：强 ease-out，起步快、尾巴长（迅速响应 + 柔和落位）。
+     对标 Glance `Easing(0.16, 1.0, 0.3, 1.0)`（panel.rs:93）。 */
+  --tum-ease-slide-in: cubic-bezier(0.16, 1, 0.3, 1);
+  /* 贴边滑出：ease-in，起步慢、迅速钻边，不拖泥带水。
+     对标 Glance `Easing(0.4, 0.0, 1.0, 1.0)`（panel.rs:95）。 */
+  --tum-ease-slide-out: cubic-bezier(0.4, 0, 1, 1);
 
   /* 时长 token（方案 .scratch/glance-bench/issues/01）。
      此前时长全部硬编码散落在 App.svelte（150ms/200ms）与 dockPill() 的时间线里，
@@ -109,6 +115,19 @@
   --tum-dur-fast: 150ms; /* 胶囊滑入 */
   --tum-dur-base: 200ms; /* 胶囊滑出 / 通用 */
   --tum-dur-slow: 240ms; /* 选项滑块 */
+
+  /* 贴边滑入/滑出的专用时长（对标 Glance 的 OPEN/CLOSE，见 panel.rs:93-95）。
+     位置与透明度用**不同长度**的两条过渡：透明度只有位置的一半，面板在
+     滑到一半时就已经「在那儿了」。等位置走完才显现会读成「空白很久，
+     然后啪一下出现」——这是滑入不丝滑的主因。 */
+  --tum-dur-slide-in: 260ms; /* 位置 */
+  --tum-dur-slide-in-fade: 140ms; /* 透明度，约位置的一半 */
+  --tum-dur-slide-out: 180ms; /* 关闭比打开快：起步慢、迅速钻边 */
+  --tum-dur-slide-out-fade: 120ms;
+
+  /* 「减弱动态效果」下的降级档。不是 0.001ms 的瞬时（那比不开动画更硬），
+     而是只保留淡入、去掉位移——与 Glance 的 PLAIN_FADE 同思路。 */
+  --tum-dur-reduced-fade: 120ms;
 
   /* Kept for compatibility; no component currently references it */
   --tum-scanline: none;

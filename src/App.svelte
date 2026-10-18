@@ -286,8 +286,15 @@
   const PILL_EXPANDED_ROW = PILL_MINI_ROW + PILL_MINI_GAP; // 30
   const PILL_EXPANDED_BASE =
     PILL_COLLAPSED_H + PILL_MINI_PAD_TOP + PILL_MINI_PAD_BOTTOM - PILL_MINI_GAP; // 60
-  const PILL_SLIDE_MS = 200; // 与 .pill-layer.is-docked 的滑出时长一致
-  const PILL_PEEK_LEAD_MS = 120; // 滑出进行中就让把手接回鼠标并复现（时间线重叠）
+  // 三段式时间线的时点，与 CSS 里的滑出时长**必须同步**（见 tokens.css 的
+  // --tum-dur-slide-out）。改一边不改另一边，就会出现「滑出还没播完就缩窗裁剪」
+  // 或「把手在面板还在滑的时候就抢回鼠标」的割裂感。
+  //
+  // PILL_PEEK_LEAD_MS(120) 与 --tum-dur-slide-out-fade(120ms) 是**耦合**的：
+  // 淡出走完的时刻正好是把手复现的时刻，两者一旦错开就会看到把手浮在
+  // 半透明胶囊上。数值巧合而已，改任一侧都要同时改另一侧。
+  const PILL_SLIDE_MS = 180; // = --tum-dur-slide-out（Glance CLOSE 同样是 180ms）
+  const PILL_PEEK_LEAD_MS = 120; // = --tum-dur-slide-out-fade
   const PILL_REVEAL_MINI_MS = 120; // 滑入开始后展开明细的延迟
   const PILL_DOCK_DELAY_MS = 320; // 指针离开后停留多久才收起
   // 模式恢复判定阈值（逻辑像素）：介于 compact(168) 与 dashboard(400) 之间。
@@ -630,13 +637,24 @@
   //   2. 指针一离开胶囊立刻消失，没有宽限期；胶囊顶角上划过去时按钮会闪。
   // 判定交给 pill-hover-state.ts 的纯函数（带 13 例单测），这里只做接线。
   let canHover = $state(true);
+  /** 系统是否要求减弱动态效果。Svelte 的 transition 走 WAAPI，
+   *  样式表的 `animation-duration !important` 管不到它，必须显式分支。 */
+  let reducedMotion = $state(false);
   $effect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia("(hover: hover)");
-    const sync = () => (canHover = mq.matches);
+    const hoverMq = window.matchMedia("(hover: hover)");
+    const motionMq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const sync = () => {
+      canHover = hoverMq.matches;
+      reducedMotion = motionMq.matches;
+    };
     sync();
-    mq.addEventListener("change", sync);
-    return () => mq.removeEventListener("change", sync);
+    hoverMq.addEventListener("change", sync);
+    motionMq.addEventListener("change", sync);
+    return () => {
+      hoverMq.removeEventListener("change", sync);
+      motionMq.removeEventListener("change", sync);
+    };
   });
 
   let hoverState = $state(initialHoverState());
@@ -745,13 +763,16 @@
     if (mode !== "compact" || snapshots.length === 0) return;
     const gen = ++pillResizeGen;
     const height = PILL_EXPANDED_BASE + snapshots.length * PILL_EXPANDED_ROW;
+    // ⚠️ 顺序要紧：先挂内容、**再**扩窗，不要 await setSize 之后才置位。
+    // 原先是「窗口先长高 → 空窗一拍 → 内容再浮现」，割裂感正是本次要消除的。
+    // 先置位后，fly 的 opacity:0 起点会盖住窗口尚矮时内容被压扁的那几帧，
+    // 展开动画与扩窗两条时间线并行——与本次滑入改动用的是同一套方法。
+    pillExpanded = true;
     try {
-      await getCurrentWindow().setSize(
-        new LogicalSize(PILL_COLLAPSED_W, height),
-      );
-      if (gen === pillResizeGen) pillExpanded = true;
+      await getCurrentWindow().setSize(new LogicalSize(PILL_COLLAPSED_W, height));
     } catch {
-      // IPC 失败：保持折叠。
+      // IPC 失败：回退到折叠，避免「内容在、窗口没长高」的压扁态。
+      if (gen === pillResizeGen) pillExpanded = false;
     }
   }
 
@@ -1134,7 +1155,17 @@
           >✕</button>
         </div>
         {#if pillExpanded}
-          <MiniPanel {snapshots} {actives} countdown={displayRemaining} accentFor={(id) => accentById[id]} />
+          <!-- 明细原本是硬切：{#if} 挂上即出现、消失即消失。
+               只给**入场**加动画（`in:` 而非 `transition:`）：后者是双向的，
+               收起时会播 160ms 飞出才卸载，而 collapsePill() 同期在缩窗——
+               内容仍占位就被窗口边缘硬裁，比硬切更糟。
+               减弱动效时退化为原地淡入，不做位移。 -->
+          <div
+            class="pill__mini"
+            in:fly={{ y: reducedMotion ? 0 : -6, duration: reducedMotion ? 120 : 160 }}
+          >
+            <MiniPanel {snapshots} {actives} countdown={displayRemaining} accentFor={(id) => accentById[id]} />
+          </div>
         {/if}
       </div>
     </div>
@@ -1370,13 +1401,26 @@
     flex-direction: column;
     /* 兜底值：token 缺失时退化成原行为，而不是过渡整体静默消失
        （未定义的自定义属性会让 transition-duration 回落 0s）。 */
-    transition: transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+    /* 贴边滑入（对标 Glance OPEN）：
+       - 位置 260ms 强 ease-out
+       - 透明度 140ms，只有位置的一半——面板滑到一半就已经「在那儿了」。
+         两者等长会读成「空白很久，然后啪一下出现」，这是滑入不丝滑的主因。 */
+    opacity: 1;
+    transition:
+      transform var(--tum-dur-slide-in, 260ms) var(--tum-ease-slide-in, cubic-bezier(0.16, 1, 0.3, 1)),
+      opacity var(--tum-dur-slide-in-fade, 140ms) linear;
   }
 
-  /* 贴边收起的滑出走 ease-in 曲线（200ms，加速钻边）：CSS transition 读取的是
-     变化后的目标状态，基态规则只服务滑入（spring），本规则只服务滑出。 */
+  /* 贴边收起（对标 Glance CLOSE）：180ms ease-in，起步慢、迅速钻边。
+     关闭比打开快，不拖泥带水。
+     淡出用 **linear**（与 Glance 的 OPEN_FADE / PLAIN_FADE 一致）：用 ease
+     的话前段就掉到接近 0，而位移是 ease-in 起步慢，等淡出走完位移才走了约一半，
+     后半程全程不可见——读成「原地消散」而不是「贴边滑走」。 */
   .pill-layer.is-docked {
-    transition: transform var(--tum-dur-base, 200ms) var(--tum-ease-dock-exit);
+    opacity: 0;
+    transition:
+      transform var(--tum-dur-slide-out, 180ms) var(--tum-ease-slide-out, cubic-bezier(0.4, 0, 1, 1)),
+      opacity var(--tum-dur-slide-out-fade, 120ms) linear;
   }
 
   .pill-layer.is-docked[data-side="right"] {
@@ -1393,6 +1437,28 @@
 
   .pill-layer.is-docked[data-side="top"] {
     transform: translateY(-100%);
+  }
+
+  /* 「减弱动态效果」：tokens.css 里的全局规则把所有过渡压成 0.001ms 瞬时——
+     那比不开动画更硬。贴边滑入/滑出单独降级为**纯淡入淡出**：位移瞬时到位
+     （不滑动），透明度保留 120ms 柔和过渡。与 Glance 的 PLAIN_FADE 同思路
+     （panel.rs:99）。
+
+     ⚠️ 必须带 `!important`：全局那条 `transition-duration: 0.001ms !important`
+     是 important 声明，而本条展开出的 transition-duration 是普通声明——
+     级联里 important 无条件压过普通声明，与特异性无关（`*` 的零特异性救不了）。
+     不加 `!important` 的话这段降级完全失效，而 svelte-check 与单测都测不出
+     CSS 级联。两条同为 important 时才比特异性：Svelte 的作用域类让
+     `.pill-layer.svelte-xxx` 稳压 `*`。
+
+     这里**只**保留淡入。不要顺手把离屏 transform 也覆盖成 translateX(0)：
+     opacity:0 的元素仍参与命中测试，那会让停靠态有一层透明层原地吃掉指针，
+     胶囊再也唤不回来。位移交给上面的 0.001ms 瞬时即可。 */
+  @media (prefers-reduced-motion: reduce) {
+    .pill-layer,
+    .pill-layer.is-docked {
+      transition: opacity var(--tum-dur-reduced-fade, 120ms) ease !important;
+    }
   }
 
   .shell:active {
@@ -1673,6 +1739,15 @@
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+
+  /* 明细的入场容器：只负责承载过渡，不改变布局。
+     时长引用 token，缓动用 spring（与滑入同一族的手感）。 */
+  .pill__mini {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .pill__restore {
