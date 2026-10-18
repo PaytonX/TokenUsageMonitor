@@ -67,7 +67,12 @@ export const zhCN: Record<string, string> = {
   // 窗口按钮 / 页脚
   "settings.win.minimize": "最小化",
   "settings.win.maximize": "最大化/还原",
+  "settings.footer.discard": "撤销改动",
+  "settings.footer.discarded": "已撤销，已恢复为当前保存的设置",
+  "settings.footer.conflictTitle": "保存会覆盖别处改过的设置：",
+  "settings.footer.saveAnyway": "仍然保存",
   "settings.preview.title": "实时预览",
+  "settings.preview.note": "示意数据 · 恒为健康态，不含错误与活跃状态",
   "settings.footer.saveClose": "保存并关闭",
   "settings.footer.saving": "保存中…",
   "settings.footer.saveSettings": "保存设置",

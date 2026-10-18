@@ -56,6 +56,7 @@
   import { applyLocaleSetting, t, type LangSetting } from "./lib/i18n/store";
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
 import PreviewFrame from "./lib/components/PreviewFrame.svelte";
+import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draft";
 
   type Tab = "general" | "accounts" | "interaction" | "network" | "router" | "about";
 
@@ -116,6 +117,8 @@ import PreviewFrame from "./lib/components/PreviewFrame.svelte";
   });
   let catalog = $state<ProviderCatalog | null>(null);
   let settings = $state<Settings | null>(null);
+  /** 打开设置窗那一刻的后端快照，见 refreshAll() 里的注释。 */
+  let baseline: Settings | null = null;
   let forms = $state<AccountForm[]>([]);
   /** Current preset whose choice menu is expanded (null = none). */
   let presetMenuFor = $state<Preset | null>(null);
@@ -190,6 +193,17 @@ import PreviewFrame from "./lib/components/PreviewFrame.svelte";
   let updateError = $state<string | null>(null);
   let saving = $state(false);
   let savedFlash = $state(false);
+  /** 提交时会被静默覆盖的字段名（别人改过、而我们没动的 key）。空数组=无冲突。 */
+  let conflictWarning = $state<string[] | null>(null);
+  /** 「已丢弃」的一次性提示。 */
+  let dirtyFlash = $state(false);
+  let dirtyFlashTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * 用户是否已看到冲突提示并选择「仍然保存」。两段式提交的状态位：
+   * 首次检测到冲突时置位并中止保存，再次点击才真写。没有它，提示会在保存
+   * 发出之后才渲染出来，用户根本来不及反应。
+   */
+  let conflictAcknowledged = $state(false);
   let busy = $state<string | null>(null);
   let genericError = $state<string | null>(null);
   /** Account pending a second "删除" click to confirm. */
@@ -200,6 +214,12 @@ import PreviewFrame from "./lib/components/PreviewFrame.svelte";
   );
 
   const canSave = $derived(settings !== null);
+  /**
+   * 暂存相对基线是否变了——决定「撤销改动」是否可用。
+   * 逐字段重建一次 Settings 来比，比维护一份「哪些字段被改过」的清单可靠：
+   * 字段多、来源分散，漏登记一个就等于漏掉一个撤销入口。
+   */
+  const hasDraft = $derived(settings !== null && isDirty(baseline, buildNext()));
 
   function authKindFor(kind: string): "bearer_key" | "access_key_secret" | "local_token" {
     return presetMap.get(kind)?.auth_kind ?? "bearer_key";
@@ -247,6 +267,14 @@ import PreviewFrame from "./lib/components/PreviewFrame.svelte";
       invalidateInstanceKinds();
       catalog = cat;
       settings = s;
+      // 基线快照（issues/02b）。整形成与 buildNext() 可比的形状——后者把
+      // hub_token_configured 硬编码成 true（含义是「用户已经对这个 secret 表过态」，
+      // 清空也算），不整形的话后端初值为 false 时打开就恒脏，撤销按钮永远可点。
+      //
+      // ⚠️ 注意：设置本来就**不是**「改一下存一下」。persistSettings() 只有
+      // 「保存设置」与「保存并关闭」两个调用点，没有任何自动落盘。所以暂存一直
+      // 存在；一直缺的是**丢弃**——handleClose 无条件保存，「改了不想要」无路可退。
+      baseline = normalizeBaseline(s as unknown as Record<string, unknown>) as unknown as Settings;
       pollInterval = s.poll_interval_seconds ?? 0;
       ringWindow = s.ring_window ?? "auto";
       edgeSnap = s.edge_snap ?? true;
@@ -909,45 +937,91 @@ import PreviewFrame from "./lib/components/PreviewFrame.svelte";
     }
   }
 
+  /**
+   * 把散落在十几个 `$state` 里的暂存态拼成一个完整的 Settings。
+   *
+   * 抽出来是因为提交前的冲突检测必须比对**真正会写下去的那份对象**——
+   * 若检测用的是另一处构造，两边迟早漂移，检测就成了摆设。
+   */
+  function buildNext(): Settings {
+    return {
+      ...settings!,
+      accounts: forms.map((f) => f.meta),
+      poll_interval_seconds: pollInterval,
+      ring_window: ringWindow,
+      edge_snap: edgeSnap,
+      autostart,
+      notify_enabled: notifyEnabled,
+      notify_warn_percent: clampPercent(notifyWarn),
+      notify_crit_percent: clampPercent(notifyCrit),
+      countdown_mode: countdownMode,
+      display_currency: displayCurrency,
+      language,
+      hub_mode: hubMode,
+      hub_port: hubPort,
+      hub_base: hubBase,
+      report_on: reportOn,
+      hub_token: hubToken,
+      // Mark it as "the user has made a choice about the secret" — including
+      // choosing an empty one to run without auth. Without this flag the
+      // backend would mint a secret on every hub start, undoing a
+      // deliberately cleared field.
+      hub_token_configured: true,
+      check_updates_on_start: checkUpdatesOnStart,
+      rate_overrides: buildRateOverrides(),
+      proxy_url: proxyEnabled && proxyUrl.trim() ? proxyUrl.trim() : null,
+      // 本机工具数据目录：空串条目剔除（允许保留一个空输入框）。
+      tool_data_roots: toolDataRoots.map((r) => r.trim()).filter(Boolean),
+      tool_data_dirs: Object.fromEntries(
+        Object.entries(toolDataDirs)
+          .map(([k, v]) => [k, v.trim()])
+          .filter(([, v]) => v.length > 0),
+      ),
+      router: sanitizeRouter(routerCfg),
+    };
+  }
+
   async function persistSettings(): Promise<boolean> {
     if (!settings) return true;
     genericError = null;
+
+    // 提交前冲突检测（issues/02b）。下面是**整对象写**：buildNext() 拼出来的
+    // 东西直接 saveSettings(next)。而设置窗是 hide 而非 destroy，托盘等路径
+    // 可能在我们暂存期间改过盘——整对象写会把那些改动一并抹掉。
+    //
+    // ⚠️ 检测到冲突时**必须停在这里不保存**。此前只是 `conflictWarning = clashes`
+    // 然后继续 saveSettings：用户看到提示时保存早就发出甚至完成了，提示等于
+    // 事后告知，检测白做。改成两段式：首次点击只亮提示并返回 false，用户再次
+    // 点击才真保存。常规路径（无冲突）手感不变。
+    //
+    // ⚠️ settings_delta.rs 的 SettingsDelta::compute 是「算差分以决定要不要触发
+    // 副作用」，**不是**部分写入保护，拿它当防线是错的。
+    if (!conflictAcknowledged) {
+      try {
+        const fresh = await getSettings();
+        const clashes = conflictingKeys(
+          baseline as Record<string, unknown> | null,
+          buildNext() as unknown as Record<string, unknown>,
+          fresh as unknown as Record<string, unknown>,
+        );
+        conflictWarning = clashes;
+        if (clashes.length > 0) {
+          // 第一段：只提示，不写盘。
+          conflictAcknowledged = true;
+          return false;
+        }
+      } catch {
+        // 读不回来就不做检测——不能因为检测失败而挡住保存。
+        conflictWarning = null;
+      }
+    } else {
+      // 第二段：用户已看到提示并再次点击，照常保存。
+      conflictAcknowledged = false;
+      conflictWarning = null;
+    }
+
     try {
-      const next: Settings = {
-        ...settings,
-        accounts: forms.map((f) => f.meta),
-        poll_interval_seconds: pollInterval,
-        ring_window: ringWindow,
-        edge_snap: edgeSnap,
-        autostart,
-        notify_enabled: notifyEnabled,
-        notify_warn_percent: clampPercent(notifyWarn),
-        notify_crit_percent: clampPercent(notifyCrit),
-        countdown_mode: countdownMode,
-        display_currency: displayCurrency,
-        language,
-        hub_mode: hubMode,
-        hub_port: hubPort,
-        hub_base: hubBase,
-        report_on: reportOn,
-        hub_token: hubToken,
-        // Mark it as "the user has made a choice about the secret" — including
-        // choosing an empty one to run without auth. Without this flag the
-        // backend would mint a secret on every hub start, undoing a
-        // deliberately cleared field.
-        hub_token_configured: true,
-        check_updates_on_start: checkUpdatesOnStart,
-        rate_overrides: buildRateOverrides(),
-        proxy_url: proxyEnabled && proxyUrl.trim() ? proxyUrl.trim() : null,
-        // 本机工具数据目录：空串条目剔除（允许保留一个空输入框）。
-        tool_data_roots: toolDataRoots.map((r) => r.trim()).filter(Boolean),
-        tool_data_dirs: Object.fromEntries(
-          Object.entries(toolDataDirs)
-            .map(([k, v]) => [k, v.trim()])
-            .filter(([, v]) => v.length > 0),
-        ),
-        router: sanitizeRouter(routerCfg),
-      };
+      const next = buildNext();
       await saveSettings(next);
       // 后端在落盘前会补发空 token（ensure_route_tokens）：入参 next 里 token
       // 还是空的，必须回读后端的落盘结果，路由卡的 API Key 才显示得出来。
@@ -968,6 +1042,9 @@ import PreviewFrame from "./lib/components/PreviewFrame.svelte";
         /* ignore */
       }
       settings = next;
+      // 基线推进到刚落盘的值：保存之后暂存与基线一致，「撤销」随之失效。
+      // 不推进的话，保存完再点「撤销」会把已经写盘的值回退成旧值——那才是真丢数据。
+      baseline = normalizeBaseline(next as unknown as Record<string, unknown>) as unknown as Settings;
       // 汇率：合并新覆盖值并广播其它窗口（force=false，离线不阻塞）；失败忽略。
       // 放在 persistSettings 里，让"保存"与"保存并关闭"两条路径都覆盖。
       try {
@@ -998,6 +1075,37 @@ import PreviewFrame from "./lib/components/PreviewFrame.svelte";
       }
     }
     saving = false;
+  }
+
+  /**
+   * 丢弃暂存，回到后端**当前**保存的值（issues/02b）。
+   *
+   * 此前**没有**这条路：关闭走 handleClose，而它无条件 persistSettings()。
+   * 所以「改了不想要」只能手动一项项改回去。
+   *
+   * 刻意用 refreshAll() 重读后端而不是回放本地快照：期间托盘/其他窗口若有
+   * 改动，把它们一并带回来才是「当前保存的真实状态」；回放旧快照反而会制造
+   * 一次假回退。相应地，文案说的是「已恢复为当前保存的设置」而不是
+   * 「回到打开时的状态」——后者是做不到的承诺。
+   */
+  async function handleDiscard() {
+    if (!baseline || busy === "discard") return;
+    busy = "discard";
+    // 冲突提示在草稿清空后不再成立，留着会误导。
+    conflictWarning = null;
+    conflictAcknowledged = false;
+    try {
+      await refreshAll();
+      dirtyFlash = true;
+      // 重入保护：上一次计时器可能还在，先清再挂，否则它会提前清掉这次的提示。
+      if (dirtyFlashTimer !== null) clearTimeout(dirtyFlashTimer);
+      dirtyFlashTimer = setTimeout(() => {
+        dirtyFlashTimer = null;
+        dirtyFlash = false;
+      }, 2000);
+    } finally {
+      busy = null;
+    }
   }
 
   async function handleClose() {
@@ -2271,10 +2379,41 @@ async function handleMinimize() {
     {/if}
   </div>
 
+  {#if conflictWarning && conflictWarning.length > 0}
+    <div class="conflict-warn" role="status">
+      {$t("settings.footer.conflictTitle")}
+      <code>{conflictWarning.join(" · ")}</code>
+    </div>
+  {/if}
+
   <footer class="settings__footer">
-    <button class="btn btn--ghost" onclick={handleClose}>{$t("settings.footer.saveClose")}</button>
-    <button class="btn btn--primary" disabled={!canSave || saving} onclick={handleSaveAll}>
-      {saving ? $t("settings.footer.saving") : savedFlash ? $t("settings.common.savedCheck") : $t("settings.footer.saveSettings")}
+    {#if dirtyFlash}
+      <span class="footer-flash">{$t("settings.footer.discarded")}</span>
+    {/if}
+    <button
+      class="btn btn--ghost"
+      onclick={handleClose}
+      disabled={saving || busy !== null}
+    >{$t("settings.footer.saveClose")}</button>
+    <button
+      class="btn btn--ghost"
+      onclick={handleDiscard}
+      disabled={!hasDraft || saving || busy !== null}
+    >
+      {$t("settings.footer.discard")}
+    </button>
+    <button
+      class="btn btn--primary"
+      disabled={!canSave || saving || busy !== null}
+      onclick={handleSaveAll}
+    >
+      {saving
+        ? $t("settings.footer.saving")
+        : savedFlash
+          ? $t("settings.common.savedCheck")
+          : conflictAcknowledged
+            ? $t("settings.footer.saveAnyway")
+            : $t("settings.footer.saveSettings")}
     </button>
   </footer>
 </main>
@@ -3389,10 +3528,39 @@ async function handleMinimize() {
 
   .settings__footer {
     display: flex;
+    align-items: center;
     justify-content: flex-end;
     gap: var(--tum-space-3);
     padding: var(--tum-space-4) var(--tum-space-5);
     border-top: 1px solid var(--tum-border);
+  }
+
+  /* 「保存将覆盖别处改过的设置」：不阻断保存（整对象写是既有行为，突然拦下来
+     会变成「保存按钮没用」），但必须让用户看见被覆盖的是哪些字段。 */
+  .conflict-warn {
+    display: flex;
+    align-items: baseline;
+    gap: var(--tum-space-2);
+    margin: 0 var(--tum-space-5) var(--tum-space-2);
+    padding: var(--tum-space-2) var(--tum-space-3);
+    border-radius: var(--tum-radius-sm);
+    background: var(--tum-warn-fill);
+    border: 1px solid var(--tum-warn-stroke);
+    color: var(--tum-text-secondary);
+    font-size: var(--tum-font-size-sm);
+  }
+
+  .conflict-warn code {
+    font-family: var(--tum-font-mono);
+    font-size: var(--tum-font-size-xs);
+    color: var(--tum-warn);
+    word-break: break-all;
+  }
+
+  .footer-flash {
+    margin-right: auto;
+    font-size: var(--tum-font-size-sm);
+    color: var(--tum-ok);
   }
   .roots-list {
     display: flex;
