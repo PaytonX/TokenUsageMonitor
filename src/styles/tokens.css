@@ -123,7 +123,9 @@
   --tum-dur-slide-in: 260ms; /* 位置 */
   --tum-dur-slide-in-fade: 140ms; /* 透明度，约位置的一半 */
   --tum-dur-slide-out: 180ms; /* 关闭比打开快：起步慢、迅速钻边 */
-  --tum-dur-slide-out-fade: 120ms;
+  /* 收起淡出与位移等长（见 App.svelte .pill-layer.is-docked 的注释）：
+     不等长时 ease-in 的位移还没走远，胶囊已经看不见，读成「原地消散」。 */
+  --tum-dur-slide-out-fade: 180ms;
 
   /* 「减弱动态效果」下的降级档。不是 0.001ms 的瞬时（那比不开动画更硬），
      而是只保留淡入、去掉位移——与 Glance 的 PLAIN_FADE 同思路。 */

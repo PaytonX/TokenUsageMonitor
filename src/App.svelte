@@ -302,12 +302,12 @@
   // --tum-dur-slide-out）。改一边不改另一边，就会出现「滑出还没播完就缩窗裁剪」
   // 或「把手在面板还在滑的时候就抢回鼠标」的割裂感。
   //
-  // PILL_PEEK_LEAD_MS(120) 与 --tum-dur-slide-out-fade(120ms) 是**耦合**的：
+  // PILL_PEEK_LEAD_MS(120) 与滑出的淡出时长是**耦合**的：
   // 淡出走完的时刻正好是把手复现的时刻，两者一旦错开就会看到把手浮在
   // 半透明胶囊上。数值巧合而已，改任一侧都要同时改另一侧。
   const PILL_SLIDE_MS = 180; // = --tum-dur-slide-out（Glance CLOSE 同样是 180ms）
-  const PILL_PEEK_LEAD_MS = 120; // = --tum-dur-slide-out-fade
-  const PILL_REVEAL_MINI_MS = 120; // 滑入开始后展开明细的延迟
+  const PILL_PEEK_LEAD_MS = 120; // 与淡出相结束时点对齐
+  const PILL_REVEAL_MINI_MS = 200; // 滑入的淡入相（140ms）走完后再展开明细
   const PILL_DOCK_DELAY_MS = 320; // 指针离开后停留多久才收起
   // 模式恢复判定阈值（逻辑像素）：介于 compact(168) 与 dashboard(400) 之间。
   const PILL_RESTORE_MAX_W = 200;
@@ -1460,21 +1460,23 @@
        - 透明度 140ms，只有位置的一半——面板滑到一半就已经「在那儿了」。
          两者等长会读成「空白很久，然后啪一下出现」，这是滑入不丝滑的主因。 */
     opacity: 1;
+    /* 强制独立合成层。透明大窗上若不提升层，opacity + transform 的过渡会退回
+       主线程逐帧重绘——实测结果是「滑到底突然显形」，淡入完全看不出来。 */
+    will-change: transform, opacity;
     transition:
       transform var(--tum-dur-slide-in, 260ms) var(--tum-ease-slide-in, cubic-bezier(0.16, 1, 0.3, 1)),
       opacity var(--tum-dur-slide-in-fade, 140ms) linear;
   }
 
   /* 贴边收起（对标 Glance CLOSE）：180ms ease-in，起步慢、迅速钻边。
-     关闭比打开快，不拖泥带水。
-     淡出用 **linear**（与 Glance 的 OPEN_FADE / PLAIN_FADE 一致）：用 ease
-     的话前段就掉到接近 0，而位移是 ease-in 起步慢，等淡出走完位移才走了约一半，
-     后半程全程不可见——读成「原地消散」而不是「贴边滑走」。 */
+     淡出时长与位移**等长**（此前是 120ms vs 180ms）：淡出走完时 ease-in 的位移
+     才走了约一半，前半程几乎没动就已经看不见，读成「原地消散」。
+     等长之后「一边移动一边变淡」同时发生，钻边感才成立。 */
   .pill-layer.is-docked {
     opacity: 0;
     transition:
       transform var(--tum-dur-slide-out, 180ms) var(--tum-ease-slide-out, cubic-bezier(0.4, 0, 1, 1)),
-      opacity var(--tum-dur-slide-out-fade, 120ms) linear;
+      opacity var(--tum-dur-slide-out, 180ms) linear;
   }
 
   .pill-layer.is-docked[data-side="right"] {
