@@ -162,6 +162,39 @@ export function emitPeekShow(side: PeekSide): Promise<void> {
   return emitTo("peek", "peek-show", side);
 }
 
+// ── 探针驱动器（issues/05）──────────────────────────────────────────────
+// 仅探针构建（PERF_PROBE_ENABLED）下前端才会注册 onPerfDrive；生产构建里
+// Rust 发的这个事件没有任何接收方，命令不可达。
+
+/** 「perf-drive」事件的负载：Rust → 主窗，要求跑一轮无人值守的贴边唤出/收起
+ *  循环。字段名是 **camelCase**（Rust 侧按此序列化）。 */
+export interface PerfDriveRequest {
+  /** 测量轮数（**不含** warmup 轮）。 */
+  rounds: number;
+  /** 每轮之间的间隔（ms）。缺省 1000。 */
+  intervalMs?: number;
+}
+
+/** 「perf-drive-done」回执负载：主窗 → Rust。 */
+export interface PerfDriveDone {
+  /** 实际完成的测量轮数。 */
+  rounds: number;
+  /** 失败原因；成功时省略。 */
+  error?: string;
+}
+
+/** Rust → 主窗：启动无人值守的「贴边 → 唤出 → 收起」循环（仅探针构建有效）。 */
+export function onPerfDrive(
+  cb: (req: PerfDriveRequest) => void,
+): Promise<UnlistenFn> {
+  return listen<PerfDriveRequest>("perf-drive", (e) => cb(e.payload));
+}
+
+/** 主窗 → Rust：驱动器跑完的回执。 */
+export function emitPerfDriveDone(done: PerfDriveDone): Promise<void> {
+  return emit("perf-drive-done", done);
+}
+
 export async function openSettings(): Promise<void> {
   await invoke<void>("open_settings");
 }

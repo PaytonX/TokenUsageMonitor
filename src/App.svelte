@@ -26,6 +26,10 @@
     onPeekLeave,
     onPeekReveal,
     onPillDragSettled,
+    onPerfDrive,
+    emitPerfDriveDone,
+    type PerfDriveRequest,
+    type PerfDriveDone,
     forceRefresh,
     openSettings,
     onTabsChanged,
@@ -53,9 +57,11 @@
     markSpan,
     markEnd,
     spanList,
+    spanDroppedCount,
     loafEntries,
     loafSelfCheck,
     perfSnapshot,
+    perfReset,
     PERF_PROBE_ENABLED,
   } from "./lib/perf";
   import {
@@ -309,6 +315,15 @@
   const PILL_PEEK_LEAD_MS = 120; // 与淡出相结束时点对齐
   const PILL_REVEAL_MINI_MS = 200; // 滑入的淡入相（140ms）走完后再展开明细
   const PILL_DOCK_DELAY_MS = 320; // 指针离开后停留多久才收起
+  /**
+   * 滑出结束后再等多久才缩窗（ms）。0 = 与滑出同刻缩（现状）。
+   *
+   * 探针实验用（issues/05 §2.3）：实测 `collapsePill` 里的 `setSize` 偶发
+   * 500ms 尖刺，而缩窗时刻恰好与滑出动画的结束时刻重合。把缩窗推迟到
+   * 滑出彻底结束之后，尖刺若消失，就证明成因是「改尺寸与动画合成争用」
+   * 而非「改尺寸本身慢」——两者的修法完全不同。
+   */
+  const PILL_SHRINK_DELAY_MS = 0;
   // 模式恢复判定阈值（逻辑像素）：介于 compact(168) 与 dashboard(400) 之间。
   const PILL_RESTORE_MAX_W = 200;
   let settings = $state<Settings | null>(null);
@@ -397,6 +412,8 @@
           at: new Date().toISOString(),
           loafSupported: loafSelfCheck(),
           spans: spanList(),
+          // 被容量淘汰掉的 span 条数：>0 说明日志不完整，判读时必须知道。
+          spanDropped: spanDroppedCount(),
           loaf: loafEntries(),
           snapshot: perfSnapshot(),
         };
@@ -474,7 +491,7 @@
     // 把手只存在于贴边态（浮动态没有把手窗口），因此这两个全局事件只在贴边时生效。
     unlistenFns.push(
       await onPeekHover(() => {
-        if (pillDocked && !pillCollapsing && !pillDragActive) void revealPill();
+        void revealOnPeekHover();
       }),
     );
     unlistenFns.push(
@@ -486,6 +503,18 @@
     );
     unlistenFns.push(await onPeekReveal(() => void revealPill()));
     unlistenFns.push(await onPillDragSettled(() => void settlePillAfterDrag()));
+
+    // 探针驱动器（issues/05）：Rust 发「perf-drive」后，无人值守地跑
+    // 「贴边 → 唤出 → 收起」循环，用于复现偶发的贴边卡顿。
+    // 生产构建里 PERF_PROBE_ENABLED 为 false —— 整段不注册，监听器不存在、
+    // 命令不可达；驱动器模块也不会被下载（动态 import）。
+    if (PERF_PROBE_ENABLED) {
+      unlistenFns.push(
+        await onPerfDrive((req) => {
+          void runPerfDrive(req);
+        }),
+      );
+    }
 
     // 前端可能刚被重载（HMR / WebView 崩溃恢复）：Rust 侧的窗口尺寸与 compact 标志
     // 都还在，但这里的 mode 会回到初始值 —— 若不同步，就会在 168x56 的窗里渲染
@@ -799,23 +828,32 @@
     // 先置位后，fly 的 opacity:0 起点会盖住窗口尚矮时内容被压扁的那几帧，
     // 展开动画与扩窗两条时间线并行——与本次滑入改动用的是同一套方法。
     pillExpanded = true;
+    // 改尺寸单独打点（issues/05 §2.3）：`dockPill.shrink` 只说明「收起这一段慢」，
+    // 拆出 setSize 才能分清「改尺寸本身偶发慢」与「改尺寸撞上了动画合成」。
+    const sizeSpan = markSpan("expandPill.setSize");
     try {
       await getCurrentWindow().setSize(new LogicalSize(PILL_COLLAPSED_W, height));
     } catch {
       // IPC 失败：回退到折叠，避免「内容在、窗口没长高」的压扁态。
       if (gen === pillResizeGen) pillExpanded = false;
+    } finally {
+      markEnd(sizeSpan);
     }
   }
 
   async function collapsePill(): Promise<void> {
     const gen = ++pillResizeGen;
     pillExpanded = false;
+    // 同上：把 setSize 从「collapsePill 整体」里单独拆出来量。
+    const sizeSpan = markSpan("collapsePill.setSize");
     try {
       await getCurrentWindow().setSize(
         new LogicalSize(PILL_COLLAPSED_W, PILL_COLLAPSED_H),
       );
     } catch {
       // 忽略：窗口可能正处于模式切换中。
+    } finally {
+      markEnd(sizeSpan);
     }
   }
 
@@ -829,6 +867,26 @@
       if (gen !== peekGen) return;
       void expandPill();
     }, PILL_REVEAL_MINI_MS);
+  }
+
+  /**
+   * 唤出守卫：把手 hover 能唤出胶囊的三个前提（已贴边 / 没在收起 / 没在拖拽）。
+   *
+   * 抽成函数是为了让**真人路径与探针驱动器共用同一份判定**——驱动器若另抄一份，
+   * 将来改了守卫两份就会悄悄漂移，测出来的数据便不再代表真实交互。
+   */
+  function canRevealPill(): boolean {
+    return pillDocked && !pillCollapsing && !pillDragActive;
+  }
+
+  /**
+   * 把手 hover → 唤出胶囊。探针驱动器走的是**同一个函数**（issues/05），
+   * 所以驱动出来的数据与手点同源。返回 true = 真的唤出了。
+   */
+  async function revealOnPeekHover(): Promise<boolean> {
+    if (!canRevealPill()) return false;
+    await revealPill();
+    return true;
   }
 
   /** 把手（或已滑入的胶囊）被唤醒：解除穿透 → 滑入 → 120ms 后展开明细。 */
@@ -910,7 +968,7 @@
         markEnd(shrink);
         markEnd(span);
       }
-    }, PILL_SLIDE_MS);
+    }, PILL_SLIDE_MS + PILL_SHRINK_DELAY_MS);
   }
 
   // Compact pill three-state tone (spec §5.2): ringPercent is aggregate
@@ -1042,6 +1100,106 @@
       pillCollapsing = false;
       void syncPeek();
     }
+  }
+
+  // ── 探针驱动器（issues/05）────────────────────────────────────────────
+  // 无人值守地跑「贴边 → 唤出 → 收起」循环，用于复现偶发的贴边卡顿。
+  // 生产构建（VITE_PERF 未设）下整段不注册：监听器不存在、命令不可达。
+
+  /** 驱动器是否正在跑。并发两轮循环会互相踩状态机，必须拒绝。 */
+  let perfDriving = false;
+
+  /**
+   * 把胶囊置为 docked 态（驱动器的前置条件）。
+   *
+   * 为什么**不**直接调 settlePillAfterDrag()：它要去问 Rust「该贴哪条边」
+   * （dock_side_of），依据是真实窗口几何与拖拽位移。驱动器既没有拖拽，也不该
+   * 改动用户当前的贴靠位置；而若窗口离四条边都远，side 会是 null，它反而把
+   * 胶囊打回浮动态、销毁把手窗口——驱动器的前提直接没了。
+   *
+   * 为什么这样置位不与世代号打架：这里**不碰** peekGen / pillResizeGen，只改
+   * pillDocked / pillRevealed 两个布尔，再调 syncPeek() + dockPill()——后两者
+   * 各自按自己的规则推进世代号（dockPill 会 ++peekGen），因此不会与在途的
+   * 世代守卫冲突。
+   */
+  async function ensureDockedForDrive(): Promise<void> {
+    if (pillDocked) return;
+    pillDocked = true;
+    pillRevealed = false;
+    await syncPeek();
+    await dockPill();
+  }
+
+  /**
+   * 跑一轮无人值守的「贴边 → 唤出 → 收起」循环，返回给 Rust 的回执。
+   *
+   * 驱动器只像「按按钮」一样调用现有函数（revealPill / dockPill），
+   * 不重写状态机、不碰世代号、不动 pillDragActive 冻结机制。
+   */
+  async function doPerfDrive(req: PerfDriveRequest): Promise<PerfDriveDone> {
+    // 只在 compact（胶囊）态下才有意义：dashboard 态没有把手窗口，
+    // revealPill / syncPeek 都是空操作，测出来的数据毫无意义。
+    if (mode !== "compact") {
+      return { rounds: 0, error: "主窗不在 compact 模式，贴边交互不存在" };
+    }
+    const rounds = Number.isFinite(req.rounds) ? Math.floor(req.rounds) : 0;
+    if (rounds < 1) {
+      return { rounds: 0, error: `rounds 非法：${String(req.rounds)}` };
+    }
+    const rawInterval = Number(req.intervalMs);
+    const intervalMs =
+      Number.isFinite(rawInterval) && rawInterval > 0
+        ? Math.floor(rawInterval)
+        : 1000; // 缺省 1s（方案 §1.4「每轮间隔 1 秒」）
+
+    await ensureDockedForDrive();
+
+    // 动态 import：生产构建里这段根本不会被执行，驱动器模块也不会被下载。
+    const { drivePeekCycles } = await import("./lib/perf-drive");
+    const result = await drivePeekCycles({
+      rounds,
+      intervalMs,
+      // 必须与真实「指针离开」链路一致：scheduleDockPill 的宽限期。
+      dockDelayMs: PILL_DOCK_DELAY_MS,
+      // 等 dockPill 的收起时间线走完，下一轮的唤出守卫才可能成立。
+      slideMs: PILL_SLIDE_MS,
+      hooks: {
+        // 与真人 hover 走**同一个函数**。
+        reveal: () => revealOnPeekHover(),
+        // 与 scheduleDockPill 的定时器到期效果同源。
+        dock: () => dockPill(),
+        ready: () => canRevealPill(),
+      },
+      // warmup 轮之后清空采样：冷启动（首次建 peek 窗口）不进统计。
+      resetStats: () => perfReset(),
+    });
+    return result.error
+      ? { rounds: result.rounds, error: result.error }
+      : { rounds: result.rounds };
+  }
+
+  /** 「perf-drive」事件的处理器：跑驱动器，然后把结果回执给 Rust。 */
+  async function runPerfDrive(req: PerfDriveRequest): Promise<void> {
+    if (perfDriving) {
+      await emitPerfDriveDone({
+        rounds: 0,
+        error: "驱动器已在运行，已忽略本次请求",
+      }).catch(() => {});
+      return;
+    }
+    perfDriving = true;
+    let ack: PerfDriveDone;
+    try {
+      ack = await doPerfDrive(req);
+    } catch (err) {
+      ack = {
+        rounds: 0,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      perfDriving = false;
+    }
+    await emitPerfDriveDone(ack).catch(() => {});
   }
 
   let timeLabel = $derived(

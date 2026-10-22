@@ -9,6 +9,7 @@ import {
   PERF_MIN_N_FOR_P95,
   PERF_SAMPLE_MAX_MS,
   PERF_SLOW_MS,
+  SPAN_LOG_CAPACITY,
   loafSelfCheck,
   markEnd,
   markSpan,
@@ -17,6 +18,7 @@ import {
   perfClock,
   perfReset,
   perfSnapshot,
+  spanDroppedCount,
   spanList,
 } from "./perf";
 
@@ -296,15 +298,20 @@ describe("perf: 时间线探针（issues/05 §1.2）", () => {
     expect(spanList()).toEqual([]);
   });
 
-  it("环形上限 400：长期驻留进程不无界增长", () => {
-    for (let i = 0; i < 450; i++) {
+  it("环形上限：长期驻留进程不无界增长", () => {
+    // 断言引用导出的容量常量，而不是写死数字——写死的话，改容量就会被
+    // 误当成「放松了这条不变量」，而这条不变量恰恰是它要守的东西。
+    for (let i = 0; i < SPAN_LOG_CAPACITY + 50; i++) {
       const id = markSpan(`s${i}`);
       markEnd(id);
     }
-    expect(spanList().length).toBeLessThanOrEqual(400);
+    expect(spanList().length).toBeLessThanOrEqual(SPAN_LOG_CAPACITY);
     // 最旧的被丢掉，最新的还在
-    expect(spanList().some((s) => s.label === "s449")).toBe(true);
+    const last = SPAN_LOG_CAPACITY + 49;
+    expect(spanList().some((s) => s.label === `s${last}`)).toBe(true);
     expect(spanList().some((s) => s.label === "s0")).toBe(false);
+    // 被淘汰的条数要单独报出来：「日志里没有」与「被淘汰了」不能读成同一件事。
+    expect(spanDroppedCount()).toBe(50);
   });
 
   it("spanList 返回副本，改它不影响内部状态", () => {

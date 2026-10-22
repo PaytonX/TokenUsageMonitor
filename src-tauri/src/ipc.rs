@@ -475,6 +475,63 @@ pub fn current_anchor(window: &WebviewWindow) -> Option<DockAnchor> {
     Some(anchor_from_rect(f64::from(pos.x), f64::from(pos.y), ax, ay, side))
 }
 
+/// 探针专用：把主窗**强制**贴到最近的一条边，并返回该锚点。
+///
+/// 等价于用户把胶囊拖到屏幕边缘松手——但不需要真人操作。
+///
+/// ## 为什么需要它（issue 05 实测踩到的坑）
+///
+/// [`current_anchor`] 的语义是「读出**已贴边**时的锚点」：离四条边都超过
+/// [`DOCK_SNAP_MARGIN_PX`] 时返回 `None`（浮动）。而 `sync_peek_window` 开头
+/// 就拿它当闸门：
+///
+/// ```text
+/// let Some(anchor) = current_anchor(&dash) else {
+///     return Err("dashboard window has no monitor".to_string());
+/// };
+/// ```
+///
+/// （标 `text` 而不是 `rust`：这段是**示意**，`current_anchor` 与 `dash` 都来自
+/// 调用方上下文，标成 `rust` 会被 cargo 当 doctest 真去编译，然后报
+/// `cannot find function current_anchor` ——这不是代码的问题，是示例的问题。）
+///
+/// 于是「窗口不贴边」时，宿主侧**整条 docked 路径都不会被执行**：同步直接
+/// Err 返回，前端 catch 掉，peek 窗口既不建也不定位，分段计时也一行都记不到。
+/// 实测中这表现为一整轮 30 次测量**零条** `tum.window` 日志——数据看着像
+/// 「宿主侧很快」，实际是「宿主侧什么都没做」。
+///
+/// 测量要覆盖真实的贴边路径，就必须先把窗口**真的贴到边**。本函数用一个
+/// 大到不设限的阈值调 [`nearest_side`]，无视贴边阈值选出最近的一条边，
+/// 再用 [`apply_anchor`] 把它贴死。
+///
+/// ⚠️ 副作用：窗口会移动到屏幕边缘，且锚点需要调用方持久化（见
+/// [`persist_placement`]）。这是**有意的**——它复刻的正是「用户把胶囊拖到边」
+/// 这个真实前置条件，而不是在伪造一条不存在的路径。
+pub fn force_dock_to_nearest(window: &WebviewWindow) -> Option<DockAnchor> {
+    let pos = window.outer_position().ok()?;
+    let size = window.outer_size().ok()?;
+    let monitor = window.current_monitor().ok()??;
+    let area = monitor.work_area();
+    let (ax, ay) = (f64::from(area.position.x), f64::from(area.position.y));
+    let (aw, ah) = (f64::from(area.size.width), f64::from(area.size.height));
+    // 阈值给足：让「最近边」的判定不受贴边阈值限制。
+    let side = nearest_side(
+        f64::from(pos.x),
+        f64::from(pos.y),
+        f64::from(size.width),
+        f64::from(size.height),
+        ax,
+        ay,
+        aw,
+        ah,
+        1.0e9,
+        None,
+    )?;
+    let anchor = anchor_from_rect(f64::from(pos.x), f64::from(pos.y), ax, ay, side);
+    apply_anchor(window, anchor);
+    Some(anchor)
+}
+
 /// 把窗口落到锚点上。`anchor_rect` 保证贴边轴永远贴死且不出屏，
 /// 所以窗口尺寸怎么变都不会「掉出贴边态」。
 pub fn apply_anchor(window: &WebviewWindow, a: DockAnchor) -> bool {
@@ -753,6 +810,106 @@ pub(crate) fn current_lang(app: &AppHandle) -> crate::i18n::Lang {
         .unwrap_or(crate::i18n::Lang::ZhCn)
 }
 
+/// 记录把手窗当前**属于哪条边**。
+///
+/// 用途只有一处：复用前判断「能不能复用」。把手窗的尺寸在建窗时按边烧死
+/// （左右 7×58 / 上下 58×7），跨边复用会让定位按错误尺寸算——那正是
+/// 5bba9c6 的失败形态。所以同边复用、跨边重建。
+fn set_peek_side(app: &AppHandle, side: Option<DockSide>) {
+    if let Ok(mut g) = app.state::<AppState>().peek_side.lock() {
+        *g = side;
+    }
+}
+
+/// 新建贴边把手窗。尺寸按边烧死（左右 7×58 / 上下 58×7）。
+///
+/// 把手页通过初始化脚本拿到所在边，决定内容对齐与圆角朝向。
+fn build_peek_window(app: &AppHandle, side: DockSide) -> Result<WebviewWindow, String> {
+    let (pw, ph) = side.peek_size();
+    let built = WebviewWindowBuilder::new(
+        app,
+        "peek",
+        tauri::WebviewUrl::App("peek.html".into()),
+    )
+    .title(crate::i18n::window_title(
+        current_lang(app),
+        crate::i18n::WindowPage::PeekHandle,
+    ))
+    .inner_size(pw, ph)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .shadow(false)
+    .focused(false)
+    .visible(false)
+    .initialization_script(format!("window.__PEEK_SIDE__ = {:?};", side.as_str()))
+    .build()
+    .map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    crate::dwm_corner::disable_corner_artifacts(&built);
+    Ok(built)
+}
+
+/// 探针专用：实测「销毁后立刻建同名窗」到底会不会失败。
+///
+/// ## 为什么要有这个探针
+///
+/// 独立审查指出：`destroy()` 是**异步**的（只往事件循环投一条 Destroy 消息），
+/// 而建窗的 label 校验是**同步**的（`prepare_window` 里
+/// `windows_lock().contains_key(&pending.label)`）。于是「destroy 之后立刻
+/// build 同名窗」在 Tauri 2.12.0 下**可能必然撞**
+/// `a window with label 'peek' already exists`——旧窗还没从管理器里摘掉，
+/// 新窗建不出来。
+///
+/// 这条**不能只靠推理**：直接跑一次就知道，而且它决定「跨边重建」这条路
+/// 到底能不能走。本探针把两种做法都跑一遍：
+///
+/// 1. destroy → **立刻** build（预期失败）
+/// 2. destroy → 等旧窗从管理器消失 → build（预期成功）
+///
+/// 跑完会重建一个把手窗，并把边记录同步好，不污染后续测量。
+pub(crate) async fn probe_peek_rebuild(app: AppHandle, side: DockSide) -> Result<String, String> {
+    if !crate::perf_probe::enabled() {
+        return Err("探针未启用（PERF_PROBE 关闭）".to_string());
+    }
+    let Some(old) = app.get_webview_window("peek") else {
+        return Err("peek window not found（把手窗还没建）".to_string());
+    };
+    let _ = old.destroy();
+    // 第 1 遍：destroy 之后**立刻**建。
+    let immediate = match build_peek_window(&app, side) {
+        Ok(_) => "OK".to_string(),
+        Err(e) => format!("ERR({e})"),
+    };
+    // 第 2 遍：先确保「当前没有同名窗」，再走「等它消失 → build」。
+    //
+    // 第 1 遍如果**建成功了**，此刻管理器里有一个活的同名窗——直接再 build
+    // 必然撞 label 冲突，那测到的就不是「等一等能不能建回来」，而是
+    // 「同名窗还在」，量纲错了。所以把第 1 遍的产物也一并拆掉，
+    // 两遍才可比。
+    if let Some(w) = app.get_webview_window("peek") {
+        let _ = w.destroy();
+    }
+    let mut waited_ms = 0u32;
+    while app.get_webview_window("peek").is_some() && waited_ms < 1000 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        waited_ms += 10;
+    }
+    let after_wait = match build_peek_window(&app, side) {
+        Ok(_) => "OK".to_string(),
+        Err(e) => format!("ERR({e})"),
+    };
+    // 探针结束时保证「窗口存在 + 边记录一致」，不污染后续测量。
+    set_peek_side(&app, app.get_webview_window("peek").is_some().then_some(side));
+    let msg = format!(
+        "rebuild probe: immediate={immediate} after_wait_{waited_ms}ms={after_wait}"
+    );
+    tracing::info!(target: "tum.window", "{}", msg);
+    Ok(msg)
+}
+
 /// 创建/定位贴边把手，并把「谁捕获鼠标」交给本命令统一托管（三态）：
 /// `floating`（常态浮动）→ 销毁把手、主窗可交互、不移动主窗；
 /// `revealed`（胶囊已贴边滑入）→ 把手存在但不捕获、主窗捕获、不移动主窗；
@@ -788,6 +945,10 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
             }
         }
         "revealed" | "docked" => {
+            // 分段计时（方案 issues/05 §1.7）。探针关闭时整段退化成「一次 relaxed
+            // 原子读 + 若干分支」——不取时钟、不打日志，生产构建零开销。
+            let mut seg = crate::perf_probe::Segments::start();
+
             // docked 才贴死；revealed 时窗口已贴边，不再移动，避免每帧校正抖动。
             if state == "docked" {
                 // 贴死成功即回写持久化锚点，让下次启动回到同一条边、同一位置。
@@ -795,10 +956,15 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
                 if apply_anchor(&dash, anchor) {
                     persist_placement(&app, Some(anchor)).await;
                 }
+                seg.mark_anchor();
             }
 
             let peek = match app.get_webview_window("peek") {
-                Some(existing) => existing,
+                Some(existing) => {
+                    // 同边复用：只是一次查表，build_ms 会很小。
+                    seg.mark_build();
+                    existing
+                }
                 None => {
                     // 把手页通过初始化脚本拿到所在边，决定内容对齐与圆角朝向。
                     let (pw, ph) = side.peek_size();
@@ -822,6 +988,8 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
                     .map_err(|e| e.to_string())?;
                     #[cfg(windows)]
                     crate::dwm_corner::disable_corner_artifacts(&built);
+                    seg.mark_build();
+                    seg.peek_created = true;
                     built
                 }
             };
@@ -829,10 +997,17 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
             // 刚建出来时还不知道系统实际最小尺寸：拿到真实 outer_size 后由
             // peek_placement 重算，把垂直于贴边轴的多余部分推出屏幕
             // （贴左边/上边时尤其关键）。
+            //
+            // ℹ️ 本分支**没有** set_size 调用（把手尺寸在建窗时定死），所以
+            // `set_size_ms` 恒为 0、`set_size_done` 恒为 false。§2.1 门禁②
+            // 「set_size 能不能把被系统钳制的 136×39 缩回 7×58」若要落地，
+            // set_size 应插在这里，并在其后调 `seg.mark_set_size()`。
             if let Some(p) = peek_placement(&dash, side, anchor.along) {
                 let _ = peek.set_position(p);
             }
+            seg.mark_set_pos();
             let _ = peek.show();
+            seg.mark_show();
             // 鼠标捕获：两个窗口必须一致切换。走 best-effort 但带兜底 —— 停靠态
             // 主窗是穿透的，把手一旦不能捕获鼠标就再也唤不醒胶囊，此时直接让主窗
             // 把胶囊唤出来（peek-reveal），宁可少一层交互也不能让应用不可达。
@@ -845,6 +1020,27 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
             } else if let Err(e) = dash.set_ignore_cursor_events(docked) {
                 tracing::warn!(target: "tum.window", "dashboard set_ignore_cursor_events failed: {e}");
             }
+            // 两次 set_ignore_cursor_events 合并记成一步「鼠标捕获归属切换」。
+            seg.mark_ignore_cursor();
+
+            // peek-show **不由宿主发**。
+            //
+            // peek-show 是**前端**发起的（App.svelte 的 syncPeek()：pillDocked &&
+            // !pillRevealed 时 emitPeekShow(pillSide)），把手页靠它纠正圆角朝向
+            // 并复现自己。宿主在这里再补发一次是**重复事件**——语义虽然幂等
+            //（announced / clearTimeout / dataset.side / 去 is-hidden），
+            // 但有两个不能接受的后果：
+            //
+            // ① 它多一次 IPC 往返，而这次往返**就在被测量的热路径上**：
+            //    用测量改被测系统，测出来的数就不干净了。
+            // ② 它若不受探针开关保护，**生产构建也会多这一次往返**，
+            //    违反「生产零开销」这条硬约束。
+            //
+            // 所以这里既不发也不计时：`emit_ms` / `emit_done` 恒为 0 / false。
+            // 代价是「宿主把事件推进 peek webview 要多久」这一段量不到——那是
+            // **已知缺口**，要补得另开一次性探针，不能混进稳态循环里。
+
+            seg.log(&state, side_str);
         }
         other => return Err(format!("unknown peek state: {other}")),
     }

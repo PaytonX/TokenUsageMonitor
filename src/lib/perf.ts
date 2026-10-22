@@ -41,6 +41,30 @@ export const PERF_SAMPLE_MAX_MS = 1000;
 /** 环形缓冲容量：只保留最近这么多个样本。 */
 export const PERF_CAPACITY = 120;
 
+/**
+ * LoAF 环形缓冲的容量（长帧条目的条数）。
+ *
+ * 单独开一个更大的容量，理由：长跑的测量里长帧条目会随轮数累积，
+ * 而共享的 {@link PERF_CAPACITY}(120) 是按「ipc / frame 通道每几分钟才一个样本」
+ * 的量级定的。用它装长帧，**早期条目会被后来的挤掉**——而早期恰恰是最想看的
+ * （「尖刺发生在第几轮」）。扩大它只增内存、不改统计口径：ipc / frame 两条
+ * 通道仍用 {@link PERF_CAPACITY}，p95 语义不变。
+ */
+const LOAF_CAPACITY = 1000;
+
+/**
+ * span 日志的容量（区间条数）。
+ *
+ * 同样是为了长跑：每轮「唤出 + 收起」产生约 6 个 span，200 轮就是 1200 条，
+ * 原来的 400 会把前三分之二的数据挤掉。且**被丢弃的条数要单独计数**
+ * （{@link spanDropped}）——否则「日志里没有某轮」和「那轮被缓冲淘汰了」
+ * 读起来一模一样，正是「零值字段必须区分『测出来是 0』和『没测到』」那条。
+ */
+/** span 日志的容量（区间条数）。导出是为了让测试直接引用它——
+ *  断言里写死数字的话，改容量就得改测试，而「改数字」很容易被误当成
+ *  「放松了『长期驻留进程不无界增长』这条不变量」。 */
+export const SPAN_LOG_CAPACITY = 4000;
+
 /** p95 在样本数低于此值时没有意义（小 n 下 p95 必然等于 max）。 */
 export const PERF_MIN_N_FOR_P95 = 20;
 
@@ -52,22 +76,23 @@ export const perfClock = {
   },
 };
 
-function newStore(): { buf: Float64Array; len: number; cursor: number } {
-  return { buf: new Float64Array(PERF_CAPACITY), len: 0, cursor: 0 };
+function newStore(cap: number = PERF_CAPACITY): { buf: Float64Array; len: number; cursor: number } {
+  return { buf: new Float64Array(cap), len: 0, cursor: 0 };
 }
 
 type Store = ReturnType<typeof newStore>;
 
 const ipc = newStore();
 const frame = newStore();
-const longFrames = newStore();
+// 长帧两条用大容量：条目数随测量轮数增长，共享容量会把早期条目挤掉。
+const longFrames = newStore(LOAF_CAPACITY);
 /**
  * LoAF 条目的 `startTime`，与 longFrames **同序成对**（同一次 record 调用里写）。
  *
  * 缺了它就无法把长帧和 span 时间线对齐——判读表第 2 行（「peekLead 的 LoAF
  * 占比」）需要「这条长帧发生在哪个区间里」，只有 duration 是答不出来的。
  */
-const loafStarts = newStore();
+const loafStarts = newStore(LOAF_CAPACITY);
 
 /** 因「同帧合并」被丢弃的测量数。门槛判定要求它为 0。 */
 let dropped = 0;
@@ -270,13 +295,24 @@ export const PERF_PROBE_ENABLED =
 const SPANS_ENABLED = PERF_PROBE_ENABLED;
 const spanLog: SpanRecord[] = [];
 let spanSeq = 0;
+/**
+ * 因超出 {@link SPAN_LOG_CAPACITY} 而被淘汰的 span 条数。
+ *
+ * 必须单独计数：否则「日志里没有第 N 轮」有两种可能——那轮**没发生**，
+ * 或者那轮**被缓冲淘汰了**。两者读起来一模一样，正是「零值字段必须区分
+ * 『测出来是 0』和『没测到』」那条纪律要求避免的歧义。
+ */
+let spanDropped = 0;
 
 /** 开始一个区间标记，返回 id（生产下恒为 -1，`markEnd` 对 -1 是空操作）。 */
 export function markSpan(label: string): number {
   if (!SPANS_ENABLED) return -1;
   const id = spanSeq++;
   spanLog.push({ id, label, start: perfClock.now(), end: null });
-  if (spanLog.length > 400) spanLog.splice(0, spanLog.length - 400);
+  if (spanLog.length > SPAN_LOG_CAPACITY) {
+    spanLog.splice(0, spanLog.length - SPAN_LOG_CAPACITY);
+    spanDropped++;
+  }
   return id;
 }
 
@@ -290,6 +326,14 @@ export function markEnd(id: number): void {
 /** 读出全部区间。 */
 export function spanList(): SpanRecord[] {
   return SPANS_ENABLED ? spanLog.map((s) => ({ ...s })) : [];
+}
+
+/**
+ * 被环形容量淘汰掉的 span 条数。读数 > 0 说明**日志不完整**，
+ * 判读时必须知道（否则会把「没记到」读成「没发生」）。
+ */
+export function spanDroppedCount(): number {
+  return spanDropped;
 }
 
 /**
@@ -332,7 +376,10 @@ export function perfReset(): void {
   unreliable = 0;
   ipcFails = 0;
   pendingFrame = null;
-  if (SPANS_ENABLED) spanLog.length = 0;
+  if (SPANS_ENABLED) {
+    spanLog.length = 0;
+    spanDropped = 0;
+  }
 }
 
 /**

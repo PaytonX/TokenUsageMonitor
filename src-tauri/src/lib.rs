@@ -19,6 +19,7 @@ pub mod ipc;
 pub mod local;
 pub mod notify;
 pub mod p2p;
+pub mod perf_probe;
 pub mod pricing;
 pub mod providers;
 pub mod router;
@@ -93,6 +94,13 @@ pub struct AppState {
     /// 缓存「Dashboard 处于 compact 胶囊态」。供同步的 `Moved` 处理器选择
     /// 停靠策略（贴边 vs 四向吸附），以及托盘恢复时重新拉起把手。
     pub compact_mode: Arc<AtomicBool>,
+    /// 把手窗当前**属于哪条边**（`None` = 没有把手窗）。
+    ///
+    /// 用途只有一处：把手窗复用前的判据。把手窗的尺寸在建窗时按边烧死
+    /// （左右 7×58 / 上下 58×7），跨边复用会让 `peek_placement` 按错误尺寸
+    /// 算位置——那正是 5bba9c6 的失败形态（点击胶囊放大/变回胶囊失效）。
+    /// 所以：**同边复用**（零建窗，高频路径），**跨边销毁重建**（低频）。
+    pub peek_side: Arc<std::sync::Mutex<Option<crate::dock::DockSide>>>,
     /// 用户正在用原生拖拽移动窗口：前端调用 set_pill_dragging(true) 置位，
     /// 窗口停止移动 400ms 后由 watcher 清零并发事件通知前端结算。
     pub pill_drag: Arc<AtomicBool>,
@@ -269,6 +277,16 @@ pub fn run() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,tower_http=warn")),
         )
         .try_init();
+
+    // 性能探针（方案 issues/05）的宿主侧开关。必须在 tracing 初始化之后：
+    // 它要打一行启动日志，且后续的分段计时日志依赖同一个 subscriber。
+    //
+    // 判定依据见 perf_probe 模块头：debug 构建恒开；release 构建靠运行时环境
+    // 变量 TUM_PERF_PROBE=1，或由前端在启动时调 set_perf_probe(true) 对齐
+    // （前端知道自己的 VITE_PERF=1）。Rust 侧**不**在编译期读 VITE_PERF——
+    // cargo 的编译缓存不会因环境变量变化而失效，那会让 release 测量拿到一个
+    // 静默不记日志的二进制。
+    perf_probe::init();
 
     tauri::Builder::default()
         // 单例插件必须注册在最前：第二实例启动时由它唤起本实例的 dashboard
@@ -692,6 +710,7 @@ pub fn run() {
                 close_to_tray,
                 edge_snap,
                 compact_mode: Arc::new(AtomicBool::new(false)),
+                peek_side: Arc::new(std::sync::Mutex::new(None)),
                 pill_drag: Arc::new(AtomicBool::new(false)),
                 pill_last_move_ms: Arc::new(AtomicU64::new(0)),
                 _tray: tray,
@@ -864,6 +883,13 @@ pub fn run() {
                     }
                 }
             });
+
+            // 自动触发一次测量（仅当设了 TUM_PERF_DRIVE 环境变量时才动作）。
+            // release 构建没有 DevTools 面板，perf_drive 这个 command 平时没人调；
+            // 有了这个入口，测量就是「设两个环境变量 → 启动 → 等它跑完」，
+            // 不需要人守着点鼠标。详见 perf_probe::maybe_auto_drive 的说明。
+            perf_probe::maybe_auto_drive(app.handle());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -877,6 +903,8 @@ pub fn run() {
             ipc::dock_side_of,
             ipc::sync_peek_window,
             ipc::write_perf_probe,
+            perf_probe::perf_drive,
+            perf_probe::set_perf_probe,
             ipc::set_pill_dragging,
             ipc::open_settings,
             ipc::close_settings,
