@@ -69,6 +69,13 @@
     reduceHover,
     type HoverEvent,
   } from "./lib/pill-hover-state";
+  import {
+    DASHBOARD_SIZE,
+    PILL_COLLAPSED_SIZE,
+    createSizeWriteQueue,
+    pillExpandedHeight,
+    shouldApplySizeWrite,
+  } from "./lib/window-size";
   import ProviderCard from "./lib/components/ProviderCard.svelte";
   import ProgressRing from "./lib/components/ProgressRing.svelte";
   import MiniPanel from "./lib/components/MiniPanel.svelte";
@@ -294,16 +301,22 @@
   const PILL_DRAG_THRESHOLD_PX = 4;
 
   // ---- 贴边 peek 双窗（spec §2 决策 1-5 / §3.2 时序）----
-  const PILL_COLLAPSED_W = 168; // 与 Rust set_window_mode 的 LogicalSize 保持一致
-  const PILL_COLLAPSED_H = 56;
-  const PILL_MINI_PAD_TOP = 2;
-  const PILL_MINI_PAD_BOTTOM = 8;
-  const PILL_MINI_ROW = 24;
-  const PILL_MINI_GAP = 6;
-  // 展开高度 = 56 + (2 + 30n + 6(n-1) + 8) = 60 + 30n；同 MiniPanel 的 CSS。
-  const PILL_EXPANDED_ROW = PILL_MINI_ROW + PILL_MINI_GAP; // 30
-  const PILL_EXPANDED_BASE =
-    PILL_COLLAPSED_H + PILL_MINI_PAD_TOP + PILL_MINI_PAD_BOTTOM - PILL_MINI_GAP; // 60
+  // 尺寸常量来自 lib/window-size.ts（与 Rust set_window_mode 保持一致，
+  // 那边有单测钉住「前端与 Rust 的尺寸不许漂」）。
+  const PILL_COLLAPSED_W = PILL_COLLAPSED_SIZE.width;
+  const PILL_COLLAPSED_H = PILL_COLLAPSED_SIZE.height;
+  /**
+   * 全窗态（dashboard）的窗口尺寸。与 Rust `set_window_mode` 的
+   * `LogicalSize::new(400u32, 680u32)` 保持一致。
+   *
+   * 为什么前端也要知道它：尺寸写的**唯一入口**（见 `writeWindowSize`）要能在
+   * 模式切换收尾时补写一笔「当前模式应有的尺寸」，否则晚到的那笔胶囊尺寸写
+   * 会把全窗态窗口又改回 168 宽。
+   */
+  const DASHBOARD_W = DASHBOARD_SIZE.width;
+  const DASHBOARD_H = DASHBOARD_SIZE.height;
+  // 展开高度（60 + 30n）的算式搬到 lib/window-size.ts::pillExpandedHeight
+  // ——那边有单测钉住，免得行高/间距改了没人发现窗口高度对不上。
   // 三段式时间线的时点，与 CSS 里的滑出时长**必须同步**（见 tokens.css 的
   // --tum-dur-slide-out）。改一边不改另一边，就会出现「滑出还没播完就缩窗裁剪」
   // 或「把手在面板还在滑的时候就抢回鼠标」的割裂感。
@@ -819,10 +832,80 @@
     }
   }
 
+  // ── 窗口尺寸写入（唯一入口）──────────────────────────────────────────
+  //
+  // 胶囊态的尺寸由前端写（expandPill / collapsePill），全窗态的尺寸由 Rust 写
+  // （set_window_mode）。两边的 setSize **不排队**，就可能乱序落地：一次慢的
+  // 胶囊 resize 晚于模式切换落地，把 400×680 的全窗态窗口又改回 168 宽 ——
+  // 于是 dashboard 内容被塞进胶囊宽度的窗口，表现为「标签栏的中文竖排成一列、
+  // 标题被裁掉、下拉框出界」（用户实测截图：168×150 的窗口里渲染着 dashboard，
+  // 而 168×150 正是胶囊**展开态**的尺寸 —— 那笔 expandPill 的写入晚到了一步）。
+  //
+  // 三条规则：
+  //
+  // 1. **序列化**：所有尺寸写排成一条链，后写的赢；
+  // 2. **落地前核对模式**：一笔写只在自己被请求时的模式仍然成立时才落地。
+  //    模式一变，在途的旧写自动作废；
+  // 3. **模式切换收尾补写**：切换完成后补写一笔当前模式应有的尺寸，
+  //    把「排队期间进来、切换之后落地」的旧写纠正回来。
+  //
+  // 队列本体在 lib/window-size.ts::createSizeWriteQueue（有单测钉住竞态本身）。
+  //
+  /**
+   * 模式切换进行中。
+   *
+   * 切模式时，**在途的胶囊尺寸写必须立刻作废**：那笔尺寸属于旧形态，
+   * 落地就会把刚被 Rust 改成 400×680 的全窗态窗口又改回 168 宽。
+   *
+   * 为什么不能只看 `mode`：`mode` 是在 Rust 的 IPC **返回之后**才翻的
+   * （窗口尺寸要先就位，UI 再切，才不会出现「dashboard 先在胶囊宽度的
+   * 窗口里渲染一帧」）。而 Rust 那次 IPC 的往返期间，仍可能有展开计时器
+   * 触发、发起一笔新的胶囊尺寸写——那笔写看到 `mode` 还是旧的，就以为
+   * 自己还有效。于是要有一个**比 UI 更早**翻转的开关。
+   *
+   * 它同时驱动 `.shell--switching`：切换期间内容整个藏起来——那一两帧里
+   * 窗口尺寸已经变了、形态还没翻，两种内容放进不匹配的窗口都难看
+   * （dashboard 挤成竖排一列 / 胶囊玻璃底铺满整窗）。窗口是透明的，
+   * 藏起来 = 看不见，比硬塞干净。
+   */
+  let switchingMode = $state(false);
+
+  /**
+   * 尺寸写队列（唯一入口）。
+   *
+   * 裁决 = 「切模式进行中 → 一律作废」+「请求模式与当前模式不一致 → 作废」。
+   * 后一条的判据是 `shouldApplySizeWrite`（有单测钉住）。
+   */
+  const sizeQueue = createSizeWriteQueue({
+    shouldApply: (forMode) =>
+      !switchingMode && shouldApplySizeWrite(forMode, mode),
+    apply: (size) =>
+      getCurrentWindow().setSize(new LogicalSize(size.width, size.height)),
+  });
+
+  /**
+   * 写窗口尺寸。
+   *
+   * @param forMode 请求这笔写时的模式。落地前会核对当前模式：不一致就
+   *   **跳过**（那笔尺寸属于旧模式，落地就会把窗口改成错的样子）。
+   * @param size 请求时刻算出的尺寸（按请求时刻的状态算，展开/收起的中间态
+   *   不会被后一笔吃掉）。
+   */
+  function writeWindowSize(forMode: Mode, size: LogicalSize): Promise<void> {
+    return sizeQueue.enqueue(forMode, { width: size.width, height: size.height });
+  }
+
+  /** 当前模式应有的窗口尺寸（模式切换收尾时补写用）。 */
+  function sizeForMode(m: Mode): LogicalSize {
+    return m === "compact"
+      ? new LogicalSize(PILL_COLLAPSED_W, PILL_COLLAPSED_H)
+      : new LogicalSize(DASHBOARD_W, DASHBOARD_H);
+  }
+
   async function expandPill() {
     if (mode !== "compact" || snapshots.length === 0) return;
     const gen = ++pillResizeGen;
-    const height = PILL_EXPANDED_BASE + snapshots.length * PILL_EXPANDED_ROW;
+    const height = pillExpandedHeight(snapshots.length);
     // ⚠️ 顺序要紧：先挂内容、**再**扩窗，不要 await setSize 之后才置位。
     // 原先是「窗口先长高 → 空窗一拍 → 内容再浮现」，割裂感正是本次要消除的。
     // 先置位后，fly 的 opacity:0 起点会盖住窗口尚矮时内容被压扁的那几帧，
@@ -832,7 +915,7 @@
     // 拆出 setSize 才能分清「改尺寸本身偶发慢」与「改尺寸撞上了动画合成」。
     const sizeSpan = markSpan("expandPill.setSize");
     try {
-      await getCurrentWindow().setSize(new LogicalSize(PILL_COLLAPSED_W, height));
+      await writeWindowSize("compact", new LogicalSize(PILL_COLLAPSED_W, height));
     } catch {
       // IPC 失败：回退到折叠，避免「内容在、窗口没长高」的压扁态。
       if (gen === pillResizeGen) pillExpanded = false;
@@ -847,7 +930,8 @@
     // 同上：把 setSize 从「collapsePill 整体」里单独拆出来量。
     const sizeSpan = markSpan("collapsePill.setSize");
     try {
-      await getCurrentWindow().setSize(
+      await writeWindowSize(
+        "compact",
         new LogicalSize(PILL_COLLAPSED_W, PILL_COLLAPSED_H),
       );
     } catch {
@@ -1230,19 +1314,39 @@
 
   async function toggleMode() {
     const next: Mode = mode === "dashboard" ? "compact" : "dashboard";
-    await setWindowMode(next);
-    mode = next;
-    // compact：常态浮动且层可见（Rust 侧不建把手，只把鼠标交回主窗）；
-    // dashboard：两者复位（set_window_mode 已在 Rust 里销毁把手并恢复鼠标交互）。
-    pillDocked = false;
-    pillRevealed = next === "compact";
-    pillCollapsing = false;
-    pillExpanded = false;
-    pillResizeGen++;
-    peekGen++;
-    void setPillDragging(false);
-    clearDockTimer();
-    clearMiniTimer();
+    // ⓪ 先竖起「切换中」的闸门：此刻起，任何在途的胶囊尺寸写都作废。
+    //    必须早于 UI 切换（`mode` 要等 Rust 改完尺寸才翻），否则那几毫秒里
+    //    仍可能冒出一笔新的胶囊尺寸写。
+    switchingMode = true;
+    try {
+      // ① 先排空已排队的尺寸写：让它们**先**落地，Rust 的改尺寸才是最后一笔
+      //    物理写入。反过来的话，一笔在途的胶囊尺寸写可能晚于 Rust 落地，
+      //      把全窗态窗口又改回胶囊宽度（见 writeWindowSize 处的现场描述）。
+      await sizeQueue.drain();
+      // ② Rust 改尺寸 + 按锚点重新贴边。
+      await setWindowMode(next);
+      // ③ UI 切模式。必须排在 ② 之后：窗口尺寸已经就位，才不会出现
+      //    「dashboard 先在 168 宽的胶囊窗口里渲染一帧」。
+      mode = next;
+      // compact：常态浮动且层可见（Rust 侧不建把手，只把鼠标交回主窗）；
+      // dashboard：两者复位（set_window_mode 已在 Rust 里销毁把手并恢复鼠标交互）。
+      pillDocked = false;
+      pillRevealed = next === "compact";
+      pillCollapsing = false;
+      pillExpanded = false;
+      pillResizeGen++;
+      peekGen++;
+      void setPillDragging(false);
+      clearDockTimer();
+      clearMiniTimer();
+    } finally {
+      // 闸门必须**无条件**放下：留着它会让之后所有尺寸写都被跳过，
+      // 窗口再也改不动大小（比原 bug 更糟，且更难察觉）。
+      switchingMode = false;
+    }
+    // ④ 补写当前模式的尺寸：①排空之前、②之后进来的任何旧尺寸写（例如
+    //    展开计时器刚好在这中间触发）都靠这一笔纠正回来。
+    await writeWindowSize(mode, sizeForMode(mode));
     await syncPeek();
     // 记住显示形态：Rust 下次启动会在显示窗口前按此设定尺寸并拉回屏内，
     // 因此这里必须持久化，否则「常态即胶囊」在重启后会丢。
@@ -1707,6 +1811,9 @@
     letter-spacing: 0.6px;
     text-transform: uppercase;
     font-family: var(--tum-font-mono);
+    /* 不折行：窗口被意外压窄时（模式切换竞态的现场）标题被裁已经够糟，
+       折成竖排一列则是「看不懂这是什么」。宁可裁掉尾巴。 */
+    white-space: nowrap;
   }
 
   .shell__actions {
@@ -1857,6 +1964,10 @@
     border-radius: var(--tum-radius-pill);
     cursor: pointer;
     transition: background 0.2s ease, color 0.2s ease;
+    /* 不折行：中文标签在窄容器里会「一个字一行」竖排（实测：窗口被压到
+       168px 时「趋势/工具/模型/设备」全成了竖排的一列，完全读不出来）。
+       宁可横向溢出被裁，也不要竖排。 */
+    white-space: nowrap;
   }
 
   .view-tab:hover {
@@ -1905,7 +2016,7 @@
   }
 
   /* 贴边胶囊：收起态物理窗 168x56（与 Rust set_window_mode 的 LogicalSize 一致），
-     展开时按 PILL_EXPANDED_BASE/ROW 增高。
+     展开时按 lib/window-size.ts 的 pillExpandedHeight（60 + 30n）增高。
      半径 28 = 收起态高 56 的一半：端部为完整半圆，与内层徽章（22px 高、
      11px 半径）的胶囊端同族；展开态内容缩进 10/8px，28px 也不会裁到明细行。
      data-tone 三态：<80% 静默 / 80-95% 琥珀 / >=95% 红色呼吸（spec §5.2 CompactPill）。 */
