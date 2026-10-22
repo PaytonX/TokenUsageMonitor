@@ -265,7 +265,22 @@ fn show_dashboard(app: &AppHandle) {
         let _ = window.emit("peek-reveal", ());
         ipc::reposition_peek(&window);
         if let Some(peek) = app.get_webview_window("peek") {
-            let _ = peek.show();
+            // ⚠️ 把手窗现在**常驻**（浮动态只隐藏、不销毁），所以它可能属于
+            // 另一条边。属于别的边时把它 show 出来，会得到一个位置与圆角朝向
+            // 都不对的把手窗——那比不显示更糟（用户会去点一个错位的把手）。
+            //
+            // 此时的正确路径是让前端走 sync_peek_window：它会发现「边变了」
+            // 并销毁重建（代价一次 619~794ms 的建窗），换来尺寸绝对正确。
+            let recorded = app
+                .state::<AppState>()
+                .peek_side
+                .lock()
+                .ok()
+                .and_then(|g| *g);
+            let current = ipc::current_anchor(&window).map(|a| a.side);
+            if recorded.is_some() && recorded == current {
+                let _ = peek.show();
+            }
         }
     }
 }

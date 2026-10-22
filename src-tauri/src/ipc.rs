@@ -747,6 +747,9 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
             let _ = window.set_ignore_cursor_events(false);
             if let Some(peek) = app.get_webview_window("peek") {
                 let _ = peek.close();
+                // 窗口没了，边记录也必须跟着清——否则下次建窗会被误判成
+                // 「同边可复用」，而实际上尺寸是按上一条边烧死的。
+                set_peek_side(&app, None);
             }
             compact.store(false, Ordering::SeqCst);
             match anchor {
@@ -910,6 +913,88 @@ pub(crate) async fn probe_peek_rebuild(app: AppHandle, side: DockSide) -> Result
     Ok(msg)
 }
 
+/// 取得（必要时重建）贴边把手窗。
+///
+/// - **同边**：复用现有窗口，**零建窗**。这是高频路径——反复贴边/唤出都在同一条边。
+/// - **跨边或首次**：销毁旧窗 → **等它真的从窗口管理器里消失** → 建新窗。
+///
+/// ## 为什么跨边必须「等」
+///
+/// 把手窗的尺寸在建窗时按边烧死（左右 7×58 / 上下 58×7），而系统最小尺寸
+/// 还会把它撑到约 136×39。跨边复用会让 `peek_placement` 按**错误的尺寸**算位置
+/// ——那正是 5bba9c6 的失败形态（点击胶囊放大/变回胶囊失效）。
+///
+/// 而「销毁后立刻建同名窗」是**必然失败**的：
+///
+/// - `destroy()` 是**异步**的：只往事件循环投一条 Destroy 消息就返回；
+///   窗口真正从管理器里摘掉（`manager.on_window_close` → `map.remove`）
+///   要等事件循环处理完消息、销毁 HWND 与 WebView2 之后。
+/// - 建窗的 label 校验是**同步**的：`prepare_window` 里
+///   `windows_lock().contains_key(&pending.label)`，排在任何主线程往返之前。
+///
+/// 于是 destroy 与 build 之间只隔几微秒，而旧窗拆除要走一趟跨进程的
+/// WebView2 IPC（毫秒量级）——**必然撞上
+/// `a window with label 'peek' already exists`**，旧窗被销毁却建不回来。
+/// 所以必须轮询等旧窗消失（上限 1s：正常几毫秒就够，超时不至于挂住调用方）。
+async fn acquire_peek_window(
+    app: &AppHandle,
+    side: DockSide,
+    seg: &mut crate::perf_probe::Segments,
+) -> Result<WebviewWindow, String> {
+    let existing = app.get_webview_window("peek");
+    let recorded = app
+        .state::<AppState>()
+        .peek_side
+        .lock()
+        .ok()
+        .and_then(|g| *g);
+    match existing {
+        Some(w) if crate::dock::peek_reuse_decision(recorded, side) => {
+            // 同边：只是一次查表，build_ms 会很小。
+            seg.mark_build();
+            Ok(w)
+        }
+        Some(w) => {
+            tracing::info!(
+                target: "tum.window",
+                recorded = ?recorded,
+                current = ?side,
+                "peek side changed: rebuild instead of reuse"
+            );
+            let _ = w.destroy();
+            set_peek_side(app, None);
+            // 等旧窗从窗口管理器里消失（见上面「为什么跨边必须等」）。
+            let mut waited_ms = 0u32;
+            while app.get_webview_window("peek").is_some() && waited_ms < 1000 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                waited_ms += 10;
+            }
+            if app.get_webview_window("peek").is_some() {
+                tracing::warn!(
+                    target: "tum.window",
+                    waited_ms,
+                    "old peek window still present after destroy; rebuild may fail"
+                );
+            }
+            let built = build_peek_window(app, side)?;
+            // 建窗（含 WebView2 初始化）——判读表第 1 行的关键数字：
+            // 它若相对 peekLead 的 span 时长并不显著，「建窗阻塞导致主窗卡顿」
+            // 这个假设就不成立，§2.1 整条分支该被否决。
+            seg.mark_build();
+            seg.peek_created = true;
+            set_peek_side(app, Some(side));
+            Ok(built)
+        }
+        None => {
+            let built = build_peek_window(app, side)?;
+            seg.mark_build();
+            seg.peek_created = true;
+            set_peek_side(app, Some(side));
+            Ok(built)
+        }
+    }
+}
+
 /// 创建/定位贴边把手，并把「谁捕获鼠标」交给本命令统一托管（三态）：
 /// `floating`（常态浮动）→ 销毁把手、主窗可交互、不移动主窗；
 /// `revealed`（胶囊已贴边滑入）→ 把手存在但不捕获、主窗捕获、不移动主窗；
@@ -936,9 +1021,37 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
 
     match state.as_str() {
         "floating" => {
-            // 常态浮动：不需要把手窗口，主窗接管鼠标，位置保持不变（用户可自由拖动）。
+            // 常态浮动：把手窗不该可见，主窗接管鼠标，位置保持不变（用户可自由拖动）。
+            //
+            // ⚠️ 这里**隐藏**而不是销毁。
+            //
+            // 销毁的代价是实测出来的（issue 05 §1.9.1）：把手窗一被销毁，
+            // 下一次贴边就要重新初始化一个 WebView2，**619~794ms**——
+            // 用户可感知的 0.6 秒卡顿。而「把胶囊拖离边缘 → 再拖回来」
+            // 是最常见的操作路径，它不该为这件事付 0.6 秒。
+            //
+            // 代价（已知取舍）：浮动态下把手窗常驻，多占一份隐藏的 WebView2 内存。
+            // 换来的是同边反复贴边/唤出**零建窗**。
+            //
+            // 尺寸问题由「跨边时销毁重建」兜住（见下方 revealed/docked 分支）：
+            // 把手窗的尺寸在建窗时按边烧死（左右 7×58 / 上下 58×7），
+            // 跨边复用会让定位按错误尺寸算——那正是 5bba9c6 的失败形态。
             if let Some(peek) = app.get_webview_window("peek") {
-                let _ = peek.destroy();
+                // 先让页面回到「视觉隐藏」态，再隐藏窗口。
+                //
+                // 顺序不能反：把手页的 `is-hidden` 是**视觉**隐藏，而窗口隐藏后
+                // 页面仍在运行（WebView 没销毁），下一次窗口被 show 出来时，
+                // 若页面还停在「已显示」态，把手会在胶囊滑出**之前**就出现在
+                // 屏幕边缘（幽灵把手）。旧行为里窗口每次重建，`is-hidden` 天然
+                // 是初始态，所以没有这个问题。
+                // ⚠️ 必须**定向**发到 peek 窗：`WebviewWindow::emit` 实际走的是
+                // `self.manager.emit`，那是**全局广播**（所有窗口都收得到）。
+                // 今天别的窗口没有同名监听器所以无害，但语义上必须用
+                // `emit_to("peek", ...)`——将来谁给主窗加个同名监听就会踩坑。
+                let _ = app.emit_to("peek", "peek-hide", ());
+                // 先设穿透再隐藏：避免隐藏生效前的那一帧还能吃到鼠标。
+                let _ = peek.set_ignore_cursor_events(true);
+                let _ = peek.hide();
             }
             if let Err(e) = dash.set_ignore_cursor_events(false) {
                 tracing::warn!(target: "tum.window", "dashboard set_ignore_cursor_events failed: {e}");
@@ -959,38 +1072,23 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
                 seg.mark_anchor();
             }
 
-            let peek = match app.get_webview_window("peek") {
-                Some(existing) => {
-                    // 同边复用：只是一次查表，build_ms 会很小。
-                    seg.mark_build();
-                    existing
-                }
-                None => {
-                    // 把手页通过初始化脚本拿到所在边，决定内容对齐与圆角朝向。
-                    let (pw, ph) = side.peek_size();
-                    let built = WebviewWindowBuilder::new(
-                        &app,
-                        "peek",
-                        tauri::WebviewUrl::App("peek.html".into()),
-                    )
-                    .title(crate::i18n::window_title(current_lang(&app), crate::i18n::WindowPage::PeekHandle))
-                    .inner_size(pw, ph)
-                    .resizable(false)
-                    .decorations(false)
-                    .transparent(true)
-                    .always_on_top(true)
-                    .skip_taskbar(true)
-                    .shadow(false)
-                    .focused(false)
-                    .visible(false)
-                    .initialization_script(format!("window.__PEEK_SIDE__ = {:?};", side_str))
-                    .build()
-                    .map_err(|e| e.to_string())?;
-                    #[cfg(windows)]
-                    crate::dwm_corner::disable_corner_artifacts(&built);
-                    seg.mark_build();
-                    seg.peek_created = true;
-                    built
+            let peek = match acquire_peek_window(&app, side, &mut seg).await {
+                Ok(p) => p,
+                Err(e) => {
+                    // 建窗失败：**不能**把这一轮 docked 同步的后半段（定位、显示、
+                    // 鼠标捕获切换）一起吞掉——那会留下「一段看不见但可点」的边缘
+                    // 区域：主窗已穿透、把手窗却不存在，用户在屏幕上按不到任何东西。
+                    //
+                    // 降级：把手窗缺席 → 主窗**保持可交互**（不穿透），并请前端把
+                    // 胶囊唤出来（peek-reveal）。宁可少一层交互，也不能让应用不可达。
+                    tracing::warn!(
+                        target: "tum.window",
+                        error = %e,
+                        "peek window unavailable; falling back to an interactive dashboard"
+                    );
+                    let _ = dash.set_ignore_cursor_events(false);
+                    let _ = dash.emit("peek-reveal", ());
+                    return Ok(side_str.to_string());
                 }
             };
 

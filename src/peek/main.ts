@@ -103,7 +103,20 @@ if (host) {
   //   把手在胶囊旁边凭空冒出来。
   let announced = false;
   let interacted = false;
-  const selfReveal = window.setTimeout(() => {
+  // 「监听器已就位」标志：收到过至少一次 peek-show 即为 true。
+  //
+  // 兜底自显存在的**唯一**理由是「建窗后第一次 peek-show 被丢弃」——页面还没
+  // 注册完监听器时事件会被静默丢掉（见上面的说明）。而**一旦成功收到过一次**，
+  // 监听器就一定已就位，之后的 peek-show **不可能再丢**，兜底也就没有存在意义。
+  //
+  // 不区分这两者会有个**可见**后果：兜底在 600ms 后摘掉 is-hidden，而此刻窗口
+  // 是隐藏的（用户看不见）；等用户下一次把胶囊拖回边缘，Rust 的 peek.show()
+  // 会让把手**立刻**显形——比设计的「随胶囊在 120ms 一起滑出」早 120ms，
+  // 表现为「把手先冒头、胶囊后到」。
+  let listenerLive = false;
+  // 兜底自显：没有被 announce 过、也没被交互过 → 自己显形。
+  // 用 `let` 而非 `const`：peek-hide 时可能需要**重排**它（见下）。
+  let selfReveal = window.setTimeout(() => {
     if (!announced && !interacted) host.classList.remove("is-hidden");
   }, 600);
 
@@ -134,11 +147,64 @@ if (host) {
   // 靠这里纠正 4px 圆角朝向（拖动期间把手处于 is-hidden，不会被看到）。
   void listen("peek-show", (event) => {
     announced = true;
+    // 收到过 = 监听器已就位 = 之后不会再丢 peek-show = 兜底自显可以退休。
+    listenerLive = true;
     window.clearTimeout(selfReveal);
     const next = event.payload as Side | undefined;
     if (next === "left" || next === "right" || next === "top" || next === "bottom") {
       host.dataset.side = next;
     }
     host.classList.remove("is-hidden");
+  });
+
+  // Rust 在浮动态把把手窗**隐藏**（而不是销毁）时发来：页面回到「视觉隐藏」态。
+  //
+  // 为什么需要这一步：把手窗现在**常驻**（销毁一次就是 619~794ms 的
+  // WebView2 初始化，见 issue 05 §1.9.1）。而 `is-hidden` 是**视觉**隐藏
+  // ——如果它此刻不在，窗口下次被 show 出来时把手会**在胶囊滑出之前**就
+  // 出现在屏幕边缘（幽灵把手）。旧行为里窗口每次重建，`is-hidden` 天然
+  // 是初始态，所以看不到这个问题。
+  //
+  // ⚠️ 关键是**不能无条件清掉**兜底自显：
+  //
+  // 把手三态里，**docked 态的把手必须可见**（它要捕获鼠标，用户 hover 它
+  // 才能唤出胶囊）。而 docked 时窗口被 show 出来、页面还停在 is-hidden，
+  // 要靠前端那次 `peek-show` 才显示。**万一 peek-show 丢了**（页面刚建好
+  // 还没注册监听时事件会被静默丢弃——这正是 selfReveal 存在的理由），
+  // 兜底自显就是最后一道保险。
+  //
+  // 所以这里若把定时器清掉，丢一次 peek-show 就意味着
+  // **把手永远不显示 → 胶囊再也唤不出来**——比幽灵把手严重得多。
+  //
+  // 但也不能**无条件重排**：监听器一旦就位（收到过 peek-show），兜底就退休，
+  // 否则它会在窗口还隐藏着的时候摘掉 is-hidden，让把手在下次贴边时**提前
+  // 120ms 冒头**（详见下面 `listenerLive` 处的说明）。
+  void listen("peek-hide", () => {
+    announced = false;
+    // ⚠️ `interacted` 必须复位。它是「指针进过把手」的粘滞标志，而旧行为里
+    // 把手窗每次贴边都重建 → 页面是新的 → 这个标志每次归零，兜底自显每次都在。
+    // 现在页面生命周期无限长，不复位的话：**用户 hover 过一次之后，兜底自显
+    // 就永久失效了**（`!interacted` 永远为假）——那正是「最后一道保险」，
+    // 用一次就废掉。
+    //
+    // 此刻复位是安全的：窗口已隐藏且穿透，指针不可能还在把手上。
+    interacted = false;
+    window.clearTimeout(selfReveal);
+    // 只在「监听器可能还没就位」时才重新布兜底。
+    //
+    // 已就位（收到过 peek-show）就不布：兜底若在此刻生效，会在窗口还隐藏着
+    // 的时候把 is-hidden 摘掉，于是用户下一次把胶囊拖回边缘时，Rust 的
+    // peek.show() 会让把手**立刻**显形——比设计的「随胶囊在 120ms 一起
+    // 滑出」早 120ms（表现为「把手先冒头、胶囊后到」）。
+    //
+    // 反过来，监听器**没**就位时（建窗后第一次 peek-show 被丢弃）必须布：
+    // 那正是兜底存在的唯一理由——不布的话把手永远停在 opacity:0，
+    // 胶囊再也唤不出来。
+    if (!listenerLive) {
+      selfReveal = window.setTimeout(() => {
+        if (!announced && !interacted) host.classList.remove("is-hidden");
+      }, 600);
+    }
+    host.classList.add("is-hidden");
   });
 }

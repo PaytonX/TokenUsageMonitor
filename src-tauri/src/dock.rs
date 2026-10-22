@@ -72,6 +72,19 @@ impl DockSide {
     }
 }
 
+/// 把手窗的复用判定：**同边可复用**（零建窗），跨边或无记录则销毁重建。
+///
+/// 抽成纯函数是为了能单测——这是「peek 窗口常驻」这条改动的**核心不变量**，
+/// 不能只靠「读代码觉得对」。判定为可复用而实际该重建，就会让
+/// `peek_placement` 按错误的尺寸算位置（5bba9c6 的失败形态：点击胶囊
+/// 放大/变回胶囊失效）。
+///
+/// `recorded` 是 `AppState::peek_side` 记录的值：`None` 表示「没有把手窗」
+/// 或「记录丢失」，两种情况都按重建处理（重建是安全的一侧）。
+pub fn peek_reuse_decision(recorded: Option<DockSide>, current: DockSide) -> bool {
+    recorded == Some(current)
+}
+
 /// 贴边锚点：贴在哪条边 + 沿边位置。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DockAnchor {
@@ -579,5 +592,23 @@ mod tests {
         assert_eq!((x, y), (1913.0, 299.0));
         let (x, y) = peek(DockSide::Left, 300.0, THICK, LEN);
         assert_eq!((x, y), (0.0, 299.0));
+    }
+
+    #[test]
+    fn peek_window_is_reused_only_on_the_same_side() {
+        // 同边：可复用（零建窗）——这是「peek 窗口常驻」的核心不变量。
+        assert!(peek_reuse_decision(Some(DockSide::Top), DockSide::Top));
+        assert!(peek_reuse_decision(Some(DockSide::Left), DockSide::Left));
+        assert!(peek_reuse_decision(Some(DockSide::Right), DockSide::Right));
+    }
+
+    #[test]
+    fn peek_window_is_rebuilt_when_the_side_changes_or_is_unknown() {
+        // 跨边：必须重建。把手窗的尺寸在建窗时按边烧死，复用会让
+        // `peek_placement` 按错误尺寸算位置（5bba9c6 的失败形态）。
+        assert!(!peek_reuse_decision(Some(DockSide::Left), DockSide::Top));
+        assert!(!peek_reuse_decision(Some(DockSide::Top), DockSide::Bottom));
+        // 没有记录：按重建处理——重建是安全的一侧。
+        assert!(!peek_reuse_decision(None, DockSide::Top));
     }
 }
