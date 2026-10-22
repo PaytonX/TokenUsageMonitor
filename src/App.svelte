@@ -1391,7 +1391,13 @@
   }
 </script>
 
-<main class="shell" class:shell--compact={mode === "compact"} data-tauri-drag-region oncontextmenu={(e) => e.preventDefault()}>
+<main
+  class="shell"
+  class:shell--compact={mode === "compact"}
+  class:shell--switching={switchingMode}
+  data-tauri-drag-region
+  oncontextmenu={(e) => e.preventDefault()}
+>
   {#if mode === "compact"}
     <div
       class="pill-layer"
@@ -1706,6 +1712,17 @@
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     background: transparent;
+  }
+
+  /* 模式切换进行中：内容**整个藏起来**。
+     窗口是透明的，所以「藏起来」= 看不见；「硬塞」= 一团挤扁的 UI。
+     这一两帧里窗口尺寸已经变了、而形态还没翻（或反过来），两种内容放进
+     不匹配的窗口都难看：
+     - 全窗态的 dashboard 挤进 168 宽 → 标签栏中文竖排成一列、标题被裁；
+     - 胶囊态的玻璃底铺满 400 宽的整窗 → 一大块半透明圆角矩形。
+     藏起来反而干净：切换只有一两帧，藏掉的那一瞬本来就看不见。 */
+  .shell--switching {
+    visibility: hidden;
   }
 
   /* 胶囊整体平移：收起时滑出窗外，唤醒时滑回 (0,0)。

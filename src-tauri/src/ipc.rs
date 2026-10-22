@@ -567,7 +567,26 @@ pub fn apply_anchor(window: &WebviewWindow, a: DockAnchor) -> bool {
 ///
 /// `anchor == None` 即浮动态，此时把当前位置存进 `dashboard_x/y`（从项目第一天
 /// 起就只写不读，这里顺手接通）。
+///
+/// ⚠️ 这层是「读缓存 → 改 → 写文件」的**读改写**，必须串行：两个来源同时
+/// 落盘时，后写的那份可能带着过期字段把先写的覆盖掉。锁在这里拿，
+/// 落盘本身在 [`persist_placement_inner`] 里。
 pub async fn persist_placement(app: &AppHandle, anchor: Option<DockAnchor>) {
+    let _guard = persist_lock().lock().await;
+    persist_placement_inner(app, anchor).await;
+}
+
+/// 落盘用的串行锁。
+///
+/// 用 `OnceLock` 而不是 `LazyLock`：tokio 的 `Mutex` 构造不需要上下文，
+/// 但 `OnceLock` 免去「static 里放 tokio 类型」的初始化顺序顾虑。
+fn persist_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// 落盘的真正实现（调用方需已持有 [`persist_lock`]）。
+async fn persist_placement_inner(app: &AppHandle, anchor: Option<DockAnchor>) {
     let Some(state) = app.try_state::<AppState>() else { return };
     let settings = state.settings.clone();
     let mut next = settings.get().await.clone();
@@ -589,6 +608,38 @@ pub async fn persist_placement(app: &AppHandle, anchor: Option<DockAnchor>) {
     if let Err(e) = settings.save(next).await {
         tracing::warn!(target: "tum.window", "persist placement failed: {e}");
     }
+}
+
+/// 把落盘挪到后台，**不挡在调用方返回前面**。
+///
+/// ## 为什么不能挡
+///
+/// `settings.save` 走**同步**文件写（tmp + rename），Windows 上可能十几到
+/// 上百毫秒（杀软扫、文件被占用）。它一旦排在「窗口已经改完尺寸」之后，
+/// 命令的返回就被拖到几十毫秒之后——而前端要等命令返回才翻 `mode`，
+/// 那段时间里前端还在渲染**旧形态**。于是用户看到「全窗 dashboard 挤在
+/// 168 宽的窄窗里」，过一会儿才恢复正常（实测：缩回胶囊形态时偶尔可见，
+/// 像是延时）。
+///
+/// 而且它只在**真的会改到配置**时才发生：贴边态切模式要重新贴边 → 位置变了
+/// → 落盘；浮动态位置不变 → `changed = false` → **根本不写盘** → 就看不到
+/// 这个现象。这正好解释了「为什么只有收起成把手时才会出现」。
+///
+/// ## 为什么位置晚几十毫秒写盘没关系
+///
+/// 写的是「上次停在哪」，晚写几十毫秒没有任何可感知的副作用；而挡住返回
+/// 是直接可见的。所以它必须挪到后台。
+///
+/// ## 串行
+///
+/// 落盘是「读缓存 → 改 → 写文件」的读改写。多个来源同时落盘时，后写的那份
+/// 可能带着过期字段把先写的覆盖掉。`persist_lock` 保证它们串行。
+pub fn persist_placement_detached(app: &AppHandle, anchor: Option<DockAnchor>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _guard = persist_lock().lock().await;
+        persist_placement_inner(&app, anchor).await;
+    });
 }
 
 /// 把手窗的物理位置。
@@ -779,7 +830,12 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
     // docs/superpowers/specs/2026-09-15-focus-provider-and-pill-design.md:133
     // 「等 window-state 插件接管」——那步始终没做）。这里顺手接通；锚点一并
     // 落盘，免得切完模式后配置里还留着上一次的形态。
-    persist_placement(&app, current_anchor(&window)).await;
+    //
+    // ⚠️ 必须**后台**落盘：这一步是同步写盘（tmp + rename），可能几十毫秒。
+    // 它排在「窗口已经缩到 168 宽」之后，挡住返回就意味着「命令返回前前端
+    // 一直渲染着旧形态」——用户会看到全窗 dashboard 挤在窄窗里（实测）。
+    // 详见 [`persist_placement_detached`]。
+    persist_placement_detached(&app, current_anchor(&window));
 
     Ok(())
 }
@@ -1067,7 +1123,11 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
                 // 贴死成功即回写持久化锚点，让下次启动回到同一条边、同一位置。
                 // 位置本就没动（apply_anchor 返回 false）时不写盘。
                 if apply_anchor(&dash, anchor) {
-                    persist_placement(&app, Some(anchor)).await;
+                    // ⚠️ 落盘**放后台**：它走同步文件写（tmp + rename），几十毫秒量级，
+                    // 而这一步就在「贴边收起」的热路径上——挡住它就等于把落盘延迟
+                    // 加到每一次贴边上（这正是用户报告的「贴边有时候卡一下」）。
+                    // 详见 [`persist_placement_detached`]。
+                    persist_placement_detached(&app, Some(anchor));
                 }
                 seg.mark_anchor();
             }
