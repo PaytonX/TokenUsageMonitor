@@ -279,6 +279,23 @@ pub fn peek_rect(
     }
 }
 
+/// 指数趋近单步（glance FOLLOW 思路：8ms 步进、τ=60ms）。
+///
+/// 返回 (新值, 是否到位)：差值 < 0.5px 视为到位并直接吸附目标（防像素长尾）。
+/// dt 与 tau 同单位（毫秒）。纯函数，cargo test 直测。
+pub fn approach_step(current: f64, target: f64, dt_ms: f64, tau_ms: f64) -> (f64, bool) {
+    if (target - current).abs() < 0.5 {
+        return (target, true);
+    }
+    let alpha = 1.0 - f64::exp(-dt_ms / tau_ms);
+    let next = current + (target - current) * alpha;
+    if (target - next).abs() < 0.5 {
+        (target, true)
+    } else {
+        (next, false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,5 +627,43 @@ mod tests {
         assert!(!peek_reuse_decision(Some(DockSide::Top), DockSide::Bottom));
         // 没有记录：按重建处理——重建是安全的一侧。
         assert!(!peek_reuse_decision(None, DockSide::Top));
+    }
+
+    // ---- glance P0-4: 指数趋近滑动 ----------------------------------------
+
+    #[test]
+    fn glide_settles_to_target_when_already_there() {
+        let (v, done) = approach_step(100.0, 100.0, 8.0, 60.0);
+        assert_eq!(v, 100.0);
+        assert!(done);
+    }
+
+    #[test]
+    fn glide_first_step_matches_exponential() {
+        // dt=8, τ=60 → α = 1 - e^(-8/60)；从 100 向 300 的首步幅度按理论值校验
+        let (v, done) = approach_step(100.0, 300.0, 8.0, 60.0);
+        let expected = 100.0 + 200.0 * (1.0 - (-8.0_f64 / 60.0).exp());
+        assert!((v - expected).abs() < 1e-9);
+        assert!(!done);
+    }
+
+    #[test]
+    fn glide_converges_to_target_within_cap() {
+        let mut cur = 0.0;
+        for _ in 0..500 {
+            let (v, done) = approach_step(cur, 400.0, 8.0, 60.0);
+            cur = v;
+            if done {
+                break;
+            }
+        }
+        assert_eq!(cur, 400.0);
+    }
+
+    #[test]
+    fn glide_snaps_when_within_half_pixel() {
+        let (v, done) = approach_step(399.8, 400.0, 8.0, 60.0);
+        assert_eq!(v, 400.0);
+        assert!(done);
     }
 }
