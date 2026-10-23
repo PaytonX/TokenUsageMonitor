@@ -234,8 +234,9 @@
           <span class="dev__agg-sub">{$t("device.summarySub", { n: devices.length })}</span>
         </div>
         <div class="dev__stats dev__agg-stats">
-          <Stat value={fmtTokens(aggTotal)} label={$t("device.totalAll")} />
-          <Stat value={fmtTokens(aggToday)} label={$t("device.todayAll")} />
+          <!-- tokens 标度限速：小差值亚秒爬完，大差值被 2s 收敛上限兜底 -->
+          <Stat animate={aggTotal} format={fmtTokens} fallLimitPerSec={25_000} label={$t("device.totalAll")} />
+          <Stat animate={aggToday} format={fmtTokens} fallLimitPerSec={25_000} label={$t("device.todayAll")} />
           <Stat value={devices.length} label={$t("tab.devices")} />
         </div>
         {#if aggDays.length > 0}
