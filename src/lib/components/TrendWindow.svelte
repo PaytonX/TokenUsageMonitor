@@ -132,7 +132,14 @@
     if ((e.target as HTMLElement).closest("button")) return;
     void getCurrentWindow().startDragging();
   }
+  // glance 学习：子窗口也要能键盘关掉。Esc 关窗；原生 select 弹层打开时
+  // keydown 由弹层消费，不会误触这里。
+  function onWindowKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape") close();
+  }
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <div class="tw">
   <div class="tw__bar" onpointerdown={onDrag} role="toolbar" aria-label={$t("trend.windowControls")} tabindex="-1">

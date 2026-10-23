@@ -388,6 +388,11 @@
     outline-offset: 2px;
   }
 
+  /* 包装层 :has() 已在卡外缘画焦点环，内部按钮不再叠加全局兜底环 */
+  .card__titlebtn:focus-visible {
+    outline: none;
+  }
+
   .card__name {
     font-size: var(--tum-font-size-base);
     font-weight: 600;
