@@ -120,3 +120,31 @@ describe("design token lint", () => {
     expect(FILES.length, `仅扫描到 ${FILES.length} 个 svelte 文件，疑似目录扫描失败`).toBeGreaterThan(10);
   });
 });
+
+/**
+ * Settings.svelte 被整体排除在上面的扫描之外（约 3900 行、历史遗留写法多），
+ * 但本分支确实清理过它的禁用色与 *.5px 字号——如果只排除不加专项校验，
+ * 「清理过」就没有任何回归护栏：改回去门禁不会响。
+ * 这里只针对这两类做专项断言，其余规则仍不覆盖（见 docs/glance-p0-followups.md）。
+ */
+describe("design token lint · Settings.svelte 专项", () => {
+  const settingsPath = join(SRC, "Settings.svelte");
+  const code = stripComments(readFileSync(settingsPath, "utf8"));
+
+  it("不含禁用色（含 rgba 形态）", () => {
+    const hexes = ["#34d399", "#f87171", "#ef4444", "#ff6b6b", "#fbbf24", "#ff5f56", "#6ccb5f"];
+    const hits = hexes.filter((hex) => hasHex(code, hex));
+    expect(hits, hits.join(",")).toEqual([]);
+    const rgba = [
+      /rgba?\(\s*239\s*,\s*68\s*,\s*68/i,
+      /rgba?\(\s*255\s*,\s*107\s*,\s*107/i,
+      /rgba?\(\s*248\s*,\s*113\s*,\s*113/i,
+    ].filter((re) => re.test(code));
+    expect(rgba.map((re) => re.source), "rgba 形态禁用色").toEqual([]);
+  });
+
+  it("字号不使用半像素（走 10/11/13/16 阶梯）", () => {
+    const hits = code.match(/font-size:\s*\d+\.5px/g) ?? [];
+    expect(hits, hits.join(",")).toEqual([]);
+  });
+});

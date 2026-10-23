@@ -93,6 +93,42 @@ describe("createTween", () => {
     expect(Number.isFinite(tw.value)).toBe(true);
   });
 
+  it("下降结束后 reset 到更大值，再下降仍在 2s 内收敛", () => {
+    let now = 0;
+    const tw = createTween(100, { fallLimitPerSec: 40 });
+    now += 1; // 首步贴目标，确立基准
+    tw.step(100, now);
+
+    // 第一段下降：100 → 0（翻转帧冻结 max(40, 100/2)=50/s ⇒ 2s 内）
+    let v = 100;
+    let elapsed = 0;
+    while (v !== 0 && elapsed < 3_000) {
+      now += 12;
+      elapsed += 12;
+      v = tw.step(0, now);
+    }
+    expect(v).toBe(0);
+    expect(elapsed).toBeLessThanOrEqual(2_400);
+
+    // 新快照：硬置到 5000。reset 只改显示值、不清「下降中」状态——真实调用
+    // 序列是新快照到达后先跟一步贴住新值（这一步同时把 falling 复位），
+    // 否则第二段会沿用上一段冻结的 50/s，5000 要 100s 才降完。
+    tw.reset(5_000);
+    now += 12;
+    expect(tw.step(5_000, now)).toBe(5_000);
+
+    // 第二段下降：5000 → 0（重冻结 max(40, 5000/2)=2500/s ⇒ 2s）
+    let w = 5_000;
+    elapsed = 0;
+    while (w !== 0 && elapsed < 3_000) {
+      now += 12;
+      elapsed += 12;
+      w = tw.step(0, now);
+    }
+    expect(w).toBe(0);
+    expect(elapsed).toBeLessThanOrEqual(2_400);
+  });
+
   it("下降中 target 变深则重冻结速率，收敛仍 ≤ 2s 级", () => {
     const tw = createTween(0, { fallLimitPerSec: 25 });
     tw.step(0, 0);
