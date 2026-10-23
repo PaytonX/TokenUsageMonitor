@@ -847,6 +847,10 @@ fn glide_end(
 /// Snap the window to the nearest screen edge when it is dragged within
 /// `margin_logical` of one. Called from the dashboard's `Moved` window event.
 pub fn snap_to_edges(window: &WebviewWindow, margin_logical: f64) -> bool {
+    // 拖拽贴边是瞬时几何改写；先作废在跑的主窗滑动，否则滑动线程下一帧
+    // 会把窗口写回按旧几何算的目标。（dashboard 态目前没有主窗 glide，
+    // 但补上这一行可以让「所有几何写入者都推进代际」这条协议没有例外。）
+    GLIDE_GEN_MAIN.fetch_add(1, Ordering::SeqCst);
     let Ok(pos) = window.outer_position() else { return false; };
     let Ok(size) = window.outer_size() else { return false; };
     let Ok(Some(monitor)) = window.current_monitor() else { return false; };
@@ -1364,6 +1368,10 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
 pub async fn set_pill_dragging(state: State<'_, AppState>, active: bool) -> Result<(), String> {
     state.pill_drag.store(active, Ordering::SeqCst);
     if active {
+        // 拖拽开始即作废在跑的主窗滑动：glide 每 8ms set_position 会和 OS 的
+        // 拖拽循环抢窗口，而它的 cur 是启动时建模的位置、不重读真实位置——
+        // 短拖松手后会被拽回旧模型坐标。
+        GLIDE_GEN_MAIN.fetch_add(1, Ordering::SeqCst);
         state.pill_last_move_ms
             .store(crate::now_ms(), Ordering::SeqCst);
     }
@@ -1420,6 +1428,17 @@ pub async fn open_settings(app: AppHandle) -> Result<(), String> {
             }
         });
     }
+
+    // Alt+F4 / 任务栏关闭：settings 窗靠 hide-not-destroy 复用，真被销毁的话
+    // 未保存的草稿就没了。拦下默认关闭，交给前端 requestClose 决定
+    // （无草稿时前端直接调 close_settings，等价于正常关闭）。
+    let win_for_close = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = win_for_close.emit("settings-close-requested", ());
+        }
+    });
 
     // Restore previous position/size if the window-state plugin has saved it.
     let _ = window.show();
