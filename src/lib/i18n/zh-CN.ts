@@ -75,7 +75,7 @@ export const zhCN: Record<string, string> = {
   "settings.footer.saving": "保存中…",
   "settings.footer.saveSettings": "保存设置",
   "settings.closeConfirm.title": "有未保存的更改",
-  "settings.closeConfirm.body": "设置还没有保存，关闭会丢失这些改动。",
+  "settings.closeConfirm.body": "关闭前要先保存这些改动吗？",
   "settings.closeConfirm.saveClose": "保存并关闭",
   "settings.closeConfirm.discardClose": "放弃并关闭",
   "settings.common.enabled": "已启用",

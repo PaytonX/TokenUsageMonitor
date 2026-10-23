@@ -57,6 +57,7 @@
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
   import Icon from "./lib/components/atoms/Icon.svelte";
 import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draft";
+import { resolveCloseAction } from "./lib/settings-close";
 
   type Tab = "general" | "accounts" | "interaction" | "network" | "router" | "about";
 
@@ -220,6 +221,12 @@ import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draf
    * 字段多、来源分散，漏登记一个就等于漏掉一个撤销入口。
    */
   const hasDraft = $derived(settings !== null && isDirty(baseline, buildNext()));
+
+  // 草稿一旦清空（页脚保存/丢弃成功），确认条与它的状态一起复位，
+  // 否则下次有草稿时的第一次 ✕ 会被当成「二次确认」直接关窗。
+  $effect(() => {
+    if (!hasDraft) closeConfirm = false;
+  });
 
   function authKindFor(kind: string): "bearer_key" | "access_key_secret" | "local_token" {
     return presetMap.get(kind)?.auth_kind ?? "bearer_key";
@@ -1114,7 +1121,7 @@ import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draf
   let closeConfirm = $state(false);
 
   function requestClose() {
-    if (hasDraft && !closeConfirm) {
+    if (resolveCloseAction({ hasDraft, confirming: closeConfirm }) === "open-confirm") {
       closeConfirm = true;
       return;
     }
@@ -1128,9 +1135,14 @@ import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draf
   }
 
   async function confirmCloseDiscard() {
-    closeConfirm = false;
-    await handleDiscard();
-    await closeSettings();
+    if (busy !== null) return;
+    try {
+      await handleDiscard();
+      closeConfirm = false;
+      await closeSettings();
+    } catch {
+      // 丢弃失败：条子留着，窗口与草稿都在，用户可以重试或改用「保存并关闭」。
+    }
   }
 
   // 确认条出现时焦点落主按钮（键盘直达「保存并关闭」）。
@@ -1141,8 +1153,16 @@ import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draf
   async function handleClose() {
     // 关闭只做快速持久化并立即隐藏窗口，不等待网络轮询（save_settings 后端
     // 已发 settings_wake，主面板会自动重新轮询），避免"保存中"卡顿假死感。
-    await persistSettings();
-    await closeSettings();
+    // 保存失败时把窗口留在原地：草稿还在，用户可以重试；静默关掉等于丢改动。
+    // saving 兼作重入闸：头部 ✕、Esc、页脚「保存并关闭」、确认条主按钮四个
+    // 入口都汇到这里，连点不会发出两笔 save+close（按钮 disabled 也看它）。
+    if (saving) return;
+    saving = true;
+    try {
+      if (await persistSettings()) await closeSettings();
+    } finally {
+      saving = false;
+    }
   }
 
   function formatTestResult(r: TestResult | null): string {
@@ -1174,6 +1194,18 @@ import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draf
       routerCfg = { ...defaultRouterSettings(), ...(fresh.router ?? {}) };
       void refreshRouterStatus();
     });
+    // 窗口被 Alt+F4 / 任务栏关闭时，Rust 拦下 CloseRequested 并通知这里，
+    // 统一走 requestClose（有草稿先弹条，没有就正常保存关闭）。
+    let unlistenClose: (() => void) | undefined;
+    void getCurrentWindow()
+      .listen("settings-close-requested", () => requestClose())
+      .then((un) => {
+        unlistenClose = un;
+      })
+      .catch(() => {});
+    return () => {
+      unlistenClose?.();
+    };
   });
 async function handleMinimize() {
     await getCurrentWindow().minimize();
@@ -1191,7 +1223,7 @@ async function handleMinimize() {
       presetMenuFor = null;
       return;
     }
-    if (closeConfirm) {
+    if (closeConfirm && hasDraft) {
       closeConfirm = false;
       return;
     }
