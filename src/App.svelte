@@ -86,6 +86,7 @@
   import ModelPanel from "./lib/components/ModelPanel.svelte";
   import DevicePanel from "./lib/components/DevicePanel.svelte";
   import PillsOrSelect from "./lib/components/PillsOrSelect.svelte";
+  import Icon from "./lib/components/atoms/Icon.svelte";
   import { brandColorFor, EXPERIMENTAL_KINDS } from "./lib/brand-glyphs";
   import { t } from "./lib/i18n/store";
   import { durMs } from "./lib/motion/tokens";
@@ -1475,7 +1476,7 @@
               e.stopPropagation();
               void closeApp();
             }}
-          >✕</button>
+          ><Icon name="x" size={11} /></button>
         </div>
         {#if pillExpanded}
           <!-- 明细原本是硬切：{#if} 挂上即出现、消失即消失。
@@ -1510,7 +1511,7 @@
         {:else}
           <ProgressRing value={headerMoney ? 0 : ringArcValue} label={headerMoney ?? ringArcLabel} size={28} stroke={3} idle={snapshots.length === 0 || !!headerMoney} countdown={displayRemaining} />
         {/if}
-        <button class="shell__btn" onclick={refresh} title={$t("app.refreshNow")}>↻</button>
+        <button class="shell__btn" onclick={refresh} title={$t("app.refreshNow")}><Icon name="refresh" size={13} /></button>
         <button
           type="button"
           class="shell__btn shell__btn--router"
@@ -1525,9 +1526,9 @@
             class:router-dot--err={!!routerBindError}
           ></span>⇄
         </button>
-        <button class="shell__btn" onclick={() => openSettings()} title={$t("app.settings")}>⚙</button>
-        <button class="shell__btn" onclick={toggleMode} title={$t("app.collapseToMini")}>⤢</button>
-        <button class="shell__btn shell__btn--close" onclick={closeApp} title={$t("common.close")}>×</button>
+        <button class="shell__btn" onclick={() => openSettings()} title={$t("app.settings")}><Icon name="settings" size={13} /></button>
+        <button class="shell__btn" onclick={toggleMode} title={$t("app.collapseToMini")}><Icon name="maximize" size={13} /></button>
+        <button class="shell__btn shell__btn--close" onclick={closeApp} title={$t("common.close")}><Icon name="x" size={13} /></button>
       </div>
     </header>
 

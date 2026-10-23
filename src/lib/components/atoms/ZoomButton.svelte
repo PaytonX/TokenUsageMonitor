@@ -3,24 +3,23 @@
   ───────────────────────────────────────────────────────────────────
   替代 TrendPanel / ToolPanel / ModelPanel 各自定义的 `__zoom` 按钮。
 
-  字形 ⤢（U+2922）走 tum-font-mono，等宽；hover 走 accent 描边 + 半透底。
+  图标用内嵌 Lucide SVG（atoms/Icon.svelte，maximize）；hover 走 accent 描边 + 半透底。
 
   用法：
     <ZoomButton title="放大为独立窗口" onclick={openWindow} />
 -->
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   import { t } from "../../i18n/store";
 
   interface Props {
     title?: string;
-    /** 默认 "⤢"。若未来需要换成 SVG 也由这一处统一。 */
-    glyph?: string;
     onclick?: (e: MouseEvent) => void;
     /** 可访问名；不传时回退到 title。 */
     label?: string;
   }
 
-  let { title, glyph = "⤢", onclick, label }: Props =
+  let { title, onclick, label }: Props =
     $props();
 </script>
 
@@ -30,7 +29,7 @@
   title={title ?? $t("atom.zoomTitle")}
   aria-label={label ?? title ?? $t("atom.zoomTitle")}
   onclick={onclick}
->⤢</button>
+><Icon name="maximize" size={12} /></button>
 
 <style>
   .zoom-btn {
@@ -44,8 +43,6 @@
     border-radius: var(--tum-radius-xs);
     background: var(--tum-surface);
     color: var(--tum-text-muted);
-    font-family: var(--tum-font-mono);
-    font-size: var(--tum-font-size-sm);
     line-height: 1;
     cursor: pointer;
     transition: all var(--tum-dur-fast, 150ms) var(--tum-ease-spring);

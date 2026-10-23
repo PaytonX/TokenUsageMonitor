@@ -11,7 +11,7 @@
   import type { LocalDay, LocalToolReport, LocalToolsPayload } from "../types";
   import PillsOrSelect from "./PillsOrSelect.svelte";
   import TrendLineChart from "./TrendLineChart.svelte";
-  import { PanelHeader, RangePills, ZoomButton, Stat, ColorSwatch } from "./atoms";
+  import { PanelHeader, RangePills, ZoomButton, Stat, ColorSwatch, Icon } from "./atoms";
 
   /** 「全部工具」聚合视图的虚拟 id（不对应任何真实工具）。 */
   const ALL_TOOLS_ID = "__all__";
@@ -260,7 +260,7 @@
       class="tool__refresh"
       title={aggMode ? $t("tool.refreshAllDevices") : $t("tool.rescanLocalLogs")}
       onclick={() => void load(true)}
-    >↻</button>
+    ><Icon name="refresh" size={13} /></button>
     {#if !aggMode}
       <ZoomButton title={$t("tool.openStandalone")} onclick={() => void openToolWindow()} />
     {/if}

@@ -20,6 +20,7 @@
   } from "../types";
   import { buildUnifiedBreakdown, ledgerSeriesForKind } from "../calendar-linkage";
   import ProviderLogo from "./ProviderLogo.svelte";
+  import Icon from "./atoms/Icon.svelte";
 
   interface Props {
     snapshot: UsageSnapshot;
@@ -336,7 +337,7 @@
       class="detail__btn"
       onclick={() => void forceRefresh(snapshot.provider_id)}
       title={$t("detail.refreshThisTitle")}
-    >↻ {$t("detail.refreshThis")}</button>
+    ><Icon name="refresh" size={12} /> {$t("detail.refreshThis")}</button>
   </div>
 </div>
 
@@ -455,6 +456,10 @@
 
   .detail__btn {
     flex: 1;
+    /* 内联 flex 纵向居中：SVG 无内联基线，默认 baseline 对齐会相对文字上浮 */
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     padding: 3px 8px;
     font-size: var(--tum-font-size-xs);
     font-family: var(--tum-font);

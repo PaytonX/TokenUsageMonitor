@@ -55,6 +55,7 @@
   import { readCardOrder } from "./lib/prefs";
   import { applyLocaleSetting, t, type LangSetting } from "./lib/i18n/store";
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
+  import Icon from "./lib/components/atoms/Icon.svelte";
 import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draft";
 
   type Tab = "general" | "accounts" | "interaction" | "network" | "router" | "about";
@@ -1168,10 +1169,10 @@ async function handleMinimize() {
       <span class="settings__title">TokenUsageMonitor</span>
     </div>
     <div class="settings__win">
-      <button type="button" class="settings__win-btn" aria-label={$t("settings.win.minimize")} onclick={handleMinimize} onpointerdown={(e) => e.stopPropagation()}>—</button>
-      <button type="button" class="settings__win-btn" aria-label={$t("settings.win.maximize")} onclick={handleToggleMaximize} onpointerdown={(e) => e.stopPropagation()}>▢</button>
+      <button type="button" class="settings__win-btn" aria-label={$t("settings.win.minimize")} onclick={handleMinimize} onpointerdown={(e) => e.stopPropagation()}><Icon name="minus" size={12} /></button>
+      <button type="button" class="settings__win-btn" aria-label={$t("settings.win.maximize")} onclick={handleToggleMaximize} onpointerdown={(e) => e.stopPropagation()}><Icon name="square" size={12} /></button>
       <button class="settings__close" onclick={handleClose} aria-label={$t("settings.footer.saveClose")}>
-        ✕
+        <Icon name="x" size={12} />
       </button>
     </div>
   </header>
@@ -1669,7 +1670,7 @@ async function handleMinimize() {
                     presetMenuFor = null;
                   }}
                   aria-label={$t("common.close")}
-                >×</button>
+                ><Icon name="x" size={12} /></button>
               </header>
               <div class="preset-grid">
                 {#each catalog?.presets ?? [] as preset (preset.kind)}
@@ -1926,7 +1927,7 @@ async function handleMinimize() {
                     class="btn btn--ghost"
                     aria-label={$t("settings.tools.removeRoot")}
                     onclick={() => toolDataRoots = toolDataRoots.filter((_, j) => j !== i)}
-                  >×</button>
+                  ><Icon name="x" size={12} /></button>
                 </div>
               {/each}
             </div>
@@ -2174,7 +2175,7 @@ async function handleMinimize() {
                             <span class="ops">
                               <button type="button" class="rt-op" disabled={i === 0} onclick={() => moveCandidate(i, -1)} title={$t("settings.router.moveUp")}>↑</button>
                               <button type="button" class="rt-op" disabled={i === route.candidates.length - 1} onclick={() => moveCandidate(i, 1)} title={$t("settings.router.moveDown")}>↓</button>
-                              <button type="button" class="rt-op rt-op--del" onclick={() => removeCandidate(i)} title={$t("settings.router.removeLine")}>✕</button>
+                              <button type="button" class="rt-op rt-op--del" onclick={() => removeCandidate(i)} title={$t("settings.router.removeLine")}><Icon name="x" size={11} /></button>
                             </span>
                           </div>
                           <div class="rt-line__row">

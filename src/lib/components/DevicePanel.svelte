@@ -5,7 +5,7 @@
   import { deviceColor } from "../device-agg";
   import type { HubDevice } from "../types";
   import TrendLineChart from "./TrendLineChart.svelte";
-  import { PanelHeader, Stat, ColorSwatch } from "./atoms";
+  import { PanelHeader, Stat, ColorSwatch, Icon } from "./atoms";
   import { t } from "../i18n/store";
 
   interface Props {
@@ -213,7 +213,7 @@
 
 <div class="dev" data-tauri-drag-region={false}>
   <PanelHeader title={$t("device.title")}>
-    <button type="button" class="dev__refresh" title={$t("common.refresh")} onclick={() => void load()}>↻</button>
+    <button type="button" class="dev__refresh" title={$t("common.refresh")} onclick={() => void load()}><Icon name="refresh" size={13} /></button>
   </PanelHeader>
 
   {#if loading && devices.length === 0}
@@ -281,7 +281,7 @@
                   : $t("device.remove")}
                 aria-label={$t("device.removeNamed", { name: d.hostname })}
                 onclick={() => void removeDevice(d.device_id)}
-              >×</button>
+              ><Icon name="x" size={12} /></button>
             {/if}
           </div>
           <div class="dev__meta">

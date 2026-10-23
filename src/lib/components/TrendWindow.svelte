@@ -15,7 +15,7 @@
   } from "../trend-data";
   import { hexToRgb } from "../types";
   import CalendarSection from "./CalendarSection.svelte";
-  import { PanelHeader, RangePills, ColorSwatch } from "./atoms";
+  import { PanelHeader, RangePills, ColorSwatch, Icon } from "./atoms";
   import { t } from "../i18n/store";
 
   let status: "loading" | "ready" | "empty" = $state("loading");
@@ -138,9 +138,9 @@
   <div class="tw__bar" onpointerdown={onDrag} role="toolbar" aria-label={$t("trend.windowControls")} tabindex="-1">
     <span class="tw__bar-title">{$t("trend.title")}</span>
     <div class="tw__bar-controls">
-      <button type="button" class="tw__bar-btn" aria-label={$t("trend.minimize")} onclick={minimize} onpointerdown={(e) => e.stopPropagation()}>—</button>
-      <button type="button" class="tw__bar-btn" aria-label={$t("trend.maximizeRestore")} onclick={toggleMaximize} onpointerdown={(e) => e.stopPropagation()}>▢</button>
-      <button type="button" class="tw__bar-btn tw__bar-btn--close" aria-label={$t("common.close")} onclick={close} onpointerdown={(e) => e.stopPropagation()}>✕</button>
+      <button type="button" class="tw__bar-btn" aria-label={$t("trend.minimize")} onclick={minimize} onpointerdown={(e) => e.stopPropagation()}><Icon name="minus" size={12} /></button>
+      <button type="button" class="tw__bar-btn" aria-label={$t("trend.maximizeRestore")} onclick={toggleMaximize} onpointerdown={(e) => e.stopPropagation()}><Icon name="square" size={12} /></button>
+      <button type="button" class="tw__bar-btn tw__bar-btn--close" aria-label={$t("common.close")} onclick={close} onpointerdown={(e) => e.stopPropagation()}><Icon name="x" size={12} /></button>
     </div>
   </div>
   <PanelHeader title={$t("trend.title")} label={$t("trend.windowTitle")}>

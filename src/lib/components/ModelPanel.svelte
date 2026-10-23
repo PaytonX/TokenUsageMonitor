@@ -17,6 +17,7 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
     RangePills,
     ColorSwatch,
     Stat,
+    Icon,
   } from "./atoms";
 
   interface Props {
@@ -422,7 +423,7 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
       class="mp__refresh"
       title={aggMode ? $t("model.refreshAllDevices") : $t("model.rescanLocalLogs")}
       onclick={() => void load(true)}
-    >↻</button>
+    ><Icon name="refresh" size={13} /></button>
   </PanelHeader>
 
   {#if aggMode && staleDevs.length > 0 && (modelList.length === 0)}
