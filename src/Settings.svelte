@@ -1108,6 +1108,36 @@ import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draf
     }
   }
 
+  // glance 学习：有未保存草稿时关闭必须先问。头部 ✕ 与 Esc 走 requestClose；
+  // 页脚「保存并关闭」是显式意图，保持直通 handleClose。
+  // 二次 ✕ = 坚持关闭，取保存为安全默认（比文案承诺更安全）
+  let closeConfirm = $state(false);
+
+  function requestClose() {
+    if (hasDraft && !closeConfirm) {
+      closeConfirm = true;
+      return;
+    }
+    closeConfirm = false;
+    void handleClose();
+  }
+
+  async function confirmCloseSave() {
+    closeConfirm = false;
+    await handleClose();
+  }
+
+  async function confirmCloseDiscard() {
+    closeConfirm = false;
+    await handleDiscard();
+    await closeSettings();
+  }
+
+  // 确认条出现时焦点落主按钮（键盘直达「保存并关闭」）。
+  function autofocus(node: HTMLElement) {
+    node.focus();
+  }
+
   async function handleClose() {
     // 关闭只做快速持久化并立即隐藏窗口，不等待网络轮询（save_settings 后端
     // 已发 settings_wake，主面板会自动重新轮询），避免"保存中"卡顿假死感。
@@ -1155,10 +1185,17 @@ async function handleMinimize() {
 
 <svelte:window
   onkeydown={(e) => {
-    if (e.key === "Escape" && (pickerOpen || presetMenuFor)) {
+    if (e.key !== "Escape") return;
+    if (pickerOpen || presetMenuFor) {
       pickerOpen = false;
       presetMenuFor = null;
+      return;
     }
+    if (closeConfirm) {
+      closeConfirm = false;
+      return;
+    }
+    if (hasDraft) requestClose();
   }}
 />
 
@@ -1171,7 +1208,7 @@ async function handleMinimize() {
     <div class="settings__win">
       <button type="button" class="settings__win-btn" aria-label={$t("settings.win.minimize")} onclick={handleMinimize} onpointerdown={(e) => e.stopPropagation()}><Icon name="minus" size={12} /></button>
       <button type="button" class="settings__win-btn" aria-label={$t("settings.win.maximize")} onclick={handleToggleMaximize} onpointerdown={(e) => e.stopPropagation()}><Icon name="square" size={12} /></button>
-      <button class="settings__close" onclick={handleClose} aria-label={$t("settings.footer.saveClose")}>
+      <button class="settings__close" onclick={requestClose} aria-label={$t("common.close")}>
         <Icon name="x" size={12} />
       </button>
     </div>
@@ -2374,6 +2411,36 @@ async function handleMinimize() {
     </div>
   {/if}
 
+  {#if closeConfirm && hasDraft}
+    <div
+      class="close-confirm"
+      role="alertdialog"
+      aria-label={$t("settings.closeConfirm.title")}
+    >
+      <span class="close-confirm__text">{$t("settings.closeConfirm.body")}</span>
+      <span class="close-confirm__actions">
+        <button
+          type="button"
+          class="btn btn--primary"
+          use:autofocus
+          disabled={saving || busy !== null}
+          onclick={confirmCloseSave}
+        >{$t("settings.closeConfirm.saveClose")}</button>
+        <button
+          type="button"
+          class="btn btn--ghost"
+          disabled={saving || busy !== null}
+          onclick={confirmCloseDiscard}
+        >{$t("settings.closeConfirm.discardClose")}</button>
+        <button
+          type="button"
+          class="btn btn--ghost"
+          onclick={() => (closeConfirm = false)}
+        >{$t("common.cancel")}</button>
+      </span>
+    </div>
+  {/if}
+
   <footer class="settings__footer">
     {#if dirtyFlash}
       <span class="footer-flash">{$t("settings.footer.discarded")}</span>
@@ -3507,6 +3574,26 @@ async function handleMinimize() {
     font-size: var(--tum-font-size-xs);
     color: var(--tum-warn);
     word-break: break-all;
+  }
+
+  /* glance 学习：关闭确认条。行内替代系统弹窗，警示用 warn 色但不阻断布局。 */
+  .close-confirm {
+    display: flex;
+    align-items: center;
+    gap: var(--tum-space-3);
+    margin: 0 var(--tum-space-5) var(--tum-space-2);
+    padding: var(--tum-space-2) var(--tum-space-3);
+    border: 1px solid var(--tum-warn-stroke);
+    border-radius: var(--tum-radius-md);
+    background: var(--tum-warn-fill);
+    color: var(--tum-text-primary);
+    font-size: var(--tum-font-size-base);
+  }
+
+  .close-confirm__actions {
+    display: inline-flex;
+    gap: var(--tum-space-2);
+    margin-left: auto;
   }
 
   .footer-flash {
