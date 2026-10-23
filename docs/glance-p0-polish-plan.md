@@ -802,7 +802,7 @@ value 渲染行（.stat__value 内）改为：
 格式化字符串）的调用点里挑 1-2 处接入 `animate` + `format`（如 DevicePanel 总计 tokens：
 `<Stat animate={total} format={fmtTokens} .../>`——fmtTokens 需同步改收 number 输出
 string）。若所有调用点都只持有格式化字符串且原始数值不在作用域内，则本 commit 只交付
-能力不接线，在 commit message 里记录「接线属 P1」——**不要**为了接线去重构数据流。
+能力不接线，在 commit message 里记录「接线属 P1（`docs/glance-p0-followups.md` §3）」——**不要**为了接线去重构数据流。
 
 ### 验收
 
@@ -819,7 +819,7 @@ feat(motion): 非对称数字补间 num.ts + Stat 动画模式（glance P0-3）
 - createTween：上升 τ=60ms 指数趋近、下降线性限速、首步贴目标、末段吸附
 - 纯函数显式时钟，vitest 6 用例直测（含限速/收敛/摆动）
 - Stat.svelte 增 animate/format 可选 props；prefers-reduced-motion 直通
-- 接线：仅限已持有原始 number 的调用点；否则记 P1（不做数据流重构）
+- 接线：仅限已持有原始 number 的调用点；否则记 P1（见 `docs/glance-p0-followups.md` §3，不做数据流重构）
 - 验收：npm test 全绿；svelte-check 0E0W
 ```
 
@@ -1066,7 +1066,9 @@ feat(dock): 拖拽落位/把手跟随改指数趋近滑动（glance P0-4）
 
 ### 落地偏差（实施记录，commit 5de52ea）
 
-实施与本文上列代码有六处差异，均为审查驱动的最小修正：
+实施与本文上列代码有八处差异，其中七处是审查驱动的最小修正，第 7 条是架构级替换。
+本轮明确不做、留给 P1/P2 的项统一记在 [`docs/glance-p0-followups.md`](glance-p0-followups.md)
+（M2 hover/按压、M3 数字补间接线、M5 落位滑动等的收尾都在那里）。
 
 1. `GLIDE_MAX_STEPS` 50 → **75**：50 步/400ms 只够 393px 内进入吸附区
    （需 7.5·ln(2·gap) 步），而真实落位位移可达整屏宽；75 步=600ms=10τ，
@@ -1084,6 +1086,17 @@ feat(dock): 拖拽落位/把手跟随改指数趋近滑动（glance P0-4）
 5. `fetch_add` 早于早退分支的意图补注释：目标等于当前位置也推进代际，
    目的是让在跑的同窗旧动画停下。
 6. 常量注释边界值 400px → 393px（50 步实际覆盖范围）。
+7. **落位实现整体替换：前端 FLIP → Rust 主窗/把手指数趋近滑动**（架构替换，
+   不只是参数调整）。最终实现为 `ipc.rs::glide_window_to` + `dock.rs::approach_step`：
+   8ms 步进、τ=60ms、<0.5px 吸附、75 步=600ms 封顶、主窗/把手双代际取消；
+   总时长上限由设计时的 ~300ms 改为 **600ms**。前端因此**零改动**——
+   `syncPeek(animate)` 未加，胶囊层没有 FLIP，`--tum-dur-settle` /
+   `--tum-ease-out-quart` 至今无消费者（tokens.css 注释已按实情改写）。
+8. **数字补间未接胶囊用量/费用**：只接了 `DevicePanel` 的「全端汇总」两个数字
+   （`aggTotal` / `aggToday`，`fallLimitPerSec={25_000}`，经 `Stat` 的 `animate` 模式）。
+   胶囊与其余 `Stat` 调用点的原始 number 不在作用域内（调用点已格式化成字符串），
+   接线要改数据流，记 P1（见 `docs/glance-p0-followups.md` §3）。
+
 
 审查期实测结论（供后续回归参考）：被取代线程恰好多写 1 次，回跳上界为一帧
 位移的 12.5%，但真实落位剩余 ≤16 逻辑 px 且 16px 内不换边 → 实际 ≤2~4 物理 px、

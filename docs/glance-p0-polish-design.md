@@ -16,7 +16,7 @@
 
 - `tokens.css` 新增：
   - `--tum-ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1)`（与实现一致的口径，取自 easings.net 的 easeOutQuart；glance 内部形变 1-(1-t)⁴ 的贝塞尔近似）
-  - `--tum-dur-settle: 200ms`（落位飞回，供第 4 项使用）
+  - `--tum-dur-settle: 200ms`（「到位」动画时长；第 4 项最终改走 Rust 滑动，这里暂无消费者，见 tokens.css 注释）
   - `--tum-dur-ring: 420ms`（环形进度一圈时长，从组件字面量上提）
 - 字面量清零：
   - `App.svelte` `PILL_SLIDE_MS = 180` → 保留 JS 常量但加注释指向 `--tum-dur-slide-out`，并加一条 vitest 断言 `tokens.css` 中该值为 180ms（双源同步靠测试钉住）。
@@ -31,11 +31,12 @@
 **目标**：消灭字符按钮（↻⚙⤢✕—▢），建立单源图标组件。
 
 - 新建 `src/lib/components/atoms/Icon.svelte`：
-  - props：`name`、`size = 16`、`strokeWidth = 2`；
+  - props 只有 `name` / `size`（默认 **14px**，与原字符字形视觉尺寸对齐）；**没有 `strokeWidth` prop**，`stroke-width` 在组件内部固定为 2；
   - 内嵌 Lucide SVG path（viewBox 24、`fill="none"`、`stroke="currentColor"`、圆角端点），文件头注明 path 来源与 ISC 许可；
-  - 仅内置实际用到的 ~8 枚：`refresh` / `settings` / `maximize` / `x` / `minus` / `square` / `restore` / `pin`。
-- 零新依赖：不引 lucide-svelte（仓库 deps 只有 @tauri-apps/api，为 8 个图标引库不值）。
-- 替换点（aria-label 与 i18n 不动）：`App.svelte:1477/1512/1527/1528`、`Settings.svelte:1171-1174`、`ToolWindow.svelte:145`、`TrendWindow.svelte:143`、`DetailCard.svelte:339`、`ModelPanel.svelte:425`、`ToolPanel.svelte:263`、`DevicePanel.svelte:216`、`ZoomButton.svelte`。
+  - 实际内置 **6 枚**：`x` / `minus` / `square` / `refresh` / `settings` / `maximize`（设计时的 `restore` / `pin` 最终没用到，未内置）；
+  - 根 `<svg>` 固定带 `aria-hidden="true"`：图标自身不参与无障碍树，语义由按钮的 `aria-label` / `title` 承担。
+- 零新依赖：不引 lucide-svelte（仓库 deps 只有 @tauri-apps/api，为几枚图标引库不值）。
+- 替换点（aria-label 与 i18n 不动）：`App.svelte`、`Settings.svelte`、`ToolWindow.svelte`、`TrendWindow.svelte`、`DetailCard.svelte`、`ModelPanel.svelte`、`ToolPanel.svelte`、`DevicePanel.svelte`、`ZoomButton.svelte`。
 
 **验收**：字符按钮 grep（`↻|⚙|⤢|✕`）在组件中零命中；每枚图标带 `aria-hidden="true"`（语义由按钮 aria-label 承担）。
 
@@ -43,10 +44,12 @@
 
 **目标**：hover/按压/滑块手感对齐 glance 的 6%/240ms/按压反馈。
 
-- `--tum-surface-hover` 0.085 → 0.06（glance 暗色 hover 6%，全局生效一处改）。
-- `PillsOrSelect` 分段选择 thumb 位移接 `--tum-dur-slow`（240ms）+ `--tum-ease-slide-in`。
-- 按钮按压反馈：`transform: scale(0.97)`（active 态，transition 80ms），只加在 icon button 与胶囊按钮。
-- 悬浮钮 LINGER 500ms：核对 peek-reveal 链路，悬浮出现的按钮（如穿透恢复钮）出现前要求指针停留 ≥500ms，防误触（glance 常数）。
+- hover 两档（`tokens.css`）：
+  - `--tum-surface-hover` 0.085 → **0.06**（glance 暗色 hover 6%，全局生效一处改）；
+  - `--tum-surface-hover-raised` **0.09**：专给「常态底色已经是 surface（0.055）」的元素（仪表卡片、账户行等）——在 0.055 上再加 0.06 只有 +0.005，不可感知，故抬到 0.09。
+- 按钮按压反馈：`transform: scale(0.94)`，配 `--tum-dur-fast`（150ms）+ `--tum-ease-spring`；只加在 icon button 与胶囊类按钮。胶囊上的关闭钮 `.pill__close:active` 用 **0.9**（比 0.94 更小，贴手）。
+- `PillsOrSelect` 最终是药丸按钮组，**没有可位移的 thumb 结构**，`--tum-dur-slow`（240ms）未接线，token 保留。
+- 悬浮钮 LINGER 500ms：现有 UI 里没有「穿透恢复」表面，本分支未接线（收窄记录见 plan 自审）。
 
 **验收**：肉眼走查 + svelte-check；LINGER 常数放 `tokens.css` 注释或常量文件，不散落。
 
@@ -54,7 +57,8 @@
 
 **目标**：键盘可达性兜底。
 
-- `tokens.css` 加 `:where(:focus-visible)` 兜底环（`outline: 2px solid var(--tum-accent-stroke)` + 2px offset）——零特异性，已做组件级焦点环的 8 处样式自然胜出。
+- `tokens.css` 加全局兜底环：`:where(button, a, select, input, textarea, [tabindex]):focus-visible { outline: 2px solid var(--tum-accent); outline-offset: 2px }`——颜色是 `var(--tum-accent)`，2px，offset 2px；选择器用 `:where(...)` 压到零特异性，已做组件级焦点样式的元素自然胜出。
+- `ProviderCard` 用包装层 `.card:has(:focus-visible)` 在卡片外缘画 2px 环（`--acct-accent` 优先、回退 `--tum-accent`），并用 `.card__titlebtn:focus-visible { outline: none }` 抑制内部按钮的兜底环，避免环套环。
 - 核对 `ToolWindow.svelte` / `TrendWindow.svelte` 的 Esc 关闭；缺失则补（仅窗口页，透明 dashboard 不响应 Esc）。
 
 ### 5. 设置关闭拦截
@@ -75,8 +79,9 @@
 
 **目标**：用量/费用数字滚动感（glance「画显示值」思想）。
 
-- 新建 `src/lib/motion/num.ts`：纯函数 + rAF，上升近瞬时（τ≈60ms 指数趋近）、下落线性限速（每秒最多回落配置比例，调用点配）。非对称曲线是刻意设计（涨要跟手、跌要可读），不用 svelte/motion（锁文件 Tween 版本不确定，且框架补间不适配非对称曲线）。
-- 接入：胶囊用量/费用（`App.svelte`）、`Stat.svelte`；`.tum-numeric`（tabular-nums）已全局，无需再动。
+- 新建 `src/lib/motion/num.ts`：纯函数 + rAF，上升近瞬时（τ=60ms 指数趋近）、下落线性限速（翻转帧冻结速率 = max(fallLimitPerSec, gap/2s)，任何下降 ≤2s 精确收敛）。非对称曲线是刻意设计（涨要跟手、跌要可读），不用 svelte/motion（锁文件 Tween 版本不确定，且框架补间不适配非对称曲线）。
+- 接入：**实际只接了 `DevicePanel` 的「全端汇总」两个数字**——`aggTotal` / `aggToday`，`fallLimitPerSec={25_000}`，走 `Stat` 的 `animate` 模式。胶囊用量/费用与其余 `Stat` 调用点**未接**：原始 number 不在作用域内（调用点已格式化成字符串），接线要改数据流，记 P1（见 [glance-p0-followups.md](glance-p0-followups.md) §3）。
+- `.tum-numeric`（tabular-nums）已全局，无需再动。
 - 测试：vitest 注入虚拟时钟直测收敛与限速行为。
 
 **验收**：util 测试覆盖（收敛、下落限速、目标回跳）；肉眼确认胶囊数字滚动。
@@ -85,9 +90,13 @@
 
 **目标**：消灭两处瞬移——把手窗出现位置、拖拽松手后的落位。
 
-- **把手跟随（Rust 侧）**：`ipc.rs:689` `reposition_peek` 由一次性 `set_position` 改为指数趋近步进：每 8ms 一步（glance FOLLOW_MS），`α = 1 - exp(-dt/τ)`，τ=60ms，位移 <0.5px 收手；步进器抽纯函数放 `dock.rs` 或独立模块，cargo 单测。总时长封顶 ~300ms 防长尾。
-- **拖拽落位 FLIP（前端）**：拖拽松手 → Rust 贴边后，胶囊层以 `--tum-dur-settle`（200ms）+ `--tum-ease-out-quart` 从松手位置飞回槽位（FLIP：先量松手时窗口位、贴边后反向 transform 再归零），替代「贴边瞬移 + 原地动画」。
-- **降级预案**：若实测发抖（IPC/调度抖动），把手跟随退回显隐淡入淡出（`--tum-dur-fade`），落位 FLIP 退回现状，并在 commit message 记录实测数据。
+- **最终实现（与本节最初设想不同）**：前端 FLIP **没做**，落位整体改为 **Rust 侧指数趋近滑动**（`ipc.rs::glide_window_to` + `dock.rs::approach_step`）：
+  - 每 **8ms** 一步（`GLIDE_STEP_MS`），`α = 1 - exp(-dt/τ)`，**τ=60ms**（`GLIDE_TAU_MS`）；
+  - 位移 **<0.5px** 视为到位并直接吸附目标（防像素长尾）；
+  - **75 步 = 600ms** 封顶（`GLIDE_MAX_STEPS`，10τ；5000px 残差 0.23px 仍落进吸附区）。总时长上限由设计时的 **~300ms 改为 600ms**；
+  - **主窗 / 把手窗各一个代际计数**（`GLIDE_GEN_MAIN` / `GLIDE_GEN_PEEK`）：同窗新动画让旧线程下一帧退出；贴边吸附、模式切换等瞬时几何改写也推进代际，防两条线程互抢 `set_position`。
+- 前端因此**零改动**：`syncPeek(animate)` 未加，胶囊层没有 FLIP，`--tum-dur-settle` / `--tum-ease-out-quart` 没有消费者（tokens.css 注释已按实情改写）。
+- **降级预案**：若实测发抖（IPC/调度抖动），把手跟随退回显隐淡入淡出，或把 `GLIDE_STEP_MS` 提到 16 / 改回瞬时落位，单独 commit 记录实测数据。
 
 **验收**：cargo test（步进纯函数）+ 手测拖拽/呼出/跨边重建三链路；perf_probe 分段计时无回归。
 
@@ -107,5 +116,5 @@
 | --- | --- |
 | 把手步进动画在真实 IPC 链路上抖动 | 纯函数先单测；实测抖则按降级预案退回淡入淡出 |
 | `--tum-surface-hover` 全局改动影响对比度 | 走查暗色下所有 hover 面；0.085→0.06 是 glance 实测值，方向是更收敛 |
-| FLIP 与 dockPill 现有 timeline 打架 | FLIP 只作用于「拖拽落位」路径，hover 呼出路径不动 |
+| FLIP 与 dockPill 现有 timeline 打架 | 前端未做 FLIP：落位改由 Rust 滑动完成，`set_size` / `set_position` 是不同 Win32 调用，可与缩窗并行 |
 | 字面量双源（JS 180ms vs CSS token）漂移 | vitest 断言钉住 |
