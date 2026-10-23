@@ -198,7 +198,7 @@
 
   /* 420ms 圆环推进曲线（spec 决策 7） */
   .ring__arc {
-    transition: stroke-dashoffset 420ms var(--tum-ease-ring);
+    transition: stroke-dashoffset var(--tum-dur-ring, 420ms) var(--tum-ease-ring);
   }
 
   .ring--crit {

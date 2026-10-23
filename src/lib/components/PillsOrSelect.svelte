@@ -137,7 +137,7 @@
     padding: 0 10px;
     border-radius: var(--tum-radius-pill);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
   }
   .ps__pill:hover {
     color: var(--tum-text-primary);

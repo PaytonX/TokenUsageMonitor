@@ -88,6 +88,7 @@
   import PillsOrSelect from "./lib/components/PillsOrSelect.svelte";
   import { brandColorFor, EXPERIMENTAL_KINDS } from "./lib/brand-glyphs";
   import { t } from "./lib/i18n/store";
+  import { durMs } from "./lib/motion/tokens";
 
   type Mode = "dashboard" | "compact";
 
@@ -324,9 +325,9 @@
   // PILL_PEEK_LEAD_MS(120) 与滑出的淡出时长是**耦合**的：
   // 淡出走完的时刻正好是把手复现的时刻，两者一旦错开就会看到把手浮在
   // 半透明胶囊上。数值巧合而已，改任一侧都要同时改另一侧。
-  const PILL_SLIDE_MS = 180; // = --tum-dur-slide-out（Glance CLOSE 同样是 180ms）
-  const PILL_PEEK_LEAD_MS = 120; // 与淡出相结束时点对齐
-  const PILL_REVEAL_MINI_MS = 200; // 滑入的淡入相（140ms）走完后再展开明细
+  const PILL_SLIDE_MS = durMs("--tum-dur-slide-out", 180); // = --tum-dur-slide-out（Glance CLOSE 同样是 180ms）
+  const PILL_PEEK_LEAD_MS = durMs("--tum-dur-instant", 120); // 与淡出相结束时点对齐
+  const PILL_REVEAL_MINI_MS = durMs("--tum-dur-base", 200); // 滑入的淡入相（140ms）走完后再展开明细
   const PILL_DOCK_DELAY_MS = 320; // 指针离开后停留多久才收起
   /**
    * 滑出结束后再等多久才缩窗（ms）。0 = 与滑出同刻缩（现状）。
@@ -2164,7 +2165,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 10.5px;
+    font-size: var(--tum-font-size-xs);
     font-weight: 600;
     font-family: var(--tum-font);
     letter-spacing: 0.2px;

@@ -49,6 +49,8 @@ const FORBIDDEN_HEX: ColorRule[] = [
   // 旧版 success/crit 别名色（组件库文档 §5 明令禁止）
   { hex: "#34d399", exempt: ["Settings.svelte"], why: "旧 success 绿，改用 --tum-ok" },
   { hex: "#f87171", exempt: ["Settings.svelte"], why: "旧 crit 红，改用 --tum-crit" },
+  { hex: "#ef4444", exempt: ["Settings.svelte"], why: "旧 crit 红，改用 --tum-crit" },
+  { hex: "#ff6b6b", exempt: ["Settings.svelte"], why: "旧 crit 红，改用 --tum-crit" },
   // 琥珀只允许：Settings 品牌点（遗留）。ColorSwatch 顶部的用法示例在 HTML 注释里，
   // stripComments 已将其剔除，无需文件级豁免（文件级豁免会静默放行未来的真实使用）。
   { hex: "#fbbf24", exempt: ["Settings.svelte"], why: "琥珀仅限品牌点/热力图今日描边" },
@@ -71,6 +73,8 @@ const FORBIDDEN_RGBA: ColorRule[] = [
   { re: /rgba?\(\s*35\s*,\s*38\s*,\s*45/i, exempt: [], why: "#23262d 的 rgba 形态，改用 var(--tum-bg-solid)" },
   { re: /rgba?\(\s*52\s*,\s*211\s*,\s*153/i, exempt: [], why: "#34d399 的 rgba 形态，改用 var(--tum-ok)" },
   { re: /rgba?\(\s*248\s*,\s*113\s*,\s*113/i, exempt: [], why: "#f87171 的 rgba 形态，改用 var(--tum-crit)" },
+  { re: /rgba?\(\s*239\s*,\s*68\s*,\s*68/i, exempt: ["Settings.svelte"], why: "#ef4444 的 rgba 形态，改用 var(--tum-crit)" },
+  { re: /rgba?\(\s*255\s*,\s*107\s*,\s*107/i, exempt: ["Settings.svelte"], why: "#ff6b6b 的 rgba 形态，改用 var(--tum-crit)" },
 ];
 
 /** 值保持型 px 规则：只禁恰好等于令牌值的裸 px；8/9/12/14/15/17/10.5px 等离散值

@@ -109,7 +109,7 @@
     display: block;
     height: 100%;
     border-radius: 2px;
-    transition: width 420ms var(--tum-ease-ring);
+    transition: width var(--tum-dur-ring, 420ms) var(--tum-ease-ring);
   }
 
   .mini__pct {

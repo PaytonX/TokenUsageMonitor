@@ -48,7 +48,7 @@
     font-size: var(--tum-font-size-sm);
     line-height: 1;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
   }
 
   .zoom-btn:hover {

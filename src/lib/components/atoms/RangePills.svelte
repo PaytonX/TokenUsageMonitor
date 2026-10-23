@@ -78,8 +78,8 @@
     border-radius: var(--tum-radius-pill);
     cursor: pointer;
     transition:
-      background 0.2s ease,
-      color 0.2s ease;
+      background var(--tum-dur-base, 200ms) var(--tum-ease-spring),
+      color var(--tum-dur-base, 200ms) var(--tum-ease-spring);
   }
 
   .pills__btn:hover {

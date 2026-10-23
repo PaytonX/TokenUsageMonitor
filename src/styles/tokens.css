@@ -111,7 +111,7 @@
      导致渲染耗时（lib/perf）测出的 p95 无法归因到某条具体动效——没有表可比。
      量级对齐 Glance 的 SLIDE/FLIP/GLIDE/SETTLE（240/160/200/180ms）。
      新增动效一律引用这些 token，不要再写字面量。 */
-  --tum-dur-instant: 120ms; /* dockPill 三段线的第一段；细节展开延迟 */
+  --tum-dur-instant: 120ms; /* dockPill 把手提前接回（t=120）；与 --tum-dur-slide-out 淡出耦合，见 App.svelte dockPill 注释 */
   --tum-dur-fast: 150ms; /* 胶囊滑入 */
   --tum-dur-base: 200ms; /* 胶囊滑出 / 通用 */
   --tum-dur-slow: 240ms; /* 选项滑块 */
@@ -130,6 +130,16 @@
   /* 「减弱动态效果」下的降级档。不是 0.001ms 的瞬时（那比不开动画更硬），
      而是只保留淡入、去掉位移——与 Glance 的 PLAIN_FADE 同思路。 */
   --tum-dur-reduced-fade: 120ms;
+
+  /* glance 学习：四次幂 easeOut（glance 内部形变统一曲线 1-(1-t)^4）。
+     比 spring 少回弹、收尾更收敛——用于落位/滑回类「到位」动画。
+     目前无消费者，供 P0-4 拖拽落位 FLIP 预铺，勿清理。 */
+  --tum-ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  /* glance 学习：拖拽落位、关闭确认条等「到位」动画统一时长。
+     目前无消费者，供 P0-4 拖拽落位 FLIP 预铺，勿清理。 */
+  --tum-dur-settle: 200ms;
+  /* 420ms 圆环/进度推进曲线的时长 token（值来自 MiniPanel/ProgressRing 既有字面量）。 */
+  --tum-dur-ring: 420ms;
 
   /* Kept for compatibility; no component currently references it */
   --tum-scanline: none;

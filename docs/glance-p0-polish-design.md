@@ -15,7 +15,7 @@
 **目标**：动画常数单源化——组件里不再出现裸的时长/曲线/外来色/越界字号。
 
 - `tokens.css` 新增：
-  - `--tum-ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1)`（glance 内部形变 1-(1-t)⁴ 的贝塞尔近似）
+  - `--tum-ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1)`（与实现一致的口径，取自 easings.net 的 easeOutQuart；glance 内部形变 1-(1-t)⁴ 的贝塞尔近似）
   - `--tum-dur-settle: 200ms`（落位飞回，供第 4 项使用）
   - `--tum-dur-ring: 420ms`（环形进度一圈时长，从组件字面量上提）
 - 字面量清零：
