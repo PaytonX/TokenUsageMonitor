@@ -909,7 +909,9 @@ static GLIDE_GEN_PEEK: AtomicU64 = AtomicU64::new(0);
 
 const GLIDE_STEP_MS: u64 = 8; // glance：拖拽/跟随节拍
 const GLIDE_TAU_MS: f64 = 60.0; // glance：跟随时间常数
-const GLIDE_MAX_STEPS: u32 = 50; // 封顶 ~400ms，防 τ 长尾
+// 600ms 封顶 = τ=60ms 的 10 个时间常数：残余 e^-10 ≈ 4.5e-5，5000px 位移也收在
+// 0.23px 内，必由 <0.5px 吸附规则落地。（50 步/400ms 只够 393px 内落地。）
+const GLIDE_MAX_STEPS: u32 = 75;
 
 /// 让窗口从当前位置指数趋近 `to`（物理像素）。不阻塞调用方；
 /// 短命线程 + 8ms 步进；期间同窗新请求会取消旧动画（代际计数）。
@@ -1054,13 +1056,39 @@ npm test && npx svelte-check
 feat(dock): 拖拽落位/把手跟随改指数趋近滑动（glance P0-4）
 
 - dock.rs approach_step 纯函数 + 4 用例（理论首步/收敛/吸附/恒等）
-- ipc.rs glide_window_to：8ms 步进、τ=60ms、<0.5px 收手、50 步封顶、
+- ipc.rs glide_window_to：8ms 步进、τ=60ms、<0.5px 收手、75 步封顶、
   主窗/把手双代际计数防重入
 - sync_peek_window docked 分支 → apply_anchor_glide；reposition_peek
   滑动（pill_drag 时瞬时）；set_window_mode 保持瞬时
 - 已知：滑动与 dockPill 缩窗并行无冲突（不同 Win32 调用）；降级预案见计划
 - 验收：cargo test 全绿；npm test 全绿；svelte-check 0E0W
 ```
+
+### 落地偏差（实施记录，commit 5de52ea）
+
+实施与本文上列代码有六处差异，均为审查驱动的最小修正：
+
+1. `GLIDE_MAX_STEPS` 50 → **75**：50 步/400ms 只够 393px 内进入吸附区
+   （需 7.5·ln(2·gap) 步），而真实落位位移可达整屏宽；75 步=600ms=10τ，
+   5000px 残差 0.23px 仍由吸附规则落地。
+2. `persist_placement_inner` 只在浮动态（`anchor.is_none()`）读写
+   `dashboard_x/y`：贴边态几何由锚点反算；滑动落位期间读 live 位置会存下
+   半路过渡坐标，而浮动态启动恢复确实读该字段（`Settings::get_xy_now()`）。
+3. `set_window_mode` 开头推进 `GLIDE_GEN_MAIN`：模式切换是瞬时几何改写，
+   不作废在跑滑动会被旧线程按旧尺寸写回（贴右 168 → 400 宽会右侧探出屏）。
+   不可改挂 `Resized` 事件——t=180ms 的 collapsePill 缩窗会把正常落位截停。
+4. `glide_window_to` 增 `label: Option<&'static str>`：仅主窗打
+   `glide start` / `glide end` 两条 `tum.window` debug 日志
+   （reason=settled|cancelled|capped + frames + elapsed_ms），把手窗静默，
+   否则每次落位 26~37 行会把有用信息淹掉。
+5. `fetch_add` 早于早退分支的意图补注释：目标等于当前位置也推进代际，
+   目的是让在跑的同窗旧动画停下。
+6. 常量注释边界值 400px → 393px（50 步实际覆盖范围）。
+
+审查期实测结论（供后续回归参考）：被取代线程恰好多写 1 次，回跳上界为一帧
+位移的 12.5%，但真实落位剩余 ≤16 逻辑 px 且 16px 内不换边 → 实际 ≤2~4 物理 px、
+单帧不可见；每窗 1 线程跑 26~43 帧，spawn 49.7µs，125/s 压测 peak_live=2，
+无线程风暴；`round` 只用于输出无累积误差（5000 步累计 0.557px）。
 
 ---
 
