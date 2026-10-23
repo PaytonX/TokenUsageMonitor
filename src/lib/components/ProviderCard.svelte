@@ -271,7 +271,7 @@
   }
 
   .card:hover {
-    background: var(--tum-surface-hover);
+    background: var(--tum-surface-hover-raised);
   }
 
   .card--expanded {

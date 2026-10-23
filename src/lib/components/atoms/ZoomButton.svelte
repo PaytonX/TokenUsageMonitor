@@ -48,6 +48,10 @@
     transition: all var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
   }
 
+  .zoom-btn:active {
+    transform: scale(0.94);
+  }
+
   .zoom-btn:hover {
     color: var(--tum-accent);
     border-color: var(--tum-accent-stroke);

@@ -20,7 +20,8 @@
 
   /* Glass surface layers (rgba white over Mica) */
   --tum-surface: rgba(255, 255, 255, 0.055);
-  --tum-surface-hover: rgba(255, 255, 255, 0.085);
+  --tum-surface-hover: rgba(255, 255, 255, 0.06); /* glance：hover 是轻微回应（INK 55% 级），减淡一档 */
+  --tum-surface-hover-raised: rgba(255, 255, 255, 0.09); /* surface 常态元素（如仪表卡片/账户行）专用 hover：底已是 0.055，用 0.06 仅 +0.005 不可感知 */
   --tum-border: rgba(255, 255, 255, 0.09);
   --tum-border-strong: rgba(255, 255, 255, 0.16);
 

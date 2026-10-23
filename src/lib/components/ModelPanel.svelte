@@ -550,7 +550,10 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
     font-size: var(--tum-font-size-sm);
     line-height: 1;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+  .mp__refresh:active {
+    transform: scale(0.94);
   }
   .mp__refresh:hover {
     color: var(--tum-accent);

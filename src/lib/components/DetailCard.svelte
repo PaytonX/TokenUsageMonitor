@@ -469,7 +469,11 @@
     border-radius: var(--tum-radius-xs);
     cursor: pointer;
     white-space: nowrap;
-    transition: all 0.15s ease;
+    transition: all 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+
+  .detail__btn:active {
+    transform: scale(0.94);
   }
 
   .detail__btn:hover {

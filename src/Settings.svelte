@@ -2475,7 +2475,11 @@ async function handleMinimize() {
     place-items: center;
     border-radius: var(--tum-radius-xs);
     -webkit-app-region: no-drag;
-    transition: color 0.15s ease, background 0.15s ease;
+    transition: color 0.15s ease, background 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+
+  .settings__close:active {
+    transform: scale(0.94);
   }
 
   .settings__close:hover {
@@ -2501,7 +2505,11 @@ async function handleMinimize() {
     border-radius: var(--tum-radius-xs);
     font-size: 12px;
     line-height: 1;
-    transition: color 0.15s ease, background 0.15s ease;
+    transition: color 0.15s ease, background 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+
+  .settings__win-btn:active {
+    transform: scale(0.94);
   }
 
   .settings__win-btn:hover {
@@ -2944,7 +2952,7 @@ async function handleMinimize() {
     transition: background 0.15s ease, border-color 0.15s ease;
   }
   .acct-row:hover {
-    background: var(--tum-surface-hover);
+    background: var(--tum-surface-hover-raised);
   }
   .acct-row:focus-visible {
     outline: 1px solid var(--tum-accent-stroke);
@@ -3801,12 +3809,14 @@ async function handleMinimize() {
     width: 27px; height: 27px; display: grid; place-items: center;
     border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
     background: rgba(255, 255, 255, 0.04); border-radius: 7px;
-    color: var(--tum-text-muted, #8b949e); font-size: 11px; cursor: pointer; transition: 0.14s;
+    color: var(--tum-text-muted, #8b949e); font-size: 11px; cursor: pointer; transition: 0.14s, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
     flex: none;
   }
   .rt-op:hover:not(:disabled) { color: var(--tum-text-primary, #e6edf3); transform: translateY(-1px); }
   .rt-op--del:hover:not(:disabled) { color: var(--tum-crit); border-color: var(--tum-crit); }
   .rt-op:disabled { opacity: 0.3; cursor: default; }
+  /* :not(:disabled) 使特异性与 :hover 规则持平（各 0,3,0），靠源序压过 hover 的 translateY，否则按压位移永不生效 */
+  .rt-op:active:not(:disabled) { transform: scale(0.94); }
 
   /* 模型下拉 */
   .rt-model-wrap { position: relative; display: flex; gap: 6px; }

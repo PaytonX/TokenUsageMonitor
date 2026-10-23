@@ -359,7 +359,11 @@
     font-size: var(--tum-font-size-sm);
     line-height: 1;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+
+  .tool__refresh:active {
+    transform: scale(0.94);
   }
 
   .tool__refresh:hover {

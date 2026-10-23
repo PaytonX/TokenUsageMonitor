@@ -387,7 +387,10 @@
     font-size: 14px;
     line-height: 1;
     cursor: pointer;
-    transition: background 0.15s ease;
+    transition: background 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+  .dev__refresh:active {
+    transform: scale(0.94);
   }
   .dev__refresh:hover {
     background: var(--tum-border-strong);
@@ -530,7 +533,10 @@
     font-size: var(--tum-font-size-sm);
     line-height: 1;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+  .dev__remove:active {
+    transform: scale(0.94);
   }
   .dev__remove:hover {
     color: var(--tum-crit);

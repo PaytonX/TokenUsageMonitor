@@ -259,7 +259,11 @@
     justify-content: center;
     border-radius: var(--tum-radius-xs);
     cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
+    transition: background 0.15s ease, color 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+
+  .tw__bar-btn:active {
+    transform: scale(0.94);
   }
 
   .tw__bar-btn:hover {

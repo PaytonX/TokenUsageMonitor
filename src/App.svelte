@@ -1864,11 +1864,15 @@
     cursor: pointer;
     font-size: var(--tum-font-size-sm);
     line-height: 1;
-    transition: all 0.15s ease;
+    transition: all 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font-family: var(--tum-font-mono);
+  }
+
+  .shell__btn:active {
+    transform: scale(0.94);
   }
 
   .shell__btn:hover {
@@ -2196,7 +2200,12 @@
     transition:
       opacity var(--tum-dur-fast, 150ms) var(--tum-ease-spring),
       background var(--tum-dur-fast, 150ms) ease,
-      color var(--tum-dur-fast, 150ms) ease;
+      color var(--tum-dur-fast, 150ms) ease,
+      transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+
+  .pill__close:active {
+    transform: scale(0.9);
   }
 
   .pill.is-strip-visible .pill__close {
