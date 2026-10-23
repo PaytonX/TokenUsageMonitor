@@ -1069,19 +1069,25 @@ import { resolveCloseAction } from "./lib/settings-close";
   }
 
   async function handleSaveAll() {
+    // 与 handleClose 同构：saving 同时是按钮 disabled 的依据，异常路径也必须
+    // 复位，否则保存按钮会永久灰掉。
+    if (saving) return;
     saving = true;
-    const ok = await persistSettings();
-    if (ok) {
-      savedFlash = true;
-      setTimeout(() => (savedFlash = false), 2000);
-      // 触发一次刷新，让主面板立即反映新启用的账户；失败不阻塞保存。
-      try {
-        await forceRefresh();
-      } catch (e) {
-        genericError = String(e);
+    try {
+      const ok = await persistSettings();
+      if (ok) {
+        savedFlash = true;
+        setTimeout(() => (savedFlash = false), 2000);
+        // 触发一次刷新，让主面板立即反映新启用的账户；失败不阻塞保存。
+        try {
+          await forceRefresh();
+        } catch (e) {
+          genericError = String(e);
+        }
       }
+    } finally {
+      saving = false;
     }
-    saving = false;
   }
 
   /**

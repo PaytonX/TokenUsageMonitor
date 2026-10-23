@@ -1436,7 +1436,8 @@ pub async fn open_settings(app: AppHandle) -> Result<(), String> {
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            let _ = win_for_close.emit("settings-close-requested", ());
+            // 定向发给 settings 窗：emit 是全局广播（见本文件 emit_to 的注释约定）。
+            let _ = win_for_close.emit_to("settings", "settings-close-requested", ());
         }
     });
 

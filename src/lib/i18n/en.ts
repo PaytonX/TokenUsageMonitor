@@ -73,7 +73,7 @@ export const en: Record<string, string> = {
   "settings.footer.saving": "Saving…",
   "settings.footer.saveSettings": "Save settings",
   "settings.closeConfirm.title": "Unsaved changes",
-  "settings.closeConfirm.body": "Unsaved changes. Save them before closing?",
+  "settings.closeConfirm.body": "Save them before closing?",
   "settings.closeConfirm.saveClose": "Save and close",
   "settings.closeConfirm.discardClose": "Discard and close",
   "settings.common.enabled": "Enabled",
