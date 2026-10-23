@@ -105,12 +105,11 @@
     background: rgba(45, 50, 60, 0.96);
     border: 1px solid var(--tum-border-strong);
     border-radius: var(--tum-radius-sm);
-    outline: none;
     cursor: pointer;
   }
-  .ps:focus-visible {
-    border-color: var(--tum-accent);
-  }
+  /* 焦点环交给 tokens.css 的全局 :focus-visible 兜底（:where 零特异性）：
+     这里不再写 outline: none，否则会盖掉全局环；也不再写 focus 时改
+     border-color，避免「2px 描边 + 边框变色」双层指示。 */
   /* 原生下拉选项：显式给不透明深色底 + 亮色文字，避免"深底深字"看不清；
      option 需要不透明底，故用 bg-solid 而非半透明 token。 */
   .ps option {
@@ -137,7 +136,7 @@
     padding: 0 10px;
     border-radius: var(--tum-radius-pill);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
   }
   .ps__pill:hover {
     color: var(--tum-text-primary);

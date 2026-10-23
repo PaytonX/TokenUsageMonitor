@@ -271,7 +271,7 @@
   }
 
   .card:hover {
-    background: var(--tum-surface-hover);
+    background: var(--tum-surface-hover-raised);
   }
 
   .card--expanded {
@@ -386,6 +386,11 @@
   .card:has(:focus-visible) {
     outline: 2px solid var(--acct-accent, var(--tum-accent));
     outline-offset: 2px;
+  }
+
+  /* 包装层 :has() 已在卡外缘画焦点环，内部按钮不再叠加全局兜底环 */
+  .card__titlebtn:focus-visible {
+    outline: none;
   }
 
   .card__name {

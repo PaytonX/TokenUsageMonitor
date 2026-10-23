@@ -10,7 +10,7 @@
   import type { LocalDay, LocalToolReport, LocalToolsPayload } from "../types";
   import { hexToRgb } from "../types";
   import PillsOrSelect from "./PillsOrSelect.svelte";
-  import { PanelHeader, RangePills, ColorSwatch } from "./atoms";
+  import { PanelHeader, RangePills, ColorSwatch, Icon } from "./atoms";
 
   type RangeKey = "7d" | "30d" | "90d";
   // label 存 i18n 键（与 trend-data.ts RANGES 同约定），渲染处经 $t 取词。
@@ -134,15 +134,22 @@
     if ((e.target as HTMLElement).closest("button")) return;
     void getCurrentWindow().startDragging();
   }
+  // glance 学习：子窗口也要能键盘关掉。Esc 关窗；原生 select 弹层打开时
+  // keydown 由弹层消费，不会误触这里。
+  function onWindowKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape") close();
+  }
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <div class="tw">
   <div class="tw__bar" onpointerdown={onDrag} role="toolbar" aria-label={$t("tool.windowControls")} tabindex="-1">
     <span class="tw__bar-title">{$t("tool.toolUsage")}</span>
     <div class="tw__bar-controls">
-      <button type="button" class="tw__bar-btn" aria-label={$t("tool.minimize")} onclick={minimize} onpointerdown={(e) => e.stopPropagation()}>—</button>
-      <button type="button" class="tw__bar-btn" aria-label={$t("tool.maximizeRestore")} onclick={toggleMaximize} onpointerdown={(e) => e.stopPropagation()}>▢</button>
-      <button type="button" class="tw__bar-btn tw__bar-btn--close" aria-label={$t("common.close")} onclick={close} onpointerdown={(e) => e.stopPropagation()}>✕</button>
+      <button type="button" class="tw__bar-btn" aria-label={$t("tool.minimize")} onclick={minimize} onpointerdown={(e) => e.stopPropagation()}><Icon name="minus" size={12} /></button>
+      <button type="button" class="tw__bar-btn" aria-label={$t("tool.maximizeRestore")} onclick={toggleMaximize} onpointerdown={(e) => e.stopPropagation()}><Icon name="square" size={12} /></button>
+      <button type="button" class="tw__bar-btn tw__bar-btn--close" aria-label={$t("common.close")} onclick={close} onpointerdown={(e) => e.stopPropagation()}><Icon name="x" size={12} /></button>
     </div>
   </div>
   <PanelHeader title={$t("tool.toolUsage")} label={$t("tool.toolUsageWindow")}>
@@ -259,7 +266,11 @@
     justify-content: center;
     border-radius: var(--tum-radius-xs);
     cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
+    transition: background 0.15s ease, color 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+
+  .tw__bar-btn:active {
+    transform: scale(0.94);
   }
 
   .tw__bar-btn:hover {

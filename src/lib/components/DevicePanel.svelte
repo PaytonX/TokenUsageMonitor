@@ -5,7 +5,7 @@
   import { deviceColor } from "../device-agg";
   import type { HubDevice } from "../types";
   import TrendLineChart from "./TrendLineChart.svelte";
-  import { PanelHeader, Stat, ColorSwatch } from "./atoms";
+  import { PanelHeader, Stat, ColorSwatch, Icon } from "./atoms";
   import { t } from "../i18n/store";
 
   interface Props {
@@ -213,7 +213,7 @@
 
 <div class="dev" data-tauri-drag-region={false}>
   <PanelHeader title={$t("device.title")}>
-    <button type="button" class="dev__refresh" title={$t("common.refresh")} onclick={() => void load()}>↻</button>
+    <button type="button" class="dev__refresh" title={$t("common.refresh")} onclick={() => void load()}><Icon name="refresh" size={13} /></button>
   </PanelHeader>
 
   {#if loading && devices.length === 0}
@@ -234,8 +234,9 @@
           <span class="dev__agg-sub">{$t("device.summarySub", { n: devices.length })}</span>
         </div>
         <div class="dev__stats dev__agg-stats">
-          <Stat value={fmtTokens(aggTotal)} label={$t("device.totalAll")} />
-          <Stat value={fmtTokens(aggToday)} label={$t("device.todayAll")} />
+          <!-- tokens 标度限速：小差值亚秒爬完，大差值被 2s 收敛上限兜底 -->
+          <Stat animate={aggTotal} format={fmtTokens} fallLimitPerSec={25_000} label={$t("device.totalAll")} />
+          <Stat animate={aggToday} format={fmtTokens} fallLimitPerSec={25_000} label={$t("device.todayAll")} />
           <Stat value={devices.length} label={$t("tab.devices")} />
         </div>
         {#if aggDays.length > 0}
@@ -281,7 +282,7 @@
                   : $t("device.remove")}
                 aria-label={$t("device.removeNamed", { name: d.hostname })}
                 onclick={() => void removeDevice(d.device_id)}
-              >×</button>
+              ><Icon name="x" size={12} /></button>
             {/if}
           </div>
           <div class="dev__meta">
@@ -387,7 +388,10 @@
     font-size: 14px;
     line-height: 1;
     cursor: pointer;
-    transition: background 0.15s ease;
+    transition: background 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+  .dev__refresh:active {
+    transform: scale(0.94);
   }
   .dev__refresh:hover {
     background: var(--tum-border-strong);
@@ -530,7 +534,10 @@
     font-size: var(--tum-font-size-sm);
     line-height: 1;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+  .dev__remove:active {
+    transform: scale(0.94);
   }
   .dev__remove:hover {
     color: var(--tum-crit);

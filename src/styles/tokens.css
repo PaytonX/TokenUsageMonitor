@@ -20,7 +20,8 @@
 
   /* Glass surface layers (rgba white over Mica) */
   --tum-surface: rgba(255, 255, 255, 0.055);
-  --tum-surface-hover: rgba(255, 255, 255, 0.085);
+  --tum-surface-hover: rgba(255, 255, 255, 0.06); /* glance：hover 是轻微回应（INK 55% 级），减淡一档 */
+  --tum-surface-hover-raised: rgba(255, 255, 255, 0.09); /* surface 常态元素（如仪表卡片/账户行）专用 hover：底已是 0.055，用 0.06 仅 +0.005 不可感知 */
   --tum-border: rgba(255, 255, 255, 0.09);
   --tum-border-strong: rgba(255, 255, 255, 0.16);
 
@@ -111,7 +112,7 @@
      导致渲染耗时（lib/perf）测出的 p95 无法归因到某条具体动效——没有表可比。
      量级对齐 Glance 的 SLIDE/FLIP/GLIDE/SETTLE（240/160/200/180ms）。
      新增动效一律引用这些 token，不要再写字面量。 */
-  --tum-dur-instant: 120ms; /* dockPill 三段线的第一段；细节展开延迟 */
+  --tum-dur-instant: 120ms; /* dockPill 把手提前接回（t=120）；与 --tum-dur-slide-out 淡出耦合，见 App.svelte dockPill 注释 */
   --tum-dur-fast: 150ms; /* 胶囊滑入 */
   --tum-dur-base: 200ms; /* 胶囊滑出 / 通用 */
   --tum-dur-slow: 240ms; /* 选项滑块 */
@@ -130,6 +131,18 @@
   /* 「减弱动态效果」下的降级档。不是 0.001ms 的瞬时（那比不开动画更硬），
      而是只保留淡入、去掉位移——与 Glance 的 PLAIN_FADE 同思路。 */
   --tum-dur-reduced-fade: 120ms;
+
+  /* glance 学习：四次幂 easeOut（glance 内部形变统一曲线 1-(1-t)^4）。
+     比 spring 少回弹、收尾更收敛——本意用于落位/滑回类「到位」动画。
+     同上，暂无消费者：P0-4 的落位最终由 Rust 侧滑动实现，前端 FLIP 未做；
+     若 P1 不做 FLIP 可与 --tum-dur-settle 一起删除。 */
+  --tum-ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  /* glance 学习：拖拽落位、关闭确认条等「到位」动画的时长。
+     P0-4 的落位最终由 Rust 侧滑动实现，前端 FLIP 未做——这里暂时没有消费者，
+     若 P1 不做 FLIP 可连同 --tum-ease-out-quart 一起删除。 */
+  --tum-dur-settle: 200ms;
+  /* 420ms 圆环/进度推进曲线的时长 token（值来自 MiniPanel/ProgressRing 既有字面量）。 */
+  --tum-dur-ring: 420ms;
 
   /* Kept for compatibility; no component currently references it */
   --tum-scanline: none;
@@ -167,6 +180,15 @@ input[type="number"],
   font-family: var(--tum-font-mono);
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+/* glance 学习：键盘可达性全局兜底。:where() 特异性为 0，组件自带的
+   :focus-visible 样式（.pill__close、.zoom-btn 等）自然胜出；这里只兜住
+   没有组件级焦点样式的裸按钮/链接。包装层 :has() 焦点指示器（如
+   ProviderCard）需自行抑制内部按钮的兜底环。 */
+:where(button, a, select, input, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--tum-accent);
+  outline-offset: 2px;
 }
 
 /* spec 决策 16：系统开启「减弱动态效果」时所有过渡/动画瞬时完成，

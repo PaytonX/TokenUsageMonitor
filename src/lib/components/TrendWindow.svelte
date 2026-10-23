@@ -15,7 +15,7 @@
   } from "../trend-data";
   import { hexToRgb } from "../types";
   import CalendarSection from "./CalendarSection.svelte";
-  import { PanelHeader, RangePills, ColorSwatch } from "./atoms";
+  import { PanelHeader, RangePills, ColorSwatch, Icon } from "./atoms";
   import { t } from "../i18n/store";
 
   let status: "loading" | "ready" | "empty" = $state("loading");
@@ -132,15 +132,22 @@
     if ((e.target as HTMLElement).closest("button")) return;
     void getCurrentWindow().startDragging();
   }
+  // glance 学习：子窗口也要能键盘关掉。Esc 关窗；原生 select 弹层打开时
+  // keydown 由弹层消费，不会误触这里。
+  function onWindowKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape") close();
+  }
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <div class="tw">
   <div class="tw__bar" onpointerdown={onDrag} role="toolbar" aria-label={$t("trend.windowControls")} tabindex="-1">
     <span class="tw__bar-title">{$t("trend.title")}</span>
     <div class="tw__bar-controls">
-      <button type="button" class="tw__bar-btn" aria-label={$t("trend.minimize")} onclick={minimize} onpointerdown={(e) => e.stopPropagation()}>—</button>
-      <button type="button" class="tw__bar-btn" aria-label={$t("trend.maximizeRestore")} onclick={toggleMaximize} onpointerdown={(e) => e.stopPropagation()}>▢</button>
-      <button type="button" class="tw__bar-btn tw__bar-btn--close" aria-label={$t("common.close")} onclick={close} onpointerdown={(e) => e.stopPropagation()}>✕</button>
+      <button type="button" class="tw__bar-btn" aria-label={$t("trend.minimize")} onclick={minimize} onpointerdown={(e) => e.stopPropagation()}><Icon name="minus" size={12} /></button>
+      <button type="button" class="tw__bar-btn" aria-label={$t("trend.maximizeRestore")} onclick={toggleMaximize} onpointerdown={(e) => e.stopPropagation()}><Icon name="square" size={12} /></button>
+      <button type="button" class="tw__bar-btn tw__bar-btn--close" aria-label={$t("common.close")} onclick={close} onpointerdown={(e) => e.stopPropagation()}><Icon name="x" size={12} /></button>
     </div>
   </div>
   <PanelHeader title={$t("trend.title")} label={$t("trend.windowTitle")}>
@@ -259,7 +266,11 @@
     justify-content: center;
     border-radius: var(--tum-radius-xs);
     cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
+    transition: background 0.15s ease, color 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+
+  .tw__bar-btn:active {
+    transform: scale(0.94);
   }
 
   .tw__bar-btn:hover {

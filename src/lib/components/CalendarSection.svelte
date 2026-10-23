@@ -282,14 +282,13 @@
     border: 1px solid var(--tum-border-strong);
     border-radius: var(--tum-radius-sm);
     padding: 2px 6px;
-    outline: none;
     cursor: pointer;
     max-width: 190px;
   }
 
-  .cal-sec__sel:focus-visible {
-    border-color: var(--tum-accent);
-  }
+  /* 焦点环交给 tokens.css 的全局 :focus-visible 兜底（:where 零特异性）：
+     这里不再写 outline: none，否则会盖掉全局环；也不再写 focus 时改
+     border-color，避免「2px 描边 + 边框变色」双层指示。 */
 
   .cal-sec__sel option {
     background-color: var(--tum-bg-solid);

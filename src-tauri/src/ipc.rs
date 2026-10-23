@@ -4,7 +4,8 @@
 
 use crate::build_account_provider;
 use crate::dock::{
-    anchor_from_rect, anchor_rect, nearest_side, peek_rect, pill_span_for, DockAnchor, DockSide,
+    anchor_from_rect, anchor_rect, approach_step, nearest_side, peek_rect, pill_span_for, DockAnchor,
+    DockSide,
 };
 use crate::hub::HubDevice;
 use crate::local::LocalToolsPayload;
@@ -15,7 +16,8 @@ use crate::settings::Settings;
 use crate::AppState;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewWindow, WebviewWindowBuilder};
 
 /// A configured account plus its credential/registry state, for the Settings UI.
@@ -555,6 +557,37 @@ pub fn apply_anchor(window: &WebviewWindow, a: DockAnchor) -> bool {
     true
 }
 
+/// [`apply_anchor`] 的滑动版：目标矩形算法一致，把一次性 set_position 换成
+/// glide_window_to。返回语义与 apply_anchor 一致（true = 需要落盘）。
+///
+/// 拖拽中不滑动：拖拽期是 OS 拉拽与吸附的实时博弈，必须瞬时；滑动只属于
+/// 「松手落位」（sync_peek_window docked）路径。
+pub fn apply_anchor_glide(window: &WebviewWindow, a: DockAnchor) -> bool {
+    let Ok(pos) = window.outer_position() else { return false };
+    let Ok(size) = window.outer_size() else { return false };
+    let Ok(Some(monitor)) = window.current_monitor() else { return false };
+    let area = monitor.work_area();
+    let (nx, ny) = anchor_rect(
+        a,
+        f64::from(size.width),
+        f64::from(size.height),
+        f64::from(area.position.x),
+        f64::from(area.position.y),
+        f64::from(area.size.width),
+        f64::from(area.size.height),
+    );
+    if nx == f64::from(pos.x) && ny == f64::from(pos.y) {
+        return false;
+    }
+    glide_window_to(
+        window.clone(),
+        (nx.round() as i32, ny.round() as i32),
+        &GLIDE_GEN_MAIN,
+        Some("main"),
+    );
+    true
+}
+
 /// 回写「贴边锚点 + 自由位置」到 `config.toml`，让下次启动回到同一形态。
 ///
 /// 与 `apply_anchor` 分开是刻意的：几何函数保持同步纯函数，回写是**副作用**，
@@ -565,8 +598,10 @@ pub fn apply_anchor(window: &WebviewWindow, a: DockAnchor) -> bool {
 /// 浮动态则没有锚点可依；只写其一会留下半新半旧的状态——例如退出时胶囊已浮到
 /// 屏幕正中，配置里却还留着上次贴右的锚点，下次启动就被拉回右缘。
 ///
-/// `anchor == None` 即浮动态，此时把当前位置存进 `dashboard_x/y`（从项目第一天
-/// 起就只写不读，这里顺手接通）。
+/// `anchor == None` 即浮动态，此时把当前位置存进 `dashboard_x/y`——浮动态没有
+/// 锚点可依，下次启动要靠这两个字段回到原处（`settings::Settings::get_xy_now()`
+/// 读的就是它们）。贴边态**不写**这两个字段：几何由锚点反算，而落位滑动期间
+/// 读 live 位置会拿到半路过渡坐标。
 ///
 /// ⚠️ 这层是「读缓存 → 改 → 写文件」的**读改写**，必须串行：两个来源同时
 /// 落盘时，后写的那份可能带着过期字段把先写的覆盖掉。锁在这里拿，
@@ -591,10 +626,16 @@ async fn persist_placement_inner(app: &AppHandle, anchor: Option<DockAnchor>) {
     let settings = state.settings.clone();
     let mut next = settings.get().await.clone();
     let mut changed = next.dock != anchor;
-    if let Some(pos) = app
-        .get_webview_window("dashboard")
-        .and_then(|w| w.outer_position().ok())
-    {
+    // 贴边态几何由锚点反算，dashboard_x/y 只在浮动态有意义；滑动落位期间读
+    // live 位置会拿到半路过渡坐标（apply_anchor_glide 正把窗口滑向目标），
+    // 而浮动态启动恢复会用到该字段（get_xy_now）。所以只在浮动态读、写它。
+    let live_pos = if anchor.is_none() {
+        app.get_webview_window("dashboard")
+            .and_then(|w| w.outer_position().ok())
+    } else {
+        None
+    };
+    if let Some(pos) = live_pos {
         if next.dashboard_x != Some(pos.x) || next.dashboard_y != Some(pos.y) {
             next.dashboard_x = Some(pos.x);
             next.dashboard_y = Some(pos.y);
@@ -689,16 +730,127 @@ fn peek_placement(
 pub fn reposition_peek(window: &WebviewWindow) {
     let Some(peek) = window.app_handle().get_webview_window("peek") else { return; };
     let Some(anchor) = current_anchor(window) else { return };
-    let Some(pos) = peek_placement(window, anchor.side, anchor.along) else { return; };
+    let Some(pos) = peek_placement(window, anchor.side, anchor.along) else { return };
     if peek.outer_position().map(|cur| cur == pos).unwrap_or(false) {
         return;
     }
-    let _ = peek.set_position(pos);
+    let dragging = window
+        .app_handle()
+        .try_state::<AppState>()
+        .map(|s| s.pill_drag.load(Ordering::SeqCst))
+        .unwrap_or(false);
+    if dragging {
+        let _ = peek.set_position(pos);
+    } else {
+        glide_window_to(peek, (pos.x, pos.y), &GLIDE_GEN_PEEK, None);
+    }
+}
+
+/// 滑动动画代际：主窗与把手窗各一个计数器。新动画使旧线程退出，
+/// 避免两个线程互抢 set_position。
+static GLIDE_GEN_MAIN: AtomicU64 = AtomicU64::new(0);
+static GLIDE_GEN_PEEK: AtomicU64 = AtomicU64::new(0);
+
+const GLIDE_STEP_MS: u64 = 8; // glance：拖拽/跟随节拍
+const GLIDE_TAU_MS: f64 = 60.0; // glance：跟随时间常数
+// 600ms 封顶 = τ=60ms 的 10 个时间常数：残余位移 e^-10 ≈ 4.5e-5，
+// 即使 5000px 的大位移也收在 0.23px 内，必由 <0.5px 吸附规则落地。
+// （50 步/400ms 只够 393px 内落地：7.5·ln(2·gap) 步起才进吸附区。）
+const GLIDE_MAX_STEPS: u32 = 75;
+
+/// 让窗口从当前位置指数趋近 `to`（物理像素）。不阻塞调用方；
+/// 短命线程 + 8ms 步进；期间同窗新请求会取消旧动画（代际计数）。
+///
+/// `label` 只给主窗传 `Some("main")`：一次落位也就 1~2 条日志，噪声可忽略，
+/// 而「贴边卡一下」（issues/05 §1.7）正是这类日志要观测的现象。把手窗每次
+/// 落位要滑 26~37 步，逐条打只会把真正有用的行淹掉，故传 `None`。
+fn glide_window_to(
+    window: WebviewWindow,
+    to: (i32, i32),
+    gen: &'static AtomicU64,
+    label: Option<&'static str>,
+) {
+    // 即使目标等于当前位置也推进代际：这一步的目的是让「在跑的同窗旧动画」
+    // 停下（旧线程下一帧发现代际变了就退出），避免两条线程交替写同一窗口。
+    let my_gen = gen.fetch_add(1, Ordering::SeqCst) + 1;
+    let Ok(from) = window.outer_position() else { return };
+    if (from.x, from.y) == to {
+        return;
+    }
+    std::thread::spawn(move || {
+        if let Some(label) = label {
+            tracing::debug!(
+                target: "tum.window",
+                label = label,
+                gap_x = to.0 - from.x,
+                gap_y = to.1 - from.y,
+                target_x = to.0,
+                target_y = to.1,
+                "glide start"
+            );
+        }
+        let started = std::time::Instant::now();
+        let mut frames = 0u32;
+        let mut cur = (f64::from(from.x), f64::from(from.y));
+        for _ in 0..GLIDE_MAX_STEPS {
+            if gen.load(Ordering::SeqCst) != my_gen {
+                glide_end(label, "cancelled", frames, started); // 已被同窗新动画取代
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(GLIDE_STEP_MS));
+            let (nx, d1) = approach_step(
+                cur.0,
+                f64::from(to.0),
+                GLIDE_STEP_MS as f64,
+                GLIDE_TAU_MS,
+            );
+            let (ny, d2) = approach_step(
+                cur.1,
+                f64::from(to.1),
+                GLIDE_STEP_MS as f64,
+                GLIDE_TAU_MS,
+            );
+            cur = (nx, ny);
+            let _ = window.set_position(tauri::PhysicalPosition::new(
+                nx.round() as i32,
+                ny.round() as i32,
+            ));
+            frames += 1;
+            if d1 && d2 {
+                glide_end(label, "settled", frames, started);
+                return;
+            }
+        }
+        glide_end(label, "capped", frames, started);
+    });
+}
+
+/// 主窗滑动终态日志：三种出口（settled / cancelled / capped）共用一条消息，
+/// 靠 `reason` 区分，`frames` 是实际步数。`label == None` 时静默（把手窗）。
+fn glide_end(
+    label: Option<&'static str>,
+    reason: &'static str,
+    frames: u32,
+    started: std::time::Instant,
+) {
+    let Some(label) = label else { return };
+    tracing::debug!(
+        target: "tum.window",
+        label = label,
+        reason = reason,
+        frames = frames,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "glide end"
+    );
 }
 
 /// Snap the window to the nearest screen edge when it is dragged within
 /// `margin_logical` of one. Called from the dashboard's `Moved` window event.
 pub fn snap_to_edges(window: &WebviewWindow, margin_logical: f64) -> bool {
+    // 拖拽贴边是瞬时几何改写；先作废在跑的主窗滑动，否则滑动线程下一帧
+    // 会把窗口写回按旧几何算的目标。（dashboard 态目前没有主窗 glide，
+    // 但补上这一行可以让「所有几何写入者都推进代际」这条协议没有例外。）
+    GLIDE_GEN_MAIN.fetch_add(1, Ordering::SeqCst);
     let Ok(pos) = window.outer_position() else { return false; };
     let Ok(size) = window.outer_size() else { return false; };
     let Ok(Some(monitor)) = window.current_monitor() else { return false; };
@@ -786,6 +938,12 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
 
     let compact = app.state::<AppState>().compact_mode.clone();
 
+    // 模式切换是瞬时几何改写：作废在跑的滑动，否则旧线程下一帧会按旧尺寸把
+    // 窗口写回旧目标（贴右 168 宽 → 切 400 宽后会右侧探出屏幕）。
+    // 不能改成挂在 Resized 事件上：t=180ms 的 collapsePill 缩窗不需要重新锚定，
+    // 挂上去会把正常落位截停在半路。
+    GLIDE_GEN_MAIN.fetch_add(1, Ordering::SeqCst);
+
     // 改尺寸**之前**读锚点：旧尺寸才是胶囊的贴边尺寸。
     let anchor = current_anchor(&window);
 
@@ -826,10 +984,9 @@ pub async fn set_window_mode(app: AppHandle, mode: String) -> Result<(), String>
         other => return Err(format!("unknown window mode: {other}")),
     }
 
-    // 浮动位置也要持久化：dashboard_x/y 从项目第一天起就只写不读（见
-    // docs/superpowers/specs/2026-09-15-focus-provider-and-pill-design.md:133
-    // 「等 window-state 插件接管」——那步始终没做）。这里顺手接通；锚点一并
-    // 落盘，免得切完模式后配置里还留着上一次的形态。
+    // 浮动位置也要持久化：dashboard_x/y 只在浮动态有意义（贴边态几何由锚点
+    // 反算），但浮动态的启动恢复确实读这两个字段（get_xy_now），所以这里必须
+    // 写；锚点一并落盘，免得切完模式后配置里还留着上一次的形态。
     //
     // ⚠️ 必须**后台**落盘：这一步是同步写盘（tmp + rename），可能几十毫秒。
     // 它排在「窗口已经缩到 168 宽」之后，挡住返回就意味着「命令返回前前端
@@ -1122,7 +1279,7 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
             if state == "docked" {
                 // 贴死成功即回写持久化锚点，让下次启动回到同一条边、同一位置。
                 // 位置本就没动（apply_anchor 返回 false）时不写盘。
-                if apply_anchor(&dash, anchor) {
+                if apply_anchor_glide(&dash, anchor) {
                     // ⚠️ 落盘**放后台**：它走同步文件写（tmp + rename），几十毫秒量级，
                     // 而这一步就在「贴边收起」的热路径上——挡住它就等于把落盘延迟
                     // 加到每一次贴边上（这正是用户报告的「贴边有时候卡一下」）。
@@ -1211,6 +1368,10 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
 pub async fn set_pill_dragging(state: State<'_, AppState>, active: bool) -> Result<(), String> {
     state.pill_drag.store(active, Ordering::SeqCst);
     if active {
+        // 拖拽开始即作废在跑的主窗滑动：glide 每 8ms set_position 会和 OS 的
+        // 拖拽循环抢窗口，而它的 cur 是启动时建模的位置、不重读真实位置——
+        // 短拖松手后会被拽回旧模型坐标。
+        GLIDE_GEN_MAIN.fetch_add(1, Ordering::SeqCst);
         state.pill_last_move_ms
             .store(crate::now_ms(), Ordering::SeqCst);
     }
@@ -1267,6 +1428,18 @@ pub async fn open_settings(app: AppHandle) -> Result<(), String> {
             }
         });
     }
+
+    // Alt+F4 / 任务栏关闭：settings 窗靠 hide-not-destroy 复用，真被销毁的话
+    // 未保存的草稿就没了。拦下默认关闭，交给前端 requestClose 决定
+    // （无草稿时前端直接调 close_settings，等价于正常关闭）。
+    let win_for_close = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            // 定向发给 settings 窗：emit 是全局广播（见本文件 emit_to 的注释约定）。
+            let _ = win_for_close.emit_to("settings", "settings-close-requested", ());
+        }
+    });
 
     // Restore previous position/size if the window-state plugin has saved it.
     let _ = window.show();

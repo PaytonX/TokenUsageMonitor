@@ -10,3 +10,4 @@ export { default as RangePills } from "./RangePills.svelte";
 export { default as ZoomButton } from "./ZoomButton.svelte";
 export { default as Stat } from "./Stat.svelte";
 export { default as ColorSwatch } from "./ColorSwatch.svelte";
+export { default as Icon } from "./Icon.svelte";

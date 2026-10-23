@@ -17,6 +17,7 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
     RangePills,
     ColorSwatch,
     Stat,
+    Icon,
   } from "./atoms";
 
   interface Props {
@@ -422,7 +423,7 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
       class="mp__refresh"
       title={aggMode ? $t("model.refreshAllDevices") : $t("model.rescanLocalLogs")}
       onclick={() => void load(true)}
-    >↻</button>
+    ><Icon name="refresh" size={13} /></button>
   </PanelHeader>
 
   {#if aggMode && staleDevs.length > 0 && (modelList.length === 0)}
@@ -549,7 +550,10 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
     font-size: var(--tum-font-size-sm);
     line-height: 1;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+  .mp__refresh:active {
+    transform: scale(0.94);
   }
   .mp__refresh:hover {
     color: var(--tum-accent);

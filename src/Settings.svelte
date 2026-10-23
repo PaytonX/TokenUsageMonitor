@@ -55,7 +55,9 @@
   import { readCardOrder } from "./lib/prefs";
   import { applyLocaleSetting, t, type LangSetting } from "./lib/i18n/store";
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
+  import Icon from "./lib/components/atoms/Icon.svelte";
 import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draft";
+import { resolveCloseAction } from "./lib/settings-close";
 
   type Tab = "general" | "accounts" | "interaction" | "network" | "router" | "about";
 
@@ -219,6 +221,12 @@ import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draf
    * 字段多、来源分散，漏登记一个就等于漏掉一个撤销入口。
    */
   const hasDraft = $derived(settings !== null && isDirty(baseline, buildNext()));
+
+  // 草稿一旦清空（页脚保存/丢弃成功），确认条与它的状态一起复位，
+  // 否则下次有草稿时的第一次 ✕ 会被当成「二次确认」直接关窗。
+  $effect(() => {
+    if (!hasDraft) closeConfirm = false;
+  });
 
   function authKindFor(kind: string): "bearer_key" | "access_key_secret" | "local_token" {
     return presetMap.get(kind)?.auth_kind ?? "bearer_key";
@@ -792,9 +800,9 @@ import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draf
   function remainingColor(pct: number | undefined): string {
     if (pct === undefined || pct === null) return "var(--tx3)";
     const t = routerCfg.proactive_threshold_percent;
-    if (pct <= t) return "#ef4444";
-    if (pct <= t * 2) return "#f59e0b";
-    return "#22c55e";
+    if (pct <= t) return "var(--tum-crit)";
+    if (pct <= t * 2) return "var(--tum-warn)";
+    return "var(--tum-ok)";
   }
 
   function cooldownUntilText(iso?: string): string {
@@ -1061,19 +1069,25 @@ import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draf
   }
 
   async function handleSaveAll() {
+    // 与 handleClose 同构：saving 同时是按钮 disabled 的依据，异常路径也必须
+    // 复位，否则保存按钮会永久灰掉。
+    if (saving) return;
     saving = true;
-    const ok = await persistSettings();
-    if (ok) {
-      savedFlash = true;
-      setTimeout(() => (savedFlash = false), 2000);
-      // 触发一次刷新，让主面板立即反映新启用的账户；失败不阻塞保存。
-      try {
-        await forceRefresh();
-      } catch (e) {
-        genericError = String(e);
+    try {
+      const ok = await persistSettings();
+      if (ok) {
+        savedFlash = true;
+        setTimeout(() => (savedFlash = false), 2000);
+        // 触发一次刷新，让主面板立即反映新启用的账户；失败不阻塞保存。
+        try {
+          await forceRefresh();
+        } catch (e) {
+          genericError = String(e);
+        }
       }
+    } finally {
+      saving = false;
     }
-    saving = false;
   }
 
   /**
@@ -1107,11 +1121,54 @@ import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draf
     }
   }
 
+  // glance 学习：有未保存草稿时关闭必须先问。头部 ✕ 与 Esc 走 requestClose；
+  // 页脚「保存并关闭」是显式意图，保持直通 handleClose。
+  // 二次 ✕ = 坚持关闭，取保存为安全默认（比文案承诺更安全）
+  let closeConfirm = $state(false);
+
+  function requestClose() {
+    if (resolveCloseAction({ hasDraft, confirming: closeConfirm }) === "open-confirm") {
+      closeConfirm = true;
+      return;
+    }
+    closeConfirm = false;
+    void handleClose();
+  }
+
+  async function confirmCloseSave() {
+    closeConfirm = false;
+    await handleClose();
+  }
+
+  async function confirmCloseDiscard() {
+    if (busy !== null) return;
+    try {
+      await handleDiscard();
+      closeConfirm = false;
+      await closeSettings();
+    } catch {
+      // 丢弃失败：条子留着，窗口与草稿都在，用户可以重试或改用「保存并关闭」。
+    }
+  }
+
+  // 确认条出现时焦点落主按钮（键盘直达「保存并关闭」）。
+  function autofocus(node: HTMLElement) {
+    node.focus();
+  }
+
   async function handleClose() {
     // 关闭只做快速持久化并立即隐藏窗口，不等待网络轮询（save_settings 后端
     // 已发 settings_wake，主面板会自动重新轮询），避免"保存中"卡顿假死感。
-    await persistSettings();
-    await closeSettings();
+    // 保存失败时把窗口留在原地：草稿还在，用户可以重试；静默关掉等于丢改动。
+    // saving 兼作重入闸：头部 ✕、Esc、页脚「保存并关闭」、确认条主按钮四个
+    // 入口都汇到这里，连点不会发出两笔 save+close（按钮 disabled 也看它）。
+    if (saving) return;
+    saving = true;
+    try {
+      if (await persistSettings()) await closeSettings();
+    } finally {
+      saving = false;
+    }
   }
 
   function formatTestResult(r: TestResult | null): string {
@@ -1143,6 +1200,18 @@ import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draf
       routerCfg = { ...defaultRouterSettings(), ...(fresh.router ?? {}) };
       void refreshRouterStatus();
     });
+    // 窗口被 Alt+F4 / 任务栏关闭时，Rust 拦下 CloseRequested 并通知这里，
+    // 统一走 requestClose（有草稿先弹条，没有就正常保存关闭）。
+    let unlistenClose: (() => void) | undefined;
+    void getCurrentWindow()
+      .listen("settings-close-requested", () => requestClose())
+      .then((un) => {
+        unlistenClose = un;
+      })
+      .catch(() => {});
+    return () => {
+      unlistenClose?.();
+    };
   });
 async function handleMinimize() {
     await getCurrentWindow().minimize();
@@ -1154,10 +1223,17 @@ async function handleMinimize() {
 
 <svelte:window
   onkeydown={(e) => {
-    if (e.key === "Escape" && (pickerOpen || presetMenuFor)) {
+    if (e.key !== "Escape") return;
+    if (pickerOpen || presetMenuFor) {
       pickerOpen = false;
       presetMenuFor = null;
+      return;
     }
+    if (closeConfirm && hasDraft) {
+      closeConfirm = false;
+      return;
+    }
+    if (hasDraft) requestClose();
   }}
 />
 
@@ -1168,10 +1244,10 @@ async function handleMinimize() {
       <span class="settings__title">TokenUsageMonitor</span>
     </div>
     <div class="settings__win">
-      <button type="button" class="settings__win-btn" aria-label={$t("settings.win.minimize")} onclick={handleMinimize} onpointerdown={(e) => e.stopPropagation()}>—</button>
-      <button type="button" class="settings__win-btn" aria-label={$t("settings.win.maximize")} onclick={handleToggleMaximize} onpointerdown={(e) => e.stopPropagation()}>▢</button>
-      <button class="settings__close" onclick={handleClose} aria-label={$t("settings.footer.saveClose")}>
-        ✕
+      <button type="button" class="settings__win-btn" aria-label={$t("settings.win.minimize")} onclick={handleMinimize} onpointerdown={(e) => e.stopPropagation()}><Icon name="minus" size={12} /></button>
+      <button type="button" class="settings__win-btn" aria-label={$t("settings.win.maximize")} onclick={handleToggleMaximize} onpointerdown={(e) => e.stopPropagation()}><Icon name="square" size={12} /></button>
+      <button class="settings__close" onclick={requestClose} aria-label={$t("common.close")}>
+        <Icon name="x" size={12} />
       </button>
     </div>
   </header>
@@ -1669,7 +1745,7 @@ async function handleMinimize() {
                     presetMenuFor = null;
                   }}
                   aria-label={$t("common.close")}
-                >×</button>
+                ><Icon name="x" size={12} /></button>
               </header>
               <div class="preset-grid">
                 {#each catalog?.presets ?? [] as preset (preset.kind)}
@@ -1926,7 +2002,7 @@ async function handleMinimize() {
                     class="btn btn--ghost"
                     aria-label={$t("settings.tools.removeRoot")}
                     onclick={() => toolDataRoots = toolDataRoots.filter((_, j) => j !== i)}
-                  >×</button>
+                  ><Icon name="x" size={12} /></button>
                 </div>
               {/each}
             </div>
@@ -2174,7 +2250,7 @@ async function handleMinimize() {
                             <span class="ops">
                               <button type="button" class="rt-op" disabled={i === 0} onclick={() => moveCandidate(i, -1)} title={$t("settings.router.moveUp")}>↑</button>
                               <button type="button" class="rt-op" disabled={i === route.candidates.length - 1} onclick={() => moveCandidate(i, 1)} title={$t("settings.router.moveDown")}>↓</button>
-                              <button type="button" class="rt-op rt-op--del" onclick={() => removeCandidate(i)} title={$t("settings.router.removeLine")}>✕</button>
+                              <button type="button" class="rt-op rt-op--del" onclick={() => removeCandidate(i)} title={$t("settings.router.removeLine")}><Icon name="x" size={11} /></button>
                             </span>
                           </div>
                           <div class="rt-line__row">
@@ -2373,6 +2449,36 @@ async function handleMinimize() {
     </div>
   {/if}
 
+  {#if closeConfirm && hasDraft}
+    <div
+      class="close-confirm"
+      role="alertdialog"
+      aria-label={$t("settings.closeConfirm.title")}
+    >
+      <span class="close-confirm__text">{$t("settings.closeConfirm.body")}</span>
+      <span class="close-confirm__actions">
+        <button
+          type="button"
+          class="btn btn--primary"
+          use:autofocus
+          disabled={saving || busy !== null}
+          onclick={confirmCloseSave}
+        >{$t("settings.closeConfirm.saveClose")}</button>
+        <button
+          type="button"
+          class="btn btn--ghost"
+          disabled={saving || busy !== null}
+          onclick={confirmCloseDiscard}
+        >{$t("settings.closeConfirm.discardClose")}</button>
+        <button
+          type="button"
+          class="btn btn--ghost"
+          onclick={() => (closeConfirm = false)}
+        >{$t("common.cancel")}</button>
+      </span>
+    </div>
+  {/if}
+
   <footer class="settings__footer">
     {#if dirtyFlash}
       <span class="footer-flash">{$t("settings.footer.discarded")}</span>
@@ -2474,7 +2580,11 @@ async function handleMinimize() {
     place-items: center;
     border-radius: var(--tum-radius-xs);
     -webkit-app-region: no-drag;
-    transition: color 0.15s ease, background 0.15s ease;
+    transition: color 0.15s ease, background 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+
+  .settings__close:active {
+    transform: scale(0.94);
   }
 
   .settings__close:hover {
@@ -2500,7 +2610,11 @@ async function handleMinimize() {
     border-radius: var(--tum-radius-xs);
     font-size: 12px;
     line-height: 1;
-    transition: color 0.15s ease, background 0.15s ease;
+    transition: color 0.15s ease, background 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+
+  .settings__win-btn:active {
+    transform: scale(0.94);
   }
 
   .settings__win-btn:hover {
@@ -2626,7 +2740,7 @@ async function handleMinimize() {
     background: rgba(255, 255, 255, 0.02);
   }
   .creds-optional__title {
-    font-size: 12.5px;
+    font-size: var(--tum-font-size-base);
     font-weight: 650;
     color: var(--tum-text-secondary, #c9d1d9);
     margin-bottom: 5px;
@@ -2699,7 +2813,7 @@ async function handleMinimize() {
   }
 
   .about-update__error {
-    color: #ff6b6b;
+    color: var(--tum-crit);
   }
 
   /* --- Interval / select ------------------------------------------------ */
@@ -2943,7 +3057,7 @@ async function handleMinimize() {
     transition: background 0.15s ease, border-color 0.15s ease;
   }
   .acct-row:hover {
-    background: var(--tum-surface-hover);
+    background: var(--tum-surface-hover-raised);
   }
   .acct-row:focus-visible {
     outline: 1px solid var(--tum-accent-stroke);
@@ -3500,6 +3614,26 @@ async function handleMinimize() {
     word-break: break-all;
   }
 
+  /* glance 学习：关闭确认条。行内替代系统弹窗，警示用 warn 色但不阻断布局。 */
+  .close-confirm {
+    display: flex;
+    align-items: center;
+    gap: var(--tum-space-3);
+    margin: 0 var(--tum-space-5) var(--tum-space-2);
+    padding: var(--tum-space-2) var(--tum-space-3);
+    border: 1px solid var(--tum-warn-stroke);
+    border-radius: var(--tum-radius-md);
+    background: var(--tum-warn-fill);
+    color: var(--tum-text-primary);
+    font-size: var(--tum-font-size-base);
+  }
+
+  .close-confirm__actions {
+    display: inline-flex;
+    gap: var(--tum-space-2);
+    margin-left: auto;
+  }
+
   .footer-flash {
     margin-right: auto;
     font-size: var(--tum-font-size-sm);
@@ -3541,16 +3675,16 @@ async function handleMinimize() {
     display: flex; align-items: center; gap: 11px;
     padding: 15px 17px;
   }
-  .rt-card__title { margin: 0; font-size: 15.5px; font-weight: 650; }
+  .rt-card__title { margin: 0; font-size: var(--tum-font-size-lg); font-weight: 650; }
   .rt-card__name {
     background: transparent; border: 1px solid transparent; color: var(--tum-text-primary, #e6edf3);
-    font-size: 15.5px; font-weight: 650; padding: 4px 8px; border-radius: 8px;
+    font-size: var(--tum-font-size-lg); font-weight: 650; padding: 4px 8px; border-radius: 8px;
     min-width: 0; flex: none; max-width: 260px; transition: 0.15s;
   }
   .rt-card__name:hover { border-color: var(--tum-border, rgba(255, 255, 255, 0.1)); }
   .rt-card__name:focus { border-color: var(--tum-accent, #4cc2ff); background: rgba(0, 0, 0, 0.2); }
   .rt-card .btn { white-space: nowrap; flex: none; }
-  .rt-desc { padding: 0 17px 12px; margin: 0; font-size: 12.5px; color: var(--tum-text-muted, #8b949e); line-height: 1.6; }
+  .rt-desc { padding: 0 17px 12px; margin: 0; font-size: var(--tum-font-size-base); color: var(--tum-text-muted, #8b949e); line-height: 1.6; }
   .rt-hint { font-size: 12px; color: var(--tum-text-muted, #8b949e); }
   .rt-empty { padding: 18px; }
   .rt-empty .rt-card__title { margin-bottom: 8px; }
@@ -3566,7 +3700,7 @@ async function handleMinimize() {
   }
   .rt-link {
     background: none; border: none; color: var(--tum-accent, #4cc2ff);
-    font-size: 12.5px; font-weight: 600; padding: 4px; cursor: pointer; white-space: nowrap;
+    font-size: var(--tum-font-size-base); font-weight: 600; padding: 4px; cursor: pointer; white-space: nowrap;
   }
   .rt-link:hover { text-decoration: underline; }
 
@@ -3596,7 +3730,7 @@ async function handleMinimize() {
     margin: 0 0 3px; font-size: 13px; font-weight: 650;
     display: flex; align-items: baseline; gap: 8px;
   }
-  .rt-sect__sub { font-size: 11.5px; color: var(--tum-text-muted, #8b949e); font-weight: 400; }
+  .rt-sect__sub { font-size: var(--tum-font-size-sm); color: var(--tum-text-muted, #8b949e); font-weight: 400; }
 
   .rt-grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -3606,7 +3740,7 @@ async function handleMinimize() {
   /* 字段标签固定单行高度：否则「模型（…）」这类长标签折行会把下方输入框
    * 顶低，与相邻字段错位。完整文案由 title 承载。 */
   .rt-label {
-    font-size: 11.5px; font-weight: 600; color: var(--tum-text-muted, #8b949e);
+    font-size: var(--tum-font-size-sm); font-weight: 600; color: var(--tum-text-muted, #8b949e);
     height: 16px; line-height: 16px; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis;
   }
@@ -3621,10 +3755,10 @@ async function handleMinimize() {
     box-shadow: 0 0 0 3px rgba(76, 194, 255, 0.14);
   }
   select.rt-input { cursor: pointer; }
-  .rt-mono { font-family: var(--tum-font-mono, monospace); font-size: 12.5px; }
+  .rt-mono { font-family: var(--tum-font-mono, monospace); font-size: var(--tum-font-size-base); }
   .rt-url-row { display: flex; align-items: center; gap: 8px; }
   .rt-tag {
-    flex: none; font-size: 10.5px; font-weight: 650; color: var(--tum-text-muted, #8b949e);
+    flex: none; font-size: var(--tum-font-size-xs); font-weight: 650; color: var(--tum-text-muted, #8b949e);
     background: rgba(0, 0, 0, 0.25); border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
     padding: 2px 7px; border-radius: 6px; white-space: nowrap;
   }
@@ -3636,15 +3770,15 @@ async function handleMinimize() {
     overflow: hidden; display: flex; border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
   }
   .rt-gauge__zone { height: 100%; transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
-  .rt-gauge__zone--low { background: #ef4444; opacity: 0.55; }
-  .rt-gauge__zone--hi { background: #22c55e; opacity: 0.42; }
+  .rt-gauge__zone--low { background: var(--tum-crit); opacity: 0.55; }
+  .rt-gauge__zone--hi { background: var(--tum-ok); opacity: 0.42; }
   .rt-gauge__line {
-    position: absolute; top: 8px; width: 2px; height: 22px; background: #ef4444;
+    position: absolute; top: 8px; width: 2px; height: 22px; background: var(--tum-crit);
     transform: translateX(-1px); transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1); pointer-events: none;
   }
   .rt-gauge__line span {
     position: absolute; top: -19px; left: 50%; transform: translateX(-50%);
-    white-space: nowrap; font-size: 10.5px; font-weight: 700; color: #ef4444;
+    white-space: nowrap; font-size: var(--tum-font-size-xs); font-weight: 700; color: var(--tum-crit);
     background: var(--tum-surface, #161b22); padding: 1px 6px; border-radius: 5px;
     border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
   }
@@ -3659,18 +3793,18 @@ async function handleMinimize() {
   }
   .rt-gauge__range:active { cursor: grabbing; }
   .rt-gauge__scale {
-    display: flex; justify-content: space-between; font-size: 10.5px;
+    display: flex; justify-content: space-between; font-size: var(--tum-font-size-xs);
     color: var(--tum-text-muted, #64748b); margin-top: 3px;
   }
   .rt-gauge__state {
     margin-top: 12px; padding: 11px 13px; border-radius: 9px;
     background: rgba(0, 0, 0, 0.22); border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
-    font-size: 12.5px; color: var(--tum-text-muted, #8b949e); line-height: 1.6; transition: 0.3s;
+    font-size: var(--tum-font-size-base); color: var(--tum-text-muted, #8b949e); line-height: 1.6; transition: 0.3s;
   }
   .rt-gauge__state strong { color: var(--tum-text-primary, #e6edf3); font-weight: 650; }
   .rt-gauge__state--warn {
-    background: rgba(239, 68, 68, 0.1);
-    border-color: rgba(239, 68, 68, 0.32);
+    background: var(--tum-danger-fill);
+    border-color: color-mix(in srgb, var(--tum-crit) 32%, transparent);
     color: var(--tum-text-primary, #e6edf3);
   }
 
@@ -3682,17 +3816,17 @@ async function handleMinimize() {
     animation: rtCardIn 0.3s ease both;
   }
   .rt-probe__t {
-    font-size: 12.5px; font-weight: 640; color: var(--tum-text-primary, #e6edf3);
+    font-size: var(--tum-font-size-base); font-weight: 640; color: var(--tum-text-primary, #e6edf3);
     margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   }
   .rt-probe__steps { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
   .rt-stp {
-    font-size: 10.5px; font-weight: 650; padding: 3px 8px; border-radius: 6px;
+    font-size: var(--tum-font-size-xs); font-weight: 650; padding: 3px 8px; border-radius: 6px;
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
     color: var(--tum-text-muted, #64748b);
   }
-  .rt-stp--done { color: #34d399; border-color: rgba(52, 211, 153, 0.4); }
+  .rt-stp--done { color: var(--tum-ok); border-color: color-mix(in srgb, var(--tum-ok) 40%, transparent); }
   .rt-stp--now {
     color: var(--tum-accent, #4cc2ff); border-color: var(--tum-accent, #4cc2ff);
     animation: rtStepPop 0.3s cubic-bezier(0.34, 1.5, 0.5, 1) both;
@@ -3727,11 +3861,11 @@ async function handleMinimize() {
   }
   .rt-arrow { color: var(--tum-text-muted, #64748b); font-size: 12px; }
   .rt-key {
-    font-family: var(--tum-font-mono, monospace); font-size: 11.5px;
+    font-family: var(--tum-font-mono, monospace); font-size: var(--tum-font-size-sm);
     padding: 4px 9px; border-radius: 8px; color: var(--tum-text-muted, #8b949e);
     background: rgba(0, 0, 0, 0.25); border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
   }
-  .btn--sm { padding: 3px 9px; font-size: 11.5px; white-space: nowrap; flex: none; }
+  .btn--sm { padding: 3px 9px; font-size: var(--tum-font-size-sm); white-space: nowrap; flex: none; }
 
   /* 折叠（grid-template-rows 高度动画） */
   .rt-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.32s cubic-bezier(0.4, 0, 0.2, 1); }
@@ -3774,7 +3908,7 @@ async function handleMinimize() {
     0%, 100% { box-shadow: 0 0 0 3px rgba(76, 194, 255, 0.13); }
     50% { box-shadow: 0 0 0 3px rgba(76, 194, 255, 0.26); }
   }
-  .rt-line--low { border-color: rgba(245, 158, 11, 0.35); }
+  .rt-line--low { border-color: color-mix(in srgb, var(--tum-warn) 35%, transparent); }
   .rt-line__num {
     position: absolute; left: 9px; top: 13px; width: 32px; height: 32px; border-radius: 50%;
     display: grid; place-items: center; font-size: 13px; font-weight: 700; z-index: 2;
@@ -3788,24 +3922,26 @@ async function handleMinimize() {
   }
   .rt-line__hd { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; flex-wrap: wrap; }
   .rt-line__hd .line-badge { flex: none; }
-  .rt-line__ttl { font-size: 13.5px; font-weight: 650; }
+  .rt-line__ttl { font-size: var(--tum-font-size-base); font-weight: 650; }
   .rt-line--on .rt-line__ttl { color: var(--tum-accent, #4cc2ff); }
   .rt-line__row {
     display: grid; grid-template-columns: 1fr 1.25fr; gap: 12px; margin-bottom: 12px;
   }
   @media (max-width: 720px) { .rt-line__row { grid-template-columns: 1fr; } }
-  .rt-line__err { margin: 8px 0 0; font-size: 11.5px; color: #f87171; }
+  .rt-line__err { margin: 8px 0 0; font-size: var(--tum-font-size-sm); color: var(--tum-crit); }
   .ops { display: flex; gap: 4px; }
   .rt-op {
     width: 27px; height: 27px; display: grid; place-items: center;
     border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.09));
     background: rgba(255, 255, 255, 0.04); border-radius: 7px;
-    color: var(--tum-text-muted, #8b949e); font-size: 11px; cursor: pointer; transition: 0.14s;
+    color: var(--tum-text-muted, #8b949e); font-size: 11px; cursor: pointer; transition: 0.14s, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
     flex: none;
   }
   .rt-op:hover:not(:disabled) { color: var(--tum-text-primary, #e6edf3); transform: translateY(-1px); }
-  .rt-op--del:hover:not(:disabled) { color: #f87171; border-color: #f87171; }
+  .rt-op--del:hover:not(:disabled) { color: var(--tum-crit); border-color: var(--tum-crit); }
   .rt-op:disabled { opacity: 0.3; cursor: default; }
+  /* :not(:disabled) 使特异性与 :hover 规则持平（各 0,3,0），靠源序压过 hover 的 translateY，否则按压位移永不生效 */
+  .rt-op:active:not(:disabled) { transform: scale(0.94); }
 
   /* 模型下拉 */
   .rt-model-wrap { position: relative; display: flex; gap: 6px; }
@@ -3824,7 +3960,7 @@ async function handleMinimize() {
   }
   .rt-models button {
     display: block; width: 100%; text-align: left; background: none; border: 0;
-    padding: 6px 9px; border-radius: 6px; cursor: pointer; font-size: 12.5px;
+    padding: 6px 9px; border-radius: 6px; cursor: pointer; font-size: var(--tum-font-size-base);
     font-family: var(--tum-font-mono, monospace); color: var(--tum-text-muted, #8b949e);
   }
   .rt-models button:hover { background: rgba(76, 194, 255, 0.12); color: var(--tum-accent, #4cc2ff); }
@@ -3851,21 +3987,21 @@ async function handleMinimize() {
 
   /* 状态徽标 / 圆点 */
   .line-badge {
-    display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600;
+    display: inline-flex; align-items: center; gap: 5px; font-size: var(--tum-font-size-sm); font-weight: 600;
     padding: 2px 9px; border-radius: 999px; white-space: nowrap;
     background: rgba(255, 255, 255, 0.05); color: var(--tum-text-muted, #8b949e);
     border: 1px solid var(--tum-border, rgba(255, 255, 255, 0.08));
     transition: background 0.3s, color 0.3s;
   }
-  .line-badge--ok { background: rgba(34, 197, 94, 0.14); color: #34d399; border-color: transparent; }
-  .line-badge--warn { background: rgba(245, 158, 11, 0.14); color: #fbbf24; border-color: transparent; }
-  .line-badge--bad { background: rgba(239, 68, 68, 0.16); color: #f87171; border-color: transparent; }
+  .line-badge--ok { background: color-mix(in srgb, var(--tum-ok) 14%, transparent); color: var(--tum-ok); border-color: transparent; }
+  .line-badge--warn { background: color-mix(in srgb, var(--tum-warn) 14%, transparent); color: var(--tum-warn); border-color: transparent; }
+  .line-badge--bad { background: color-mix(in srgb, var(--tum-crit) 16%, transparent); color: var(--tum-crit); border-color: transparent; }
   .rt-dot {
     width: 6px; height: 6px; border-radius: 50%; flex: none;
     background: currentColor; color: var(--tum-text-muted, #8b949e);
   }
   .rt-dot--live { animation: rtPulse 1.7s ease-in-out infinite; }
-  .rt-dot--err { background: #f87171; }
+  .rt-dot--err { background: var(--tum-crit); }
   @keyframes rtPulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }

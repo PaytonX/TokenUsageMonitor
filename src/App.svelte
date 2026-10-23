@@ -86,8 +86,10 @@
   import ModelPanel from "./lib/components/ModelPanel.svelte";
   import DevicePanel from "./lib/components/DevicePanel.svelte";
   import PillsOrSelect from "./lib/components/PillsOrSelect.svelte";
+  import Icon from "./lib/components/atoms/Icon.svelte";
   import { brandColorFor, EXPERIMENTAL_KINDS } from "./lib/brand-glyphs";
   import { t } from "./lib/i18n/store";
+  import { durMs } from "./lib/motion/tokens";
 
   type Mode = "dashboard" | "compact";
 
@@ -324,9 +326,9 @@
   // PILL_PEEK_LEAD_MS(120) 与滑出的淡出时长是**耦合**的：
   // 淡出走完的时刻正好是把手复现的时刻，两者一旦错开就会看到把手浮在
   // 半透明胶囊上。数值巧合而已，改任一侧都要同时改另一侧。
-  const PILL_SLIDE_MS = 180; // = --tum-dur-slide-out（Glance CLOSE 同样是 180ms）
-  const PILL_PEEK_LEAD_MS = 120; // 与淡出相结束时点对齐
-  const PILL_REVEAL_MINI_MS = 200; // 滑入的淡入相（140ms）走完后再展开明细
+  const PILL_SLIDE_MS = durMs("--tum-dur-slide-out", 180); // = --tum-dur-slide-out（Glance CLOSE 同样是 180ms）
+  const PILL_PEEK_LEAD_MS = durMs("--tum-dur-instant", 120); // 与淡出相结束时点对齐
+  const PILL_REVEAL_MINI_MS = durMs("--tum-dur-base", 200); // 滑入的淡入相（140ms）走完后再展开明细
   const PILL_DOCK_DELAY_MS = 320; // 指针离开后停留多久才收起
   /**
    * 滑出结束后再等多久才缩窗（ms）。0 = 与滑出同刻缩（现状）。
@@ -1474,7 +1476,7 @@
               e.stopPropagation();
               void closeApp();
             }}
-          >✕</button>
+          ><Icon name="x" size={11} /></button>
         </div>
         {#if pillExpanded}
           <!-- 明细原本是硬切：{#if} 挂上即出现、消失即消失。
@@ -1509,7 +1511,7 @@
         {:else}
           <ProgressRing value={headerMoney ? 0 : ringArcValue} label={headerMoney ?? ringArcLabel} size={28} stroke={3} idle={snapshots.length === 0 || !!headerMoney} countdown={displayRemaining} />
         {/if}
-        <button class="shell__btn" onclick={refresh} title={$t("app.refreshNow")}>↻</button>
+        <button class="shell__btn" onclick={refresh} title={$t("app.refreshNow")}><Icon name="refresh" size={13} /></button>
         <button
           type="button"
           class="shell__btn shell__btn--router"
@@ -1524,9 +1526,9 @@
             class:router-dot--err={!!routerBindError}
           ></span>⇄
         </button>
-        <button class="shell__btn" onclick={() => openSettings()} title={$t("app.settings")}>⚙</button>
-        <button class="shell__btn" onclick={toggleMode} title={$t("app.collapseToMini")}>⤢</button>
-        <button class="shell__btn shell__btn--close" onclick={closeApp} title={$t("common.close")}>×</button>
+        <button class="shell__btn" onclick={() => openSettings()} title={$t("app.settings")}><Icon name="settings" size={13} /></button>
+        <button class="shell__btn" onclick={toggleMode} title={$t("app.collapseToMini")}><Icon name="maximize" size={13} /></button>
+        <button class="shell__btn shell__btn--close" onclick={closeApp} title={$t("common.close")}><Icon name="x" size={13} /></button>
       </div>
     </header>
 
@@ -1862,11 +1864,15 @@
     cursor: pointer;
     font-size: var(--tum-font-size-sm);
     line-height: 1;
-    transition: all 0.15s ease;
+    transition: all 0.15s ease, transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font-family: var(--tum-font-mono);
+  }
+
+  .shell__btn:active {
+    transform: scale(0.94);
   }
 
   .shell__btn:hover {
@@ -2164,7 +2170,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 10.5px;
+    font-size: var(--tum-font-size-xs);
     font-weight: 600;
     font-family: var(--tum-font);
     letter-spacing: 0.2px;
@@ -2194,7 +2200,12 @@
     transition:
       opacity var(--tum-dur-fast, 150ms) var(--tum-ease-spring),
       background var(--tum-dur-fast, 150ms) ease,
-      color var(--tum-dur-fast, 150ms) ease;
+      color var(--tum-dur-fast, 150ms) ease,
+      transform var(--tum-dur-fast, 150ms) var(--tum-ease-spring);
+  }
+
+  .pill__close:active {
+    transform: scale(0.9);
   }
 
   .pill.is-strip-visible .pill__close {
