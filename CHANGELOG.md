@@ -8,13 +8,42 @@
 ## [未发布] / Unreleased
 
 <!--
-在此累积尚未发布的变更。新增条目请用下面的小节标题，PR 合并后由维护者归并。
+新增条目请用下面的小节标题，PR 合并后由维护者归并。
+-->
+
+## [0.3.1] - 2026-10-27
+
+本版把用量归因从「模型名」升级为「计费账户」，接入 OpenCode CLI 的 token 用量与百分比额度历史；
+同时修复设置/路由保存被旧设置快照覆盖、Hermes 在 WSL 下断流与重复记账、卡片拖拽手感，
+并给胶囊加入聚焦账户的逐窗口明细。
 
 ### 新增
+
+- **OpenCode CLI 用量接入**：扫描 `~/.local/share/opencode/opencode.db` 的 `message` 表，按 `(providerID, modelID)` 记账；同一模型经不同账户调用的用量从此分开归属
+- **账本增加计费账户维度**：`usage_daily.provider` 进入主键，历史库启动时自动事务化重建；趋势/日历/模型页统一「账户优先、模型名兜底」
+- **百分比额度进入账户卡片详情**：OpenCode 的已用百分比按月度窗口差分累加并双写账本；账户卡片显示本月已用、今日增量、有效样本天数，多 Key 按订阅指纹去重、多订阅按容量取均值，永不与 token 相加
+- **胶囊窗口明细**：聚焦某个账户时，悬停胶囊展开该账户的 5h / 日 / 周 / 月窗口、已用额度与重置倒计时；`focus=all` 与按量付费账户保留全账户迷你列表
+
 ### 变更
+
+- 趋势/日历按**计费账户**归因：dsh 与 Hermes 的 `provider` 字段不再被丢弃，`deepseek-v4.1-flash` 经 OpenCode Go 调用时记在 OpenCode 名下
+- 模型页把小份额模型（<2%）与 `auto` 占位桶收进灰色「其他」浮层，折线图保底 96px，不再被标签墙挤扁
+- 卡片选中与日历联动解耦：无按日序列的账户（OpenCode / Codex）也能被选中，只是不高亮日历
+- 工具 watch 每轮只重放一次账本；OpenCode 的 percent 日值改为月度窗口差分 + 累加写入
+
 ### 修复
+
+- **设置/路由保存被旧快照覆盖**：胶囊展开、路由快速开关、语言/倒计时切换不再用各窗口的旧 `settings` 整对象写；账户增删会广播完整设置，设置页的路由草稿不再被外部事件冲掉（此前会反复提示 `accounts` 修改，路由保存后也可能被回退）
+- **Hermes 在 WSL 下断流与重复记账**：9p 上只读打开失败时改用临时副本（故意不拷 `-shm`）；库不可读时不写基线；升级后的基线键迁移只重建键不重种；尾部补齐只处理已有基线的桶；Windows/WSL 双副本的同会话去重
+- **幽灵 Provider 来源双计**：启动与删除账户时按当前账户集合清理已不存在的 `kind='provider'` 来源（如 `volcengine` 与 `test-volcengine`）
+- **OpenCode 日用量失真**：只取月度窗口差分，日值改累加写入，不再出现单日超过 100% 或只记录当天最大增量
+- **OpenCode 卡片点不动**：焦点选中不再要求该 kind 有日历序列
+- **卡片拖拽排序**：拖动期间列表静止并显示落点线，松手才提交，长列表支持边缘自动滚动
+- **NSIS 安装包缺 `WebView2Loader.dll`**：把 GNU 工具链运行期需要的 DLL 放入 `bundle.resources`，MSI / NSIS 都会装到 exe 同级
+
 ### 文档
--->
+
+- 新增 `docs/adr/0001-percent-quota-usage.md`，并在 `docs/usage-ledger.md` 补全额度口径
 
 ## [0.3.0] - 2026-10-07
 
@@ -141,7 +170,8 @@ TokenRouter 本地路由代理、多端同步（P2P）与 Windows 透明置顶�
 - TokenRouter 端到端集成测试：直通记账 / SSE / 429 failover / 鉴权 /
   停用 503 / 全冷却
 
-[未发布]: https://github.com/PaytonX/TokenUsageMonitor/compare/v0.3.0...HEAD
+[未发布]: https://github.com/PaytonX/TokenUsageMonitor/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/PaytonX/TokenUsageMonitor/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/PaytonX/TokenUsageMonitor/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/PaytonX/TokenUsageMonitor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/PaytonX/TokenUsageMonitor/releases/tag/v0.1.0
