@@ -18,12 +18,17 @@ pub fn spawn_tool_watcher(app: tauri::AppHandle, local: SharedLocalCache, storag
     tauri::async_runtime::spawn(async move {
         let mut last: HashMap<String, String> = HashMap::new();
         loop {
+            // 本轮是否有工具变化。落库（persist_all_tools）是"全部工具全量回放"，
+            // 一轮里变化几个工具都只需要写一次：3 秒一轮、opencode 的 WAL 每个
+            // 回合都在变，逐工具 persisting 会把整本账反复重写。
+            let mut dirty = false;
             for tool_id in local::TOOL_IDS {
                 let fp = local::cache::tool_fingerprint(tool_id);
                 if last.get(tool_id) == Some(&fp) {
                     continue; // 日志未变 → 此工具跳过
                 }
                 last.insert(tool_id.to_string(), fp);
+                dirty = true;
                 // jsonl 追加型工具走字节级增量续读（只解析新增行）；其余整工具重扫。
                 let report = if local::delta::is_jsonl_tool(tool_id) {
                     local::delta::refresh_jsonl_tool(&local, &storage, tool_id).await
@@ -31,10 +36,12 @@ pub fn spawn_tool_watcher(app: tauri::AppHandle, local: SharedLocalCache, storag
                     local::scan_tool(tool_id, storage.as_ref())
                 };
                 update_cache(&local, tool_id, report).await;
-                if tool_id == "minimax-code" {
-                    if let Some(payload) = local.cached().await {
-                        local::persist_all_tools(storage.as_ref(), &payload.tools);
-                    }
+                // 账本由循环外的 `dirty` 分支统一重放：`persist_all_tools` 是"全部
+                // 工具、全量回放、幂等"的语义，一轮里变几个工具都只需写一次。
+            }
+            if dirty {
+                if let Some(payload) = local.cached().await {
+                    local::persist_all_tools(storage.as_ref(), &payload.tools);
                 }
                 let _ = app.emit("tools-updated", ());
             }

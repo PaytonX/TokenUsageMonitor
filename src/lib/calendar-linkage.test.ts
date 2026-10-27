@@ -10,6 +10,7 @@ import {
   LEVEL_ALPHA,
   paintCell,
   providerKeyForKind,
+  toggleCardFocus,
 } from "./calendar-linkage";
 
 describe("ledgerSeriesForKind", () => {
@@ -91,17 +92,76 @@ describe("highlightKeyForKind", () => {
   });
 });
 
+describe("toggleCardFocus", () => {
+  // 回归：OpenCode 卡片点不动。旧实现把「选中」与「日历联动」绑在一处
+  // （`const series = ledgerSeriesForKind(...); if (!series) return;`），
+  // 而 opencode / codex 这类差分类 kind 没有账本序列 → 整张卡片静默无响应：
+  // 没有焦点圆环、顶棚读数不变、迷你胶囊不切换。用户报的就是这个。
+  it("无账本序列的 kind 仍可被选中（回归：OpenCode 卡片点不动）", () => {
+    // highlightKey 退化为 kind 本身：OpenCode 的用量在额度轨道里，
+    // QuotaLane 用 `highlightKey === group.kind` 匹配；token 日历那边
+    // dimOthers 对不存在的 id 是空操作，不会多出空序列。
+    expect(toggleCardFocus("opencode", "opencode", "all")).toEqual({
+      focus: "opencode",
+      highlightKey: "opencode",
+    });
+    // codex 同属差分类/实验性，另一条真实可复现路径。
+    expect(toggleCardFocus("codex", "codex", "all")).toEqual({
+      focus: "codex",
+      highlightKey: "codex",
+    });
+  });
+
+  it("有账本序列的 kind 选中同时预置日历高亮", () => {
+    expect(toggleCardFocus("minimax", "minimax", "all")).toEqual({
+      focus: "minimax",
+      highlightKey: "minimax",
+    });
+    // 账户日账 kind：日历里另有本机归因层，同样可高亮。
+    expect(toggleCardFocus("volcengine", "volcengine-9-0", "all")).toEqual({
+      focus: "volcengine-9-0",
+      highlightKey: "volcengine",
+    });
+  });
+
+  it("再点已聚焦的卡片 = 取消焦点（含从下拉里选中的情况）", () => {
+    // 旧实现要求 highlightKey !== null 才允许取消，于是从焦点下拉里选中的
+    // 差分类 provider（highlightKey 恒为 null）永远退不回"全部"。
+    expect(toggleCardFocus("opencode", "opencode", "opencode")).toEqual({
+      focus: "all",
+      highlightKey: null,
+    });
+    expect(toggleCardFocus("minimax", "minimax", "minimax")).toEqual({
+      focus: "all",
+      highlightKey: null,
+    });
+  });
+
+  it("点另一张卡片时焦点转移、不被旧高亮卡住", () => {
+    expect(toggleCardFocus("deepseek", "deepseek", "minimax")).toEqual({
+      focus: "deepseek",
+      highlightKey: "deepseek",
+    });
+    expect(toggleCardFocus("opencode", "opencode", "minimax")).toEqual({
+      focus: "opencode",
+      highlightKey: "opencode",
+    });
+  });
+});
+
 /** 构造一行账本。model 为 "" 即来源总量行。 */
 const row = (
   source: string,
   date: string,
   model: string,
   total: number,
+  provider = "",
 ) => ({
   source,
   kind: "tool" as const,
   date,
   model,
+  provider,
   input: total,
   cache_read: 0,
   output: 0,
@@ -150,6 +210,17 @@ describe("buildLedgerBreakdown", () => {
     expect(buildLedgerBreakdown(rows).size).toBe(0);
   });
 
+  it("账本记了计费账户时按账户归因，而不是模型名", () => {
+    // 用户实测：经 OpenCode Go 调 deepseek-v4.1-flash，趋势/日历却全算进
+    // DeepSeek（879 条消息 / 77.7M tokens）。模型名规则没错，错在没看账户列。
+    const rows = [
+      row("deepseek-harness", "2026-10-05", "deepseek-v4.1-flash", 700, "opencode-go"),
+      row("deepseek-harness", "2026-10-05", "deepseek-v4.1-flash", 300, ""),
+    ];
+    const d = buildLedgerBreakdown(rows).get("2026-10-05")!;
+    expect(d.byProvider).toEqual({ opencode: 700, deepseek: 300 });
+  });
+
   // ---- 经本地路由的替换归因 ----
 
   /** 构造一行 TokenRouter 自记账（kind='router'，model 为实际承载模型）。 */
@@ -158,6 +229,7 @@ describe("buildLedgerBreakdown", () => {
     kind: "router" as const,
     date,
     model,
+    provider: "",
     input: total,
     cache_read: 0,
     output: 0,

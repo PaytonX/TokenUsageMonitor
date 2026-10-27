@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   DASHBOARD_SIZE,
   PILL_COLLAPSED_SIZE,
+  PILL_DETAIL_ROW,
   PILL_MINI_GAP,
   PILL_MINI_ROW,
   createSizeWriteQueue,
+  pillDetailHeight,
   pillExpandedHeight,
   shouldApplySizeWrite,
   type WindowMode,
@@ -46,8 +48,25 @@ describe("pillExpandedHeight", () => {
   });
 });
 
-describe("窗口尺寸常量", () => {
-  it("与 Rust set_window_mode 保持一致", () => {
+describe("pillDetailHeight", () => {
+  it("每个窗口行固定加 PILL_DETAIL_ROW", () => {
+    expect(pillDetailHeight(2) - pillDetailHeight(1)).toBe(PILL_DETAIL_ROW);
+    expect(pillDetailHeight(4) - pillDetailHeight(3)).toBe(PILL_DETAIL_ROW);
+  });
+
+  it("0 / 负数行按 1 行算：无窗口时也要留说明文字的位置", () => {
+    expect(pillDetailHeight(0)).toBe(pillDetailHeight(1));
+    expect(pillDetailHeight(-3)).toBe(pillDetailHeight(1));
+  });
+
+  it("3 个窗口（5h/周/月）的高度落在可读区间", () => {
+    // 具体数值不锁死，只保证比收起态高、且不会把 3 行内容压扁。
+    expect(pillDetailHeight(3)).toBeGreaterThan(200);
+    expect(pillDetailHeight(3)).toBeLessThan(280);
+  });
+});
+
+describe("窗口尺寸常量", () => {  it("与 Rust set_window_mode 保持一致", () => {
     // 改这几个数必须同步改 Rust ipc.rs::set_window_mode，否则会出现
     // 「内容按 A 尺寸排、窗口按 B 尺寸」的错位。
     expect(PILL_COLLAPSED_SIZE).toEqual({ width: 168, height: 56 });

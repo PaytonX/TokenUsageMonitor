@@ -1,4 +1,4 @@
-﻿//! Persisted second-level cache for local tool scanning.
+//! Persisted second-level cache for local tool scanning.
 //!
 //! Full scans re-parse every log/db source (Claude Code alone walks 200+ JSONL
 //! files). Most of the time nothing changed between refreshes, so we gate the
@@ -133,6 +133,18 @@ pub fn tool_fingerprint(tool_id: &str) -> String {
                 }
             }
         }
+        "opencode" => {
+            // 三个文件都要进指纹：WAL 模式下新消息先落 -wal，只看主库会把
+            // "刚写了几条"判成没变，watch 就不会重扫。
+            if let Some(db) = super::opencode::db_path() {
+                hash_file(&db, &mut hasher);
+                for suffix in ["-wal", "-shm"] {
+                    let mut side = db.clone().into_os_string();
+                    side.push(suffix);
+                    hash_file(std::path::Path::new(&side), &mut hasher);
+                }
+            }
+        }
         _ => return "".to_string(),
     }
     format!("{:016x}", hasher.finish())
@@ -149,6 +161,7 @@ pub fn tool_installed(tool_id: &str) -> bool {
         "cherry-studio" => cherry_db().is_some(),
         "minimax-code" => !minimax_dbs().is_empty(),
         "zcode" => !zcode_db_dirs().is_empty(),
+        "opencode" => super::opencode::db_path().is_some(),
         _ => false,
     }
 }
@@ -197,6 +210,7 @@ pub fn tool_last_active_at(tool_id: &str) -> Option<i64> {
                 .map(|d| d.join("db.sqlite"))
                 .collect::<Vec<_>>(),
         ),
+        "opencode" => newest_of_files(&super::opencode::db_path().into_iter().collect::<Vec<_>>()),
         _ => None,
     }
 }

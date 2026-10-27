@@ -62,6 +62,11 @@
   // 拉取：aggMode → 设备序列；本机 → 账本工具序列。依赖 aggMode / range /
   // refreshTick，变化即重拉；两个分支只写 src* 状态、不读它们，避免 effect
   // 自依赖循环。
+  //
+  // 百分比额度制（OpenCode Go / MiniMax Token Plan）不在这张图上：它们的账本
+  // 行 unit='percent'，与 tokens 不同量纲（docs/adr/0001-percent-quota-usage.md
+  // 的 D2「永不与 token 同轴」）。额度的出口只有一个——账户卡片悬停时那张详情
+  // 卡（DetailCard 的 percent 分支）。趋势页因此是纯 token 页面。
   $effect(() => {
     void rangeDef.days;
     void refreshTick;

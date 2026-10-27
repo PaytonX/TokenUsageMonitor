@@ -398,6 +398,14 @@ export interface UsageDailyRow {
   kind: "tool" | "provider" | "router";
   date: string;
   model: string;
+  /**
+   * 上游计费账户 id（Rust 侧 `UsageDailyRow.provider`）。
+   *
+   * 和 `model` 是两个维度：同一个 `deepseek-v4.1-flash` 可能经 `opencode-go`
+   * 或 `ark-cn` 调用，账单记在账户而不是模型厂商。`""` = 源数据没记（老日志/
+   * 老版本写入口），此时归因只能退回按模型名判定。
+   */
+  provider: string;
   input: number;
   cache_read: number;
   output: number;

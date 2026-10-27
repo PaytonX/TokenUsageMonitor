@@ -151,9 +151,34 @@ function buildData() {
       });
     }
   }
+  // 百分比额度轨道（OpenCode Go）：服务端只回三个窗口的百分比，按日值是 TUM
+  // 侧按**月度窗口差分**累计出来的（见 opencode.rs）。这里造 60 天、每天 0.2~3.6
+  // 个百分点的消耗，形态与真机一致：多数天很小，偶尔一天吃掉好几个百分点。
+  //
+  // 故意让**两个 Key 写同一份数据**：同一订阅下的两个 API Key 看到的是同一份
+  // 服务端额度，账本里因此各有一行、数值相同。额度轨道必须把它们去重成
+  // 「2 Key · 1 订阅」；若直接相加，预览就会显示两倍用量。
+  for (const d of days.slice(-60)) {
+    const v = Math.round((0.2 + Math.pow(rnd(), 2.2) * 3.4) * 10) / 10;
+    for (const source of ["opencode", "opencode-2"]) {
+      providerRows.push({
+        source,
+        kind: "provider",
+        date: d,
+        model: "",
+        input: 0,
+        cache_read: 0,
+        output: 0,
+        total: v,
+        unit: "percent",
+        cost: null,
+        currency: null,
+        cost_estimated: false,
+      });
+    }
+  }
   return { days, rows: [...toolRows, ...providerRows], toolDaily };
 }
-
 const DATA = buildData();
 const ACCOUNTS = [
   { instance_id: "minimax", provider_kind: "minimax", label: "MiniMax Token Plan", accent_color: "#e9477e", enabled: true },
@@ -167,6 +192,14 @@ const ACCOUNTS = [
   // 真实账户里目前没有这一类，但没有它就永远看不到 DetailCard 的
   // 「该 Provider 无按日用量数据」空态分支，也点不出那条静默路径。
   { instance_id: "kimi", provider_kind: "kimi", label: "Kimi", accent_color: "#1783ff", enabled: true },
+  // 覆盖用例：百分比额度的差分类 + 实验性 kind（EXPERIMENTAL_KINDS）。
+  // OpenCode Go 的 /zen/go/v1/usage 只回三个窗口的百分比，没有按日账。桩里缺它
+  // 就复现不了「卡片点不动」那条路径——实验性 kind 曾经既无法选中也无法联动。
+  { instance_id: "opencode", provider_kind: "opencode", label: "OpenCode Go", accent_color: "#e8eaed", enabled: true },
+  // 覆盖用例：同一订阅下的**第二个 API Key**。两个 Key 读到的是同一份服务端
+  // 额度（窗口与重置时刻完全一致），额度轨道必须把它们去重成「2 Key · 1 订阅」；
+  // 账本里也各有一行，不去重就会把同一份额度报成两倍。
+  { instance_id: "opencode-2", provider_kind: "opencode", label: "OpenCode Go（工作 Key）", accent_color: "#e8eaed", enabled: true },
 ];
 
 const now = Date.now();
@@ -185,7 +218,7 @@ function snapshot(base: number = now) {
   const iso = (offsetH: number) => new Date(base + offsetH * 3600_000).toISOString();
   interface W {
     h5: number; h5q: number; wk: number; wkq: number;
-    mo: number; moq: number; unit: "tokens" | "afp" | "cny" | "credits" | "usd";
+    mo: number; moq: number; unit: "tokens" | "afp" | "cny" | "credits" | "usd" | "percent";
   }
   const mk = (id: string, name: string, tier: string | null, w: W, daily?: { used: number; quota: number }) => ({
     provider_id: id,
@@ -226,6 +259,12 @@ function snapshot(base: number = now) {
     // 差分类：只有额度百分比/金额，无按日账本 → DetailCard 应显示无按日数据说明。
     // CNY 用真实量级（几十~几百元），别用 token 量级否则会显示成 ¥2200000.00。
     mk("kimi", "Kimi", null, { h5: 22, h5q: 50, wk: 94, wkq: 250, mo: 310, moq: 860, unit: "cny" }),
+    // 百分比额度（OpenCode Go 的 Go 套餐）：quota 恒为 100，used 是「已消耗百分比」。
+    // 三个窗口的百分比分母不同，**不可相加**——真机侧的日用量也只取月度窗口差分。
+    mk("opencode", "OpenCode Go", "Go", { h5: 34, h5q: 100, wk: 62, wkq: 100, mo: 91, moq: 100, unit: "percent" }),
+    // 同一订阅的第二个 Key：窗口与重置时刻逐字段相同（服务端就是同一份额度），
+    // 订阅指纹因此一致 —— 额度轨道会把它与上面那条合并成一份。
+    mk("opencode-2", "OpenCode Go（工作 Key）", "Go", { h5: 34, h5q: 100, wk: 62, wkq: 100, mo: 91, moq: 100, unit: "percent" }),
   ];
 }
 

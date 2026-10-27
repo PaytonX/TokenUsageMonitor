@@ -10,6 +10,10 @@
 - Windows 10/11，Node.js ≥ 20，Rust stable（GNU 工具链由
   `rust-toolchain.toml` 自动固定，无需 MSVC Build Tools）
 - `npm install && npm run tauri:dev` 起开发环境
+- `src-tauri/vendor/WebView2Loader.dll` 是 GNU 工具链的**运行时**依赖（exe 动态
+  加载它），由 `bundle.resources` 打进安装包。升级 `webview2-com-sys` / `wry`
+  时请同步更新这个文件（取自 `target/release/WebView2Loader.dll`，否则安装包
+  装完启动会报「找不到 WebView2Loader.dll」）
 
 ## 提交 PR 前必须通过
 

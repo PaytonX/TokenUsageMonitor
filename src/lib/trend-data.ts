@@ -4,15 +4,31 @@
 //
 // 数据口径（2026-10 重构）：趋势历史统一来自 `usage_daily` 账本——本机模式 =
 // 各工具的 token 日序列（getUsageHistory），全端汇总模式 = 各设备的工具日序列
-// （get_hub_devices）。provider 差分序列（percent/cny）不再进入趋势视图，
-// 也不再跨单位相加。
-import { getUsageHistory, loadInstanceKinds } from "./api";
+// （get_hub_devices）。provider 差分序列（cny）不再进入趋势视图，也不再跨单位
+// 相加。
+//
+// 唯一的例外是**百分比制额度**（OpenCode Go / MiniMax Token Plan）：它们没有
+// token 也没有金额，只有"已用额度百分比"。这类日值由 provider 侧双写进账本
+// （kind='provider'、unit='percent'），永远不与 token 相加 —— 见
+// docs/adr/0001-percent-quota-usage.md。`fetchQuotaGroups` 是它的数据源，
+// **唯一消费者是账户卡片的详情（DetailCard）**：趋势页是纯 token 页面，
+// 额度不占它的版面（2026-10-24 方案 C 拍板）。
+import { getUsageHistory, getUsage, loadInstanceKinds } from "./api";
 import {
+  providerForLedgerRow,
   providerForModel,
   providerForRoutedSlice,
+  providerKeyForAccount,
   providerLabel,
   providerPalette,
 } from "./model-provider";
+import {
+  buildQuotaSeries,
+  groupQuotaSeries,
+  subscriptionFingerprint,
+  type QuotaGroup,
+} from "./quota-usage";
+import type { UsageSnapshot } from "./types";
 import {
   collectRouterRowsByDate,
   routedAttribution,
@@ -96,7 +112,10 @@ export async function fetchProviderCrossToolSeries(
     m.set(date, (m.get(date) ?? 0) + v);
   };
   // 经路由的哨兵行先攒着，遍历完统一按路由台账替换成真实模型。
-  const routed = new Map<string, { total: number; sources: Map<string, number> }>();
+  const routed = new Map<
+    string,
+    { total: number; sources: Map<string, number>; accounts: Map<string, string> }
+  >();
   const routerRows = collectRouterRowsByDate(rows);
   for (const r of rows) {
     if (r.kind !== "tool") continue;
@@ -106,14 +125,17 @@ export async function fetchProviderCrossToolSeries(
     if (r.model === ROUTED_MODEL) {
       let e = routed.get(r.date);
       if (!e) {
-        e = { total: 0, sources: new Map() };
+        e = { total: 0, sources: new Map(), accounts: new Map() };
         routed.set(r.date, e);
       }
       e.total += r.total;
       e.sources.set(r.source, (e.sources.get(r.source) ?? 0) + r.total);
+      if (r.provider) e.accounts.set(r.source, r.provider);
       continue;
     }
-    add(providerForModel(r.model, r.source), r.date, r.total);
+    // 账户优先、模型名兜底：账本记了计费账户（`opencode-go` / `ark-cn`…）就按
+    // 账户归，否则退回模型名前缀。只改「有账户」的行，直连行行为不变。
+    add(providerForLedgerRow(r), r.date, r.total);
   }
   for (const [date, e] of routed) {
     const { slices, fallback } = routedAttribution(e.total, routerRows.get(date) ?? []);
@@ -122,7 +144,12 @@ export async function fetchProviderCrossToolSeries(
     for (const s of slices) add(providerForRoutedSlice(s.model, s.source, kindByInstance), date, s.total);
     if (fallback > 0) {
       for (const [source, v] of e.sources) {
-        add(providerForModel(ROUTED_MODEL, source), date, fallback * (v / e.total));
+        // 路由台账没覆盖到的那部分：同样账户优先，再退回模型名/工具默认。
+        add(
+          providerKeyForAccount(e.accounts.get(source)) ?? providerForModel(ROUTED_MODEL, source),
+          date,
+          fallback * (v / e.total),
+        );
       }
     }
   }
@@ -148,6 +175,36 @@ function localDateKey(d: Date): string {
   const m = `${d.getMonth() + 1}`.padStart(2, "0");
   const dd = `${d.getDate()}`.padStart(2, "0");
   return `${y}-${m}-${dd}`;
+}
+
+/**
+ * 额度轨道数据源（百分比制 Provider 的独立轨道）。
+ *
+ * 与 token 序列同源（同一份 `usage_daily` 账本），但只取 `unit='percent'`
+ * 的行，并按 kind 汇总 —— 多 Key 的去重与容量归一在 `quota-usage.ts` 里完成
+ * （见该文件头与 docs/adr/0001-percent-quota-usage.md）。
+ *
+ * 订阅指纹需要实时快照里的 `reset_at`：同一订阅的多个 Key 看到同一批重置
+ * 时刻。拿不到快照时（后端未就绪/聚合模式）退化为按账户独立订阅，宁可少合并
+ * 也不把两份额度当成一份。
+ */
+export async function fetchQuotaGroups(days: number): Promise<QuotaGroup[]> {
+  const [{ rows }, kinds, snapshots] = await Promise.all([
+    getUsageHistory(days),
+    loadInstanceKinds(),
+    getUsage().catch(() => [] as UsageSnapshot[]),
+  ]);
+  const fingerprints = new Map<string, string>();
+  for (const snap of snapshots) {
+    fingerprints.set(snap.provider_id, subscriptionFingerprint(snap));
+  }
+  const series = buildQuotaSeries(rows, {
+    kindOf: (source) => kinds.get(source),
+    subscriptionOf: (source) => fingerprints.get(source),
+    days,
+    end: localDateKey(new Date()),
+  });
+  return groupQuotaSeries(series);
 }
 
 /** 按今天锚定的最近 `rangeDays` 天构建有序序列（旧→新）。

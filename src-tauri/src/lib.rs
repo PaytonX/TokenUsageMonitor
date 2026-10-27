@@ -425,6 +425,24 @@ pub fn run() {
                 Arc::new(RwLock::new(reg))
             };
             let http = Arc::new(RwLock::new(initial_client));
+            // 账本里的"幽灵来源"清理：instance_id 换过一次（改 Key、重建账户）
+            // 就会留下一个再也不会被写入的旧 source，而 `replace_usage_daily`
+            // 只删"本批出现过的 source"，没人替消失的账户报到。只在启动时按
+            // 当前账户集合对账一次——运行期账户可能正在被增删，那是另一条路径。
+            {
+                let live: std::collections::BTreeSet<String> = settings_store
+                    .read_blocking()
+                    .accounts
+                    .iter()
+                    .map(|a| a.instance_id.clone())
+                    .collect();
+                if let Err(e) = store.prune_orphan_provider_rows(&live) {
+                    tracing::warn!(
+                        target: "tum.storage",
+                        "pruning orphan provider ledger rows failed: {e:#}"
+                    );
+                }
+            }
             let credentials = Arc::new(RwLock::new({
                 let accounts = settings_store.read_blocking().accounts;
                 load_credentials_into_cache(&settings_store, &accounts)

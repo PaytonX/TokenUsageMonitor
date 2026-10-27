@@ -354,8 +354,8 @@ export const zhCN: Record<string, string> = {
   "settings.about.feat4": "热力图历史数据存储于本地 SQLite",
   "settings.about.feat5": "本地工具用量采集 + 多端同步（hub）",
   "settings.about.projectTitle": "项目主页与更新",
-  "settings.about.repoFallback": "GitHub 仓库",
-  "settings.about.repoTail": "—— 提 Issue / PR 与获取新版本都在这里。",
+  "settings.about.openRepo": "打开 GitHub 仓库",
+  "settings.about.repoTail": "提 Issue / PR 与获取新版本都在这里。",
   "settings.about.checking": "检查中…",
   "settings.about.checkUpdates": "检查更新",
   "settings.about.checkFailed": "检查失败：{err}",
@@ -398,6 +398,11 @@ export const zhCN: Record<string, string> = {
   "app.pill.ariaLabel": "迷你用量面板",
   "app.pill.restore": "恢复主面板",
   "app.pill.close": "关闭应用",
+  // 聚焦账户时，胶囊展开区显示该账户的各额度窗口（5h/日/周/月）。
+  "app.pill.windowsTitle": "各窗口用量",
+  "app.pill.resetIn": "重置 · {time}",
+  "app.pill.windowsNote": "各窗口额度相互独立，数字不可相加。",
+  "app.pill.noWindows": "该账户没有可展示的额度窗口",
   "app.refreshNow": "立即刷新",
   "app.settings": "设置",
   "app.collapseToMini": "折叠到迷你态",
@@ -445,6 +450,12 @@ export const zhCN: Record<string, string> = {
   "trend.zoomHint": "放大本窗口可获得更粗的柱与更多细节",
   "chart.ariaLabel": "用量趋势折线图",
   "chart.total": "总量",
+  // 额度（百分比制 Provider，unit='percent'）只在账户卡片的详情里出现，
+  // 措辞始终带 %，避免被读成 token 计数。
+  "quota.monthToDate": "本月已用",
+  "quota.today": "今日增量",
+  "quota.sampleDaysLabel": "有效样本",
+  "quota.keySubNote": "{keys} 个 Key / {subs} 个订阅，已按订阅去重",
   "heat.emptyNoData": "该来源暂无热力图数据",
   "heat.mon": "一",
   "heat.tue": "二",
@@ -522,6 +533,11 @@ export const zhCN: Record<string, string> = {
   "model.noModelUsage": "暂未上报模型级用量",
   "model.ringAria": "模型用量占比",
   "model.otherTooltip": "其他：{members}",
+  // 圆环里拿不到独立切片的模型有两类：份额低于下限的真模型（例如只占 1% 的
+  // DeepSeek V4.1 Flash），以及 auto / __via_router__ 这类路由占位桶。它们都
+  // 不在排名里，但必须仍能点开看自己的走势——否则"小份额 = 模型页没记录"。
+  // 出口是圆环的灰色「其他」切片：点开弹出列表（mp__other-pop），不占常驻版面。
+  "model.otherPopTitle": "「其他」里的模型",
   "model.sliceTooltip": "{name} · {tokens}（{pct}%）",
   "model.sliceTitle": "{name} · {tokens}",
   "model.lastDays": "近 {n} 天",
@@ -581,6 +597,9 @@ export const zhCN: Record<string, string> = {
   "detail.lastRefresh": "上次刷新",
   "detail.diagnostics": "诊断",
   "detail.last7Days": "近 7 日",
+  "detail.last7DaysPercent": "近 7 日 · %/日",
+  // 百分比额度制的卡片：柱图有数据，但仍要说清「为什么没有 token 日历」。
+  "detail.percentOnlyNote": "该订阅只上报额度百分比，不计 token 用量",
   "detail.agoSeconds": "{n}s 前",
   "detail.agoMinutes": "{n}m 前",
   "detail.agoHours": "{n}h 前",

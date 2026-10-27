@@ -218,6 +218,11 @@ export interface LocalDay {
 /** Mirrors Rust `LocalModelUsage` (local/mod.rs): per-model usage for a tool. */
 export interface LocalModelUsage {
   model: string;
+  /**
+   * 上游计费账户 id（`opencode-go` / `ark-cn` / `local-router`…），和 Rust 侧
+   * `provider` 字段同名同义。`""` = 源数据没记，归因退回按模型名判定。
+   */
+  provider: string;
   total_tokens: number;
   /** Provider-reported cost when the tool records it (0 if unknown). */
   cost: number;

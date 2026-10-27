@@ -352,8 +352,8 @@ export const en: Record<string, string> = {
   "settings.about.feat4": "Heatmap history is stored in a local SQLite database",
   "settings.about.feat5": "Local tool usage collection + multi-device sync (hub)",
   "settings.about.projectTitle": "Project page & updates",
-  "settings.about.repoFallback": "GitHub repository",
-  "settings.about.repoTail": " — file issues / PRs and get new releases here.",
+  "settings.about.openRepo": "Open GitHub repository",
+  "settings.about.repoTail": "File issues / PRs and get new releases here.",
   "settings.about.checking": "Checking…",
   "settings.about.checkUpdates": "Check for updates",
   "settings.about.checkFailed": "Check failed: {err}",
@@ -396,6 +396,11 @@ export const en: Record<string, string> = {
   "app.pill.ariaLabel": "Mini usage panel",
   "app.pill.restore": "Restore main panel",
   "app.pill.close": "Close app",
+  // Focused account: the pill expands to its quota windows (5h / daily / weekly / monthly).
+  "app.pill.windowsTitle": "Quota windows",
+  "app.pill.resetIn": "resets · {time}",
+  "app.pill.windowsNote": "Quota windows are independent — do not add them.",
+  "app.pill.noWindows": "This account reports no quota windows",
   "app.refreshNow": "Refresh now",
   "app.settings": "Settings",
   "app.collapseToMini": "Collapse to mini mode",
@@ -443,6 +448,12 @@ export const en: Record<string, string> = {
   "trend.zoomHint": "Enlarge this window for thicker bars and more detail",
   "chart.ariaLabel": "Usage trend line chart",
   "chart.total": "Total",
+  // Quota (percent-based providers, unit='percent') lives only inside the
+  // account card's detail panel; the wording always carries a % sign.
+  "quota.monthToDate": "Month to date",
+  "quota.today": "Today",
+  "quota.sampleDaysLabel": "Sample days",
+  "quota.keySubNote": "{keys} keys / {subs} subscription(s), deduped",
   "heat.emptyNoData": "No heatmap data for this source",
   "heat.mon": "M",
   "heat.tue": "T",
@@ -520,6 +531,12 @@ export const en: Record<string, string> = {
   "model.noModelUsage": "No model-level usage reported yet",
   "model.ringAria": "Model usage share",
   "model.otherTooltip": "Other: {members}",
+  // Two kinds of models get no slice of their own: real models below the share
+  // floor (say 1% DeepSeek V4.1 Flash) and routing placeholders such as auto /
+  // __via_router__. Neither is ranked, but both stay reachable: clicking the
+  // grey "Other" slice opens a popover list (mp__other-pop) instead of a
+  // permanent chip row, which is what used to squeeze the line chart away.
+  "model.otherPopTitle": "Models inside \"Other\"",
   "model.sliceTooltip": "{name} · {tokens} ({pct}%)",
   "model.sliceTitle": "{name} · {tokens}",
   "model.lastDays": "Last {n} days",
@@ -579,6 +596,9 @@ export const en: Record<string, string> = {
   "detail.lastRefresh": "Last refresh",
   "detail.diagnostics": "Diagnostics",
   "detail.last7Days": "Last 7 days",
+  "detail.last7DaysPercent": "Last 7 days · %/day",
+  // Percent-only plans: bars exist, but say why there is no token calendar.
+  "detail.percentOnlyNote": "This plan reports quota percent only — no token usage",
   "detail.agoSeconds": "{n}s ago",
   "detail.agoMinutes": "{n}m ago",
   "detail.agoHours": "{n}h ago",

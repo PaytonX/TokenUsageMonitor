@@ -19,6 +19,8 @@
     type WindowUsage,
   } from "../types";
   import { buildUnifiedBreakdown, ledgerSeriesForKind } from "../calendar-linkage";
+  import { isPercentUnit } from "../quota-usage";
+  import { fetchQuotaGroups } from "../trend-data";
   import ProviderLogo from "./ProviderLogo.svelte";
   import Icon from "./atoms/Icon.svelte";
 
@@ -124,19 +126,88 @@
   const PROBE_DAYS = 90; // 存在性探测窗口；小图仍只画近 7 天
   let weekCells = $state<HeatmapCell[]>([]);
   let weekSeq = 0;
-  let noDailyNote = $state<string | null>(null);
+  let chartNote = $state<string | null>(null);
+
+  /**
+   * 百分比额度制（OpenCode Go / MiniMax Token Plan）的额度摘要。
+   *
+   * 这是全应用里**唯一**呈现 percent 用量的地方（docs/adr/0001 的 D3）：
+   * 趋势页是纯 token 页面，额度不占趋势页版面，只在「这个账户现在用了多少」
+   * 的语境下出现——也就是这张卡片详情。
+   *
+   * 多 Key 的统一口径也在这里落地：`groupQuotaSeries` 用订阅指纹把同一份
+   * 订阅下的多个 Key 去重（同订阅的 Key 在服务端看到同一批 reset_at，也看到
+   * 同一个已用百分比，相加就是三倍），不同订阅按容量取均值。所以 `keys` 与
+   * `subscriptions` 分开记：3 个 Key / 1 份订阅 = 一份用量，不是三份。
+   */
+  interface QuotaSummary {
+    /** 本自然月已用（容量归一后的百分点）。 */
+    monthTotal: number;
+    /** 今日增量（本账户）。 */
+    today: number;
+    /** 有非零记录的天数（用来判断"这个数字有几天样本撑腰"）。 */
+    sampleDays: number;
+    /** 参与合并的 Key 数。 */
+    keys: number;
+    /** 去重后的订阅份数 = 容量倍数。 */
+    subscriptions: number;
+  }
+  let quota = $state<QuotaSummary | null>(null);
 
   $effect(() => {
     const providerId = snapshot.provider_id;
     const kind = providerId.split("-")[0];
     const series = ledgerSeriesForKind(kind, providerId);
     const seq = ++weekSeq;
+    quota = null; // 换卡片时先清掉上一张的额度摘要，避免看到别人的数字
     if (!series) {
-      noDailyNote = $t("detail.noDailyLedger");
-      weekCells = [];
+      // 没有 token 日序列的 Provider 分两种：
+      // ① 账本里从来没有它（配了账户却没被扫描工具用过）；
+      // ② 百分比额度制（OpenCode Go / MiniMax Token Plan）——服务端只报已用
+      //    额度百分比，日值以 unit='percent' 落在账本里（见 quota-usage 文件头）。
+      // ②以前会落到「无按日数据」，但其实有数据，只是单位不是 token。所以先按
+      // 单位探一次：有 percent 行就画「%/日」柱（标题里写明 %，不会被读成 token），
+      // 一条都没有才退回原来的说明文案。
+      void Promise.all([getUsageHistory(PROBE_DAYS), fetchQuotaGroups(PROBE_DAYS)])
+        .then(([{ rows }, groups]) => {
+          if (seq !== weekSeq) return;
+          const picked = rows.filter(
+            (r) =>
+              r.kind === "provider" &&
+              r.source === providerId &&
+              isPercentUnit(r.unit),
+          );
+          if (picked.length === 0) {
+            chartNote = $t("detail.noDailyLedger");
+            weekCells = [];
+            return;
+          }
+          chartNote = $t("detail.percentOnlyNote");
+          // 补齐 7 天（缺数据的日期画 0 柱），与跨工具分支同样连续。
+          const byDate = new Map(picked.map((r) => [r.date, r.total]));
+          const today = localDateKey(new Date());
+          weekCells = lastNDays(7).map((date) => ({
+            date,
+            value: byDate.get(date) ?? 0,
+            unit: "percent" as UsageUnit,
+          }));
+          // 多 Key 统一由 quota-usage 负责：同订阅的 Key 共享 reset_at，去重后
+          // 只算一次，多份订阅按容量取均值（详见该文件头）。这里只取本 kind。
+          const group = groups.find((g) => g.kind === kind) ?? null;
+          quota = {
+            monthTotal: group?.monthTotal ?? 0,
+            today: byDate.get(today) ?? 0,
+            sampleDays: picked.filter((r) => (Number(r.total) || 0) > 0).length,
+            keys: group?.keys ?? 1,
+            subscriptions: group?.subscriptions ?? 1,
+          };
+        })
+        .catch(() => {
+          if (seq === weekSeq) weekCells = [];
+        });
       return;
     }
-    noDailyNote = null;
+    chartNote = null;
     getUsageHistory(PROBE_DAYS)
       .then(({ rows }) => loadInstanceKinds().then((kindByInstance) => ({ rows, kindByInstance })))
       .then(({ rows, kindByInstance }) => {
@@ -147,7 +218,7 @@
             (r) => r.kind === "provider" && r.source === series.providerId,
           );
           if (picked.length === 0) {
-            noDailyNote = $t("detail.noServerDailyLedger");
+            chartNote = $t("detail.noServerDailyLedger");
             weekCells = [];
             return;
           }
@@ -170,7 +241,7 @@
         const key = series.providerKey;
         const appears = [...map.values()].some((d) => (d.byProvider[key] ?? 0) > 0);
         if (!appears) {
-          noDailyNote = $t("detail.noUsageIn90d");
+          chartNote = $t("detail.noUsageIn90d");
           weekCells = [];
           return;
         }
@@ -221,6 +292,14 @@
   let barUnit = $derived<UsageUnit>(
     weekCells[0]?.unit ?? critical?.window.unit ?? "tokens",
   );
+
+  /** 柱图 tooltip 的数值：百分比保留一位小数——四舍五入到整数会让 0.4% 变成
+   *  「0%」，也容易被读成 token 计数；其余单位沿用 formatUsage。 */
+  function barValueLabel(value: number): string {
+    return barUnit === "percent"
+      ? `${value.toFixed(1)}%`
+      : formatUsage(value, barUnit);
+  }
 
   // Quota pool (额度池): every quota'd window with its used/quota amounts +
   // the used/remaining fraction depending on `countdown`.
@@ -313,14 +392,41 @@
     {/if}
   </dl>
 
+  {#if quota}
+    <!-- 额度摘要：百分比制订阅的「本期已用」出口（唯一入口，见文件头注释）。
+         三个数字各有明确口径：本月已用 = 自然月内每日增量的和（月度限额制
+         订阅的当期用量）；今日增量 = 与柱图最后一根同源；样本天数用来提示
+         这个数字背后有多少天观测，样本少时不要当成稳定趋势读。 -->
+    <div class="detail__quota">
+      <span class="detail__quota-label">{$t("quota.monthToDate")}</span>
+      <span class="detail__quota-value">{quota.monthTotal.toFixed(1)}%</span>
+      <span class="detail__quota-label">{$t("quota.today")}</span>
+      <span class="detail__quota-value">{quota.today.toFixed(1)}%</span>
+      <span class="detail__quota-meta">
+        {$t("quota.sampleDaysLabel")}
+        {quota.sampleDays}{#if quota.keys > 1 || quota.subscriptions > 1}
+          ·{$t("quota.keySubNote", {
+            keys: quota.keys,
+            subs: quota.subscriptions,
+          })}{/if}
+      </span>
+    </div>
+  {/if}
+
   <div class="detail__chart">
-    <span class="detail__chart-label">{$t("detail.last7Days")}</span>
-    {#if noDailyNote}
-      <p class="detail__chart-note">{noDailyNote}</p>
+    <!-- 百分比额度制的 Provider 没有 token 日序列，柱图的单位随之换成 %
+         （标题直接写「%/日」），保证不会被当成本日 token 用量读。 -->
+    <span class="detail__chart-label">
+      {$t(
+        barUnit === "percent" ? "detail.last7DaysPercent" : "detail.last7Days",
+      )}
+    </span>
+    {#if chartNote}
+      <p class="detail__chart-note">{chartNote}</p>
     {/if}
     <div class="detail__bars">
       {#each bars as b (b.date)}
-        <div class="detail__bar-wrap" title={`${b.date} · ${formatUsage(b.value, barUnit)}`}>
+        <div class="detail__bar-wrap" title={`${b.date} · ${barValueLabel(b.value)}`}>
           <div
             class="detail__bar"
             class:detail__bar--zero={b.value === 0}
@@ -521,6 +627,41 @@
     border: 1px solid var(--tum-border);
     border-radius: 3px;
     letter-spacing: 0.3px;
+  }
+
+  /* 额度摘要（percent 制）：两枚数字并排，样本/多 Key 说明折行在下面。
+     刻意不做进度条——详情卡里已经有窗口环与柱图，再加一条进度会被当成
+     "还能用多少"的第二种说法。 */
+  .detail__quota {
+    display: grid;
+    grid-template-columns: auto auto auto auto;
+    align-items: baseline;
+    gap: 2px 8px;
+    padding: 5px 8px;
+    background: var(--tum-surface);
+    border: 1px solid var(--tum-border);
+    border-radius: var(--tum-radius-sm, 4px);
+    font-family: var(--tum-font-mono);
+  }
+
+  .detail__quota-label {
+    font-size: 9px;
+    color: var(--tum-text-muted);
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+  }
+
+  .detail__quota-value {
+    font-size: var(--tum-font-size-sm);
+    font-variant-numeric: tabular-nums;
+    color: var(--tum-text);
+  }
+
+  .detail__quota-meta {
+    grid-column: 1 / -1;
+    font-size: 9px;
+    color: var(--tum-text-muted);
+    line-height: 1.45;
   }
 
   .detail__chart {

@@ -56,7 +56,7 @@
   import { applyLocaleSetting, t, type LangSetting } from "./lib/i18n/store";
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
   import Icon from "./lib/components/atoms/Icon.svelte";
-import { conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draft";
+import { changedKeys, conflictingKeys, isDirty, normalizeBaseline } from "./lib/settings-draft";
 import { resolveCloseAction } from "./lib/settings-close";
 
   type Tab = "general" | "accounts" | "interaction" | "network" | "router" | "about";
@@ -177,6 +177,16 @@ import { resolveCloseAction } from "./lib/settings-close";
   // TokenRouter（spec: docs/superpowers/specs/2026-10-04-token-router-design.md）：
   // 编辑态配置 + 运行态快照（健康/候选徽标）。token 由后端保存时补发，前端只展示。
   let routerCfg = $state<RouterSettings>(defaultRouterSettings());
+  /**
+   * 上一次与后端同步的路由配置快照。
+   *
+   * 存在的理由：`onSettingsChanged` 会在别的窗口保存设置时把 `settings` 换成
+   * 新值。若此时用户正在路由页改配置，直接 `routerCfg = fresh.router` 会把
+   * 还没落盘的编辑静默冲掉——用户看到的就是「改了但保存不生效」。有了这份
+   * 快照，事件处理器可以先判断路由是否有草稿，有就只更新 `settings`，不动
+   * 编辑态；`persistSettings` 成功后再一起推进快照。
+   */
+  let routerBaseline = $state<RouterSettings | null>(null);
   let routerStatus = $state<RouterStatus | null>(null);
   let tokenCopiedFor = $state<string | null>(null);
   // 汇率（B.6/C6）：编辑态覆盖值 + 最近一次生效快照（供 placeholder/更新时间展示）。
@@ -222,6 +232,28 @@ import { resolveCloseAction } from "./lib/settings-close";
    */
   const hasDraft = $derived(settings !== null && isDirty(baseline, buildNext()));
 
+  /** RouterSettings 是纯数据；深拷贝一份做草稿比对，避免和编辑态共享引用。 */
+  function cloneRouter(cfg: RouterSettings): RouterSettings {
+    return JSON.parse(JSON.stringify(cfg)) as RouterSettings;
+  }
+
+  /** 采用后端值：编辑态与「已同步快照」一起推进。 */
+  function adoptRouter(cfg: RouterSettings | undefined) {
+    routerCfg = { ...defaultRouterSettings(), ...(cfg ?? {}) };
+    routerBaseline = cloneRouter(routerCfg);
+  }
+
+  /** 路由页是否有尚未写盘的编辑。外部 settings-changed 到达时据此决定是否覆盖。 */
+  function routerDraftDirty(): boolean {
+    if (!routerBaseline) return false;
+    return (
+      changedKeys(
+        { router: routerBaseline },
+        { router: routerCfg },
+      ).length > 0
+    );
+  }
+
   // 草稿一旦清空（页脚保存/丢弃成功），确认条与它的状态一起复位，
   // 否则下次有草稿时的第一次 ✕ 会被当成「二次确认」直接关窗。
   $effect(() => {
@@ -266,7 +298,10 @@ import { resolveCloseAction } from "./lib/settings-close";
     }));
   }
 
-  async function refreshAll() {
+  async function refreshAll(keepRouterDraft = false) {
+    // 账户增删会走整轮刷新；此时若用户正在路由页编辑，不要把编辑态一起冲掉。
+    // 只保留路由草稿：账户表单本身由这次刷新重建，语义上就是「以后端为准」。
+    const keepRouter = keepRouterDraft && routerDraftDirty();
     try {
       const [cat, s] = await Promise.all([getProviders(), getSettings()]);
       // 账户目录变了：趋势/日历里经路由用量的「计费账户」映射必须跟着失效，
@@ -304,7 +339,7 @@ import { resolveCloseAction } from "./lib/settings-close";
       rateOverrides = { ...(s.rate_overrides ?? {}) };
       toolDataRoots = [...(s.tool_data_roots ?? [])];
       toolDataDirs = { ...(s.tool_data_dirs ?? {}) };
-      routerCfg = { ...defaultRouterSettings(), ...(s.router ?? {}) };
+      if (!keepRouter) adoptRouter(s.router);
       void refreshRouterStatus();
       forms = buildForms();
       // 选中项失效（账户被删/首次加载）时回落到第一个账户。
@@ -380,7 +415,7 @@ import { resolveCloseAction } from "./lib/settings-close";
         accent_color: preset.default_accent,
         enabled: true,
       });
-      await refreshAll();
+      await refreshAll(true);
       // 新账户直接进入编辑视图，并收起选择弹层。
       selectedAccountId = newId;
       pickerOpen = false;
@@ -418,7 +453,7 @@ import { resolveCloseAction } from "./lib/settings-close";
     genericError = null;
     try {
       await removeAccount(f.meta.instance_id);
-      await refreshAll();
+      await refreshAll(true);
     } catch (e) {
       genericError = String(e);
     } finally {
@@ -839,6 +874,34 @@ import { resolveCloseAction } from "./lib/settings-close";
 
   // --- Bulk save --------------------------------------------------------------
 
+  /**
+   * 只落盘一个字段（语言/倒计时这类「改完立即生效」的开关）。
+   *
+   * 必须先读后端当前值再改：本窗的 `settings` 是打开时的快照，直接拿它整对象
+   * 写会把其它窗口后来加的账户、改过的路由一起覆盖掉（用户实际遇到的
+   * 「accounts 总是被提示修改」和「路由保存不生效」）。同时也不能用
+   * `buildNext()`——那会把本窗其它页尚未保存的草稿一并提交。
+   */
+  async function persistImmediate(patch: Partial<Settings>): Promise<void> {
+    const current = await getSettings();
+    const next = { ...current, ...patch } as Settings;
+    await saveSettings(next);
+    // 后端可能补发路由 token，回读一次拿 canonical；失败就用入参。
+    let canonical = next;
+    try {
+      canonical = await getSettings();
+    } catch {
+      /* 回读失败不阻塞已经成功的保存 */
+    }
+    settings = canonical;
+    // 只推进刚写下去的字段：其它字段若被其它窗口改过，基线保持旧值，
+    // 下一次整对象保存仍会被冲突检测拦下并提示。
+    baseline = normalizeBaseline({
+      ...(baseline ?? canonical),
+      ...patch,
+    } as unknown as Record<string, unknown>) as unknown as Settings;
+  }
+
   /** Apply the countdown-mode switch immediately so the dashboard ring flips
    * without waiting for a full save. Only persists countdown_mode. */
   async function applyCountdownNow(e: Event) {
@@ -846,8 +909,7 @@ import { resolveCloseAction } from "./lib/settings-close";
     countdownMode = checked;
     if (!settings) return;
     try {
-      await saveSettings({ ...settings, countdown_mode: checked });
-      settings = { ...settings, countdown_mode: checked };
+      await persistImmediate({ countdown_mode: checked });
     } catch (err) {
       genericError = String(err);
     }
@@ -861,8 +923,7 @@ import { resolveCloseAction } from "./lib/settings-close";
     applyLocaleSetting(value);
     if (!settings) return;
     try {
-      await saveSettings({ ...settings, language: value });
-      settings = { ...settings, language: value };
+      await persistImmediate({ language: value });
     } catch (err) {
       genericError = String(err);
     }
@@ -1033,10 +1094,14 @@ import { resolveCloseAction } from "./lib/settings-close";
       // 后端在落盘前会补发空 token（ensure_route_tokens）：入参 next 里 token
       // 还是空的，必须回读后端的落盘结果，路由卡的 API Key 才显示得出来。
       // 同时刷新运行态（启停/端口变化即时反映）。
+      //
+      // canonical 必须是回读值而不是 next：next 的 token 为空，拿它当基线会让
+      // 保存一完成就「有未保存改动」（撤销按钮亮着、下一次保存还要再写一遍）。
+      let canonical = next;
       try {
         const fresh = await getSettings();
-        settings = fresh;
-        routerCfg = { ...defaultRouterSettings(), ...(fresh.router ?? {}) };
+        canonical = fresh;
+        adoptRouter(fresh.router);
         void refreshRouterStatus();
       } catch {
         /* 回读失败不阻塞保存：下次打开设置页会重读。 */
@@ -1048,10 +1113,12 @@ import { resolveCloseAction } from "./lib/settings-close";
       } catch {
         /* ignore */
       }
-      settings = next;
+      settings = canonical;
       // 基线推进到刚落盘的值：保存之后暂存与基线一致，「撤销」随之失效。
       // 不推进的话，保存完再点「撤销」会把已经写盘的值回退成旧值——那才是真丢数据。
-      baseline = normalizeBaseline(next as unknown as Record<string, unknown>) as unknown as Settings;
+      baseline = normalizeBaseline(
+        canonical as unknown as Record<string, unknown>,
+      ) as unknown as Settings;
       // 汇率：合并新覆盖值并广播其它窗口（force=false，离线不阻塞）；失败忽略。
       // 放在 persistSettings 里，让"保存"与"保存并关闭"两条路径都覆盖。
       try {
@@ -1193,12 +1260,18 @@ import { resolveCloseAction } from "./lib/settings-close";
   // 会导致账户与预设都不显示、所有设置开关失效、保存按钮禁用。
   onMount(() => {
     refreshAll();
-    // 其它窗口（主面板 ⇄ 快速开关）改了设置 → 同步路由编辑态，避免下一次
-    // 本窗口保存把外部改动又改回去。token 由后端补发后也经此回填。
+    // 其它窗口（主面板 ⇄ 快速开关）改了设置 → 同步本窗的设置镜像。
+    //
+    // ⚠️ 路由编辑态**只在没有草稿时**才跟随。此前无条件覆盖：用户在路由页改
+    // 到一半，主窗一次胶囊展开/折叠（整对象保存 → settings-changed）就会把
+    // `routerCfg` 换回磁盘值，界面看起来像「保存被回退」。有草稿时保留编辑态，
+    // 让用户自己点保存；冲突检测/整对象写仍会保护其它字段。
     onSettingsChanged((fresh) => {
       settings = fresh;
-      routerCfg = { ...defaultRouterSettings(), ...(fresh.router ?? {}) };
-      void refreshRouterStatus();
+      if (!routerDraftDirty()) {
+        adoptRouter(fresh.router);
+        void refreshRouterStatus();
+      }
     });
     // 窗口被 Alt+F4 / 任务栏关闭时，Rust 拦下 CloseRequested 并通知这里，
     // 统一走 requestClose（有草稿先弹条，没有就正常保存关闭）。
@@ -2366,15 +2439,21 @@ async function handleMinimize() {
           </div>
 
           <div class="section">
-            <h3 class="section__title">{$t("settings.about.projectTitle")}</h3>
-            <p class="hint">
+            <h3 class="section__title">
+              {$t("settings.about.projectTitle")}
               {#if repoUrl}
-                <button type="button" class="link-btn" onclick={handleOpenRepo}>{repoUrl}</button>
-              {:else}
-                {$t("settings.about.repoFallback")}
+                <button
+                  type="button"
+                  class="repo-icon-btn"
+                  title={repoUrl}
+                  aria-label={$t("settings.about.openRepo")}
+                  onclick={handleOpenRepo}
+                >
+                  <Icon name="github" size={15} />
+                </button>
               {/if}
-              {$t("settings.about.repoTail")}
-            </p>
+            </h3>
+            <p class="hint">{$t("settings.about.repoTail")}</p>
             <div class="account__actions">
               <button class="btn btn--ghost" disabled={updateChecking} onclick={handleUpdateCheck}>
                 {updateChecking ? $t("settings.about.checking") : $t("settings.about.checkUpdates")}
@@ -2800,16 +2879,33 @@ async function handleMinimize() {
     vertical-align: middle;
   }
 
-  /* 关于页：仓库直达 / Releases 链接按钮（视觉是链接，行为走 open_url 白名单）。 */
-  .link-btn {
-    background: none;
-    border: none;
+  /* 关于页：GitHub 仓库图标按钮（视觉是图标，行为走 open_url 白名单）。
+     图标依赖 Icon 的 github 条目，保持与项目其余 Lucide 图标同一笔触。 */
+  .repo-icon-btn {
+    margin-left: auto;
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     padding: 0;
-    font: inherit;
-    color: var(--tum-accent, #4cc2ff);
+    border: 1px solid var(--tum-border);
+    border-radius: var(--tum-radius-xs);
+    background: var(--tum-surface);
+    color: var(--tum-text-secondary);
     cursor: pointer;
-    text-decoration: underline;
-    text-underline-offset: 2px;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  }
+
+  .repo-icon-btn:hover {
+    color: var(--tum-accent);
+    border-color: var(--tum-accent-stroke);
+    background: var(--tum-accent-fill);
+  }
+
+  .repo-icon-btn:focus-visible {
+    outline: 2px solid var(--tum-accent);
+    outline-offset: 2px;
   }
 
   .about-update__error {

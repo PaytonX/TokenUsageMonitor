@@ -6,7 +6,7 @@
   import { readAggMode, readPref, writePref } from "../prefs";
   import { buildAggregateModels, staleDetailDevices } from "../device-agg";
   import { collectRouterRowsByDate, routedAttribution, ROUTED_MODEL, ROUTED_MODEL_DISPLAY } from "../router-attribution";
-import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../model-name";
+  import { canonicalModelKey, dominantDisplayName, isPlaceholderModelName, stripModelPrefix } from "../model-name";
   import type { LocalModelUsage, LocalToolsPayload } from "../types";
   import { displayCurrency, formatCost, normalizeCurrency, toUsd } from "../currency";
   import type { Currency } from "../currency";
@@ -168,6 +168,8 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
           cost: m.cost,
           currency: m.currencies.size === 1 ? [...m.currencies][0] : m.currencies.size > 1 ? "USD" : "",
           cost_estimated: m.cost_estimated,
+          // 模型页按模型名合桶，账户已在这一层丢失；空串表示未记。
+          provider: "",
           daily: [...m.days.values()].sort((a, b) => a.date.localeCompare(b.date)),
         })).sort((a, b) => b.total_tokens - a.total_tokens);
         const daily = [...dayMap.values()].sort((a, b) => a.date.localeCompare(b.date));
@@ -186,7 +188,8 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
         };
       }
       if (activeId === null || !modelList.some((m) => m.id === activeId)) {
-        activeId = modelList[0]?.id ?? null;
+        // 默认选中排名第一的真模型；只有全是占位桶时才退回占位桶。
+        activeId = (rankedModels[0] ?? modelList[0])?.id ?? null;
       }
       writePref("tum.model.tab", activeId ?? "");
     } catch (e) {
@@ -235,7 +238,7 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
   // 必须先按静态汇率折算成 USD 再累加——直接把不同币种的原始数值相加是错的。
   // 折算只发生在"合并"这一步；展示仍按用户所选展示币种（见 fmtCost）。
   let modelList = $derived.by(() => {
-    const byName = new Map<string, { id: string; name: string; total: number; costUsd: number; currencies: Set<Currency>; cost_estimated: boolean; daily: Map<string, LocalModelUsage["daily"][number]> }>();
+    const byName = new Map<string, { id: string; name: string; total: number; costUsd: number; currencies: Set<Currency>; cost_estimated: boolean; placeholder: boolean; daily: Map<string, LocalModelUsage["daily"][number]> }>();
     // 归并键（小写）→ 该键下各写法的累计量，用于挑展示名。同一模型被不同
     // 工具用不同大小写记录（zcode 的 GLM-5.3-Flash vs 路由台账的
     // glm-5.3-flash）时，不归并就会在模型页裂成两条。
@@ -252,12 +255,14 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
       for (const mu of tool.models) {
         const short = shortName(mu.model);
         const key = canonicalModelKey(short);
+        const placeholder = isPlaceholderModelName(mu.model);
         note(key, short, mu.total_tokens);
         let agg = byName.get(key);
         if (!agg) {
-          agg = { id: key, name: short, total: 0, costUsd: 0, currencies: new Set(), cost_estimated: false, daily: new Map() };
+          agg = { id: key, name: short, total: 0, costUsd: 0, currencies: new Set(), cost_estimated: false, placeholder, daily: new Map() };
           byName.set(key, agg);
         }
+        agg.placeholder = agg.placeholder || placeholder;
         agg.total += mu.total_tokens;
         if (mu.cost > 0) {
           const cur = normalizeCurrency(mu.currency);
@@ -288,7 +293,27 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
       .map((m) => ({ ...m, daily: [...m.daily.values()].sort((a, b) => a.date.localeCompare(b.date)) }));
   });
 
+  // 路由占位桶（`auto` / `__via_router__`）不是真实模型：账本里实测 `auto`
+  // 近 30 天就有 1.23 亿 token，混进排名会挤掉真模型的位次并让圆环份额失真。
+  // 因此排名（圆环/图例/其他成员）只认真模型，占位桶单列成一行说明——既
+  // 不静默丢掉这部分量，也不让它参与排名。
+  let rankedModels = $derived(modelList.filter((m) => !m.placeholder));
+  let placeholderModels = $derived(modelList.filter((m) => m.placeholder));
+
   let active = $derived(modelList.find((m) => m.id === activeId) ?? null);
+
+  // 圆环里拿到独立切片的模型；其余小份额模型并进「其他」，但仍要能以独立
+  // 按钮点开看走势（见下方 others 与浮层列表）。
+  let mergedModels = $derived(
+    rankedModels.filter((m) => !ringSlices.some((s) => !s.isOther && s.id === m.id)),
+  );
+
+  // 「其他」里的成员 = 小份额真模型 + 路由占位桶。它们共用同一个出口：
+  // 点圆环的灰色切片（或图例里的「其他」）弹出列表，选中即切换下方折线。
+  // 这样既不给小份额模型占一行标签墙（上一版正是因此把折线图挤没了），
+  // 也不让它们变成"看不见 = 没记录"。
+  let others = $derived([...mergedModels, ...placeholderModels]);
+  let otherPopOpen = $state(false);
 
   // —— 模型占比圆环（替代原 PillsOrSelect 选择行）：手写 SVG 环图。
   // 占比 <2% 的模型一律归入灰色「其他」（用户规则：用量过少即归并，与模型
@@ -316,14 +341,15 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
   let hoverSliceId = $state<string | null>(null);
 
   let ringSlices = $derived.by(() => {
-    const grand = modelList.reduce((sum, m) => sum + m.total, 0);
+    // 份额分母只含真模型：占位桶不参与排名，也不该稀释真模型的百分比。
+    const grand = rankedModels.reduce((sum, m) => sum + m.total, 0);
     if (grand <= 0) return [] as RingSlice[];
     const shareOf = (m: { total: number }) => m.total / grand;
-    const head = modelList.filter(
+    const head = rankedModels.filter(
       (m, i) => i < RING_MAX_SLICES && shareOf(m) >= RING_MIN_SHARE,
     );
     // 极端情况：模型多到全部 <2% → 展示前 3 名，保证环与图例不为空。
-    const effective = head.length > 0 ? head : modelList.slice(0, 3);
+    const effective = head.length > 0 ? head : rankedModels.slice(0, 3);
     const picked: RingSlice[] = effective.map((m, i) => ({
       id: m.id,
       name: m.name,
@@ -342,7 +368,7 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
         share: restTotal / grand,
         color: RING_OTHER_COLOR,
         isOther: true,
-        members: modelList
+        members: rankedModels
           .filter((m) => !effective.includes(m))
           .map((m) => `${m.name} · ${fmtTokens(m.total)}`),
       });
@@ -439,73 +465,111 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
   {:else if modelList.length === 0}
     <div class="mp__empty">{$t("model.noModelUsage")}</div>
   {:else}
-    <div class="mp__ring">
-      <div class="ring">
-        <svg viewBox="0 0 110 110" role="img" aria-label={$t("model.ringAria")}>
-          <g class="ring__dial">
-            <circle class="ring__track" cx="55" cy="55" r="42" />
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex:
-                 circle 通过动态 role="button" 成为可交互控件，静态分析无法识别动态 role -->
-            {#each ringArcs as a (a.id)}
-              <circle
-                class="ring__seg"
-                class:ring__seg--active={hoverSliceId === a.id || (!hoverSliceId && a.id === ringSlices[0]?.id)}
-                style="stroke: {a.color};"
-                cx="55"
-                cy="55"
-                r="42"
-                stroke-dasharray={a.dasharray}
-                stroke-dashoffset={a.dashoffset}
-                onpointerenter={() => { hoverSliceId = a.id; }}
-                onpointerleave={() => { if (hoverSliceId === a.id) hoverSliceId = null; }}
-                onpointerdown={(e) => e.stopPropagation()}
-                onclick={() => { if (!a.isOther) { activeId = a.id; writePref("tum.model.tab", a.id); } }}
-                onkeydown={(e) => {
-                  if (a.isOther) return;
-                  if (e.key === "Enter" || e.key === " ") {
+    {#if rankedModels.length > 0}
+      <div class="mp__ring">
+        <div class="ring">
+          <svg viewBox="0 0 110 110" role="img" aria-label={$t("model.ringAria")}>
+            <g class="ring__dial">
+              <circle class="ring__track" cx="55" cy="55" r="42" />
+              {#each ringArcs as a (a.id)}
+                <circle
+                  class="ring__seg"
+                  class:ring__seg--active={hoverSliceId === a.id || (!hoverSliceId && a.id === ringSlices[0]?.id)}
+                  style="stroke: {a.color};"
+                  cx="55"
+                  cy="55"
+                  r="42"
+                  stroke-dasharray={a.dasharray}
+                  stroke-dashoffset={a.dashoffset}
+                  onpointerenter={() => { hoverSliceId = a.id; }}
+                  onpointerleave={() => { if (hoverSliceId === a.id) hoverSliceId = null; }}
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onclick={() => {
+                    if (a.isOther) { otherPopOpen = !otherPopOpen; return; }
                     activeId = a.id;
                     writePref("tum.model.tab", a.id);
-                  }
+                  }}
+                  onkeydown={(e) => {
+                    if (e.key !== "Enter" && e.key !== " ") return;
+                    e.preventDefault();
+                    if (a.isOther) { otherPopOpen = !otherPopOpen; return; }
+                    activeId = a.id;
+                    writePref("tum.model.tab", a.id);
+                  }}
+                  role="button"
+                  tabindex={0}
+                  aria-expanded={a.isOther ? otherPopOpen : undefined}
+                >
+                  <title>{a.isOther
+                    ? $t("model.otherTooltip", { members: a.members.join($locale === "en" ? ", " : "、") })
+                    : $t("model.sliceTooltip", { name: a.name, tokens: fmtTokens(a.total), pct: (a.share * 100).toFixed(1) })}</title>
+                </circle>
+              {/each}
+            </g>
+          </svg>
+          {#if centerSlice}
+            <div class="ring__center">
+              <span class="ring__center-num">{(centerSlice.share * 100).toFixed(centerSlice.share * 100 >= 10 ? 0 : 1)}%</span>
+              <span class="ring__center-label">{centerSlice.isOther ? $t("mp.other") : centerSlice.name}</span>
+            </div>
+          {/if}
+        </div>
+        <div class="ring-legend">
+          {#each ringSlices as s (s.id)}
+            <button
+              type="button"
+              class="ring-legend__item"
+              class:ring-legend__item--active={s.isOther ? otherPopOpen : activeId === s.id}
+              class:ring-legend__item--other={s.isOther}
+              aria-expanded={s.isOther ? otherPopOpen : undefined}
+              title={s.isOther
+                ? $t("model.otherTooltip", { members: s.members.join($locale === "en" ? ", " : "、") })
+                : $t("model.sliceTitle", { name: s.name, tokens: fmtTokens(s.total) })}
+              onpointerenter={() => { hoverSliceId = s.id; }}
+              onpointerleave={() => { if (hoverSliceId === s.id) hoverSliceId = null; }}
+              onclick={() => {
+                if (s.isOther) { otherPopOpen = !otherPopOpen; return; }
+                activeId = s.id;
+                writePref("tum.model.tab", s.id);
+              }}
+            >
+              <span class="ring-legend__dot" style="background: {s.color};"></span>
+              <span class="ring-legend__name">{s.name}</span>
+              <span class="ring-legend__pct">{(s.share * 100).toFixed(s.share * 100 >= 10 ? 0 : 1)}%</span>
+            </button>
+          {/each}
+        </div>
+
+        <!-- 「其他」浮层：小份额真模型 + 路由占位桶的唯一出口。
+             上一版把这两类做成了两行常驻标签墙，flex-wrap 折成 2~3 行固定占高，
+             把下方折线图压到十几像素——这次改成点击才出现的浮层，不占布局高度。 -->
+        {#if otherPopOpen && others.length > 0}
+          <div
+            class="mp__other-pop"
+            role="dialog"
+            aria-label={$t("model.otherPopTitle")}
+          >
+            <span class="mp__other-pop-title">{$t("model.otherPopTitle")}</span>
+            {#each others as m (m.id)}
+              <button
+                type="button"
+                class="mp__other-item"
+                class:mp__other-item--active={activeId === m.id}
+                title={$t("model.sliceTitle", { name: m.name, tokens: fmtTokens(m.total) })}
+                onclick={() => {
+                  activeId = m.id;
+                  writePref("tum.model.tab", m.id);
+                  otherPopOpen = false;
                 }}
-                role={a.isOther ? "presentation" : "button"}
-                tabindex={a.isOther ? -1 : 0}
               >
-                <title>{a.isOther
-                  ? $t("model.otherTooltip", { members: a.members.join($locale === "en" ? ", " : "、") })
-                  : $t("model.sliceTooltip", { name: a.name, tokens: fmtTokens(a.total), pct: (a.share * 100).toFixed(1) })}</title>
-              </circle>
+                <span class="mp__other-name">{m.name}</span>
+                <span class="mp__other-tokens tum-numeric">{fmtTokens(m.total)}</span>
+              </button>
             {/each}
-          </g>
-        </svg>
-        {#if centerSlice}
-          <div class="ring__center">
-            <span class="ring__center-num">{(centerSlice.share * 100).toFixed(centerSlice.share * 100 >= 10 ? 0 : 1)}%</span>
-            <span class="ring__center-label">{centerSlice.isOther ? $t("mp.other") : centerSlice.name}</span>
           </div>
         {/if}
       </div>
-      <div class="ring-legend">
-        {#each ringSlices as s (s.id)}
-          <button
-            type="button"
-            class="ring-legend__item"
-            class:ring-legend__item--active={activeId === s.id}
-            class:ring-legend__item--other={s.isOther}
-            disabled={s.isOther}
-            title={s.isOther
-              ? $t("model.otherTooltip", { members: s.members.join($locale === "en" ? ", " : "、") })
-              : $t("model.sliceTitle", { name: s.name, tokens: fmtTokens(s.total) })}
-            onpointerenter={() => { hoverSliceId = s.id; }}
-            onpointerleave={() => { if (hoverSliceId === s.id) hoverSliceId = null; }}
-            onclick={() => { if (!s.isOther) { activeId = s.id; writePref("tum.model.tab", s.id); } }}
-          >
-            <span class="ring-legend__dot" style="background: {s.color};"></span>
-            <span class="ring-legend__name">{s.name}</span>
-            <span class="ring-legend__pct">{(s.share * 100).toFixed(s.share * 100 >= 10 ? 0 : 1)}%</span>
-          </button>
-        {/each}
-      </div>
-    </div>
+    {/if}
 
     {#if active}
       <div class="mp__stats">
@@ -570,7 +634,9 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
 
   .mp__chart {
     flex: 1;
-    min-height: 0;
+    /* 折线图是这个页签的主内容：给一个下限，避免上面的圆环/统计把它压扁
+       （上一版两行标签墙把 flex:1 挤到十几像素，就是这行 min-height 的由来）。 */
+    min-height: 96px;
     display: flex;
     margin: 0 -2px;
   }
@@ -592,6 +658,7 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
 
   /* —— 模型占比圆环 + 图例（替代原 PillsOrSelect 选择行）—— */
   .mp__ring {
+    position: relative; /* 「其他」浮层的定位基准 */
     display: flex;
     align-items: center;
     gap: 12px;
@@ -699,5 +766,64 @@ import { canonicalModelKey, dominantDisplayName, stripModelPrefix } from "../mod
   .ring-legend__pct {
     font-family: var(--tum-font-mono);
     color: var(--tum-text-primary);
+  }
+
+  /* —— 「其他」浮层：小份额模型与路由占位桶的唯一入口 —— */
+  .mp__other-pop {
+    position: absolute;
+    top: calc(100% - 2px);
+    left: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 190px;
+    max-width: min(320px, 86vw);
+    max-height: 168px;
+    overflow-y: auto;
+    padding: 5px;
+    border-radius: var(--tum-radius-md);
+    border: 1px solid var(--tum-border-strong);
+    background: rgba(24, 26, 30, 0.97);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+  }
+  .mp__other-pop-title {
+    padding: 1px 5px 3px;
+    color: var(--tum-text-muted);
+    font-size: 9px;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+  }
+  .mp__other-item {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 2px 5px;
+    border: 0;
+    border-radius: var(--tum-radius-xs);
+    background: transparent;
+    color: var(--tum-text-secondary);
+    font-family: var(--tum-font-mono);
+    font-size: var(--tum-font-size-xs);
+    line-height: 1.6;
+    text-align: left;
+    cursor: pointer;
+  }
+  .mp__other-item:hover {
+    background: var(--tum-accent-fill);
+    color: var(--tum-text-primary);
+  }
+  .mp__other-item--active {
+    color: var(--tum-text-primary);
+  }
+  .mp__other-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mp__other-tokens {
+    flex: none;
+    color: var(--tum-text-muted);
   }
 </style>

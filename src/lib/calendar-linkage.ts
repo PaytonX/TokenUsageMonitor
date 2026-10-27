@@ -9,7 +9,12 @@
 
 import { normalizeKind } from "./brand-glyphs";
 import type { UsageDailyRow } from "./api";
-import { providerForModel, providerForRoutedSlice } from "./model-provider";
+import {
+  providerForModel,
+  providerForLedgerRow,
+  providerKeyForAccount,
+  providerForRoutedSlice,
+} from "./model-provider";
 import {
   collectRouterRowsByDate,
   routedAttribution,
@@ -91,6 +96,42 @@ export function highlightKeyForKind(kind: string): string | null {
   return providerKeyForKind(kind);
 }
 
+/** 卡片点击后的全局焦点迁移结果。 */
+export interface CardFocus {
+  /** 新的全局焦点：`"all"` 或某个 `provider_id`。 */
+  focus: string;
+  /** 趋势页日历高亮 key；`null` = 该 kind 在日历里没有序列，不高亮。 */
+  highlightKey: string | null;
+}
+
+/**
+ * 卡片点击 → 全局焦点 + 趋势页日历高亮。
+ *
+ * **选中与联动必须分开判定。** 此前两者被绑在一起（`if (!series) return`），
+ * 于是没有账本序列的 kind（OpenCode / Codex 这类差分类、实验性 provider）
+ * 整张卡片点不动：既没有焦点圆环，也没有顶棚读数变化，用户看到的就是
+ * 「卡片页签选不中」。但「能不能被选中」只依赖 `provider_id`（焦点、顶棚
+ * 圆环、迷你胶囊都能独立成立）；「能不能高亮」才依赖有没有可高亮的东西。
+ *
+ * 没有 token 序列时**退化用 kind 本身**（而不是 `null`）：高亮 key 的消费方
+ * 不止日历一处，日历的 `dimOthers` 对不存在的 id 本来就是空操作，不会凭空
+ * 多出一条空序列；但把 key 交出去之后，其它按 provider kind 聚焦的面板（如
+ * 账户卡片自己的详情）也能拿到同一个焦点值，不必为"没有 token 序列"再分叉。
+ */
+export function toggleCardFocus(
+  kind: string,
+  providerId: string,
+  currentFocus: string,
+): CardFocus {
+  // 再点一次已聚焦的卡片 = 取消，让焦点可撤销（含从下拉里选中的情况）。
+  if (currentFocus === providerId) return { focus: "all", highlightKey: null };
+  const series = ledgerSeriesForKind(kind, providerId);
+  return {
+    focus: providerId,
+    highlightKey: series ? highlightKeyForKind(kind) : normalizeKind(kind),
+  };
+}
+
 /** 某一天的用量拆解。 */
 export interface DayBreakdown {
   /** 当日全部本机工具 token 总量。 */
@@ -150,6 +191,8 @@ export function buildLedgerBreakdown(
   // 做替换（见 router-attribution）。按 (date → 工具) 记，是为了差额回退时
   // 仍能落回**各自**工具的兜底 Provider。
   const routed = new Map<string, Map<string, number>>();
+  /** 哨兵行的计费账户（同一工具可能在不同日子换了账户，按 date→source 记）。 */
+  const routedAccounts = new Map<string, Map<string, string>>();
   const routerRows = collectRouterRowsByDate(rows);
   for (const r of rows) {
     if (r.kind !== "tool") continue;
@@ -160,8 +203,15 @@ export function buildLedgerBreakdown(
       const bySource = routed.get(r.date) ?? new Map<string, number>();
       bySource.set(r.source, (bySource.get(r.source) ?? 0) + r.total);
       routed.set(r.date, bySource);
+      if (r.provider) {
+        const accs = routedAccounts.get(r.date) ?? new Map<string, string>();
+        accs.set(r.source, r.provider);
+        routedAccounts.set(r.date, accs);
+      }
     } else {
-      const key = providerForModel(r.model, r.source);
+      // 账户优先、模型名兜底。账本记了计费账户就按账户归——否则"经 OpenCode Go
+      // 调的 deepseek-v4.1-flash"会被算进 DeepSeek，与趋势页同一处错账。
+      const key = providerForLedgerRow(r);
       e.byProvider[key] = (e.byProvider[key] ?? 0) + r.total;
     }
   }
@@ -178,9 +228,11 @@ export function buildLedgerBreakdown(
     // 路由台账覆盖不足（或没有）：差额按各工具占比回退到工具兜底归因，
     // 保证「分模型合计 == 来源总量」不破，也不用猜。
     if (fallback > 0) {
+      const accounts = routedAccounts.get(date);
       for (const [source, v] of bySource) {
         const share = fallback * (v / sentinel);
-        const key = providerForModel(ROUTED_MODEL, source);
+        const key =
+          providerKeyForAccount(accounts?.get(source)) ?? providerForModel(ROUTED_MODEL, source);
         e.byProvider[key] = (e.byProvider[key] ?? 0) + share;
       }
     }

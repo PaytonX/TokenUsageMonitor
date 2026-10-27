@@ -19,7 +19,9 @@ pub mod delta;
 pub mod dsh;
 pub mod hermes;
 pub mod minimax;
+pub mod opencode;
 pub mod roots;
+pub mod sqlite_ro;
 pub mod watch;
 pub mod wsl;
 pub mod zcode;
@@ -57,6 +59,24 @@ pub const ROUTED_MODEL: &str = "__via_router__";
 pub fn is_routed_placeholder(model: &str) -> bool {
     let m = model.trim();
     m.starts_with("custom_provider:") || m == "LocalRouter"
+}
+
+/// 判定 `source.provider`（上游计费账户）是否指向**本机路由**。
+///
+/// 为什么需要这条判据：dsh 走本机路由时，模型名记成 `auto`——路由自己决定实际
+/// 承载模型，客户端只看到 "auto" 这个占位名。它和 [`is_routed_placeholder`] 里
+/// 那种"模型名字面就是路由"的情形不同：`auto` 单看是个合法但无意义的模型名，
+/// 只有配上 `provider == "local-router"` 才能确认它没指名任何具体模型
+/// （实测 dsh 日志里就是 `model='auto', provider='local-router'`，1.14 亿 tokens
+/// 因为两边都不认它而卡在占位桶里）。
+///
+/// 所以判据只认**具体的路由账户名**，绝不用 `contains("router")`：上游真有一个
+/// 叫 `openrouter` 的服务，子串匹配会把它误吞。空串是"源数据没记"，不是路由。
+pub fn is_router_provider(provider: &str) -> bool {
+    matches!(
+        provider.trim().to_ascii_lowercase().as_str(),
+        "local-router" | "local_router" | "localrouter" | "token-router" | "tokenrouter" | "tum-router"
+    )
 }
 
 /// 解析一行用量最终归属的模型名。
@@ -125,7 +145,7 @@ pub(crate) fn open_sqlite_readonly(path: &std::path::Path) -> Option<rusqlite::C
 /// then drop tools with no usage. Used by `get_local_tools` and the startup
 /// pre-warm so the first open of the tools view is instant.
 pub fn scan_all(storage: &crate::storage::Storage) -> Vec<LocalToolReport> {
-    let mut tools: Vec<LocalToolReport> = Vec::with_capacity(7);
+    let mut tools: Vec<LocalToolReport> = Vec::with_capacity(8);
     std::thread::scope(|s| {
         let claude = s.spawn(claude::scan);
         let cherry = s.spawn(cherry::scan);
@@ -134,6 +154,7 @@ pub fn scan_all(storage: &crate::storage::Storage) -> Vec<LocalToolReport> {
         let dsh = s.spawn(dsh::scan);
         let hermes = s.spawn(move || hermes::scan(storage));
         let zcode = s.spawn(zcode::scan);
+        let opencode = s.spawn(opencode::scan);
         tools.push(claude.join().unwrap_or_default());
         tools.push(cherry.join().unwrap_or_default());
         tools.push(minimax.join().unwrap_or_default());
@@ -141,6 +162,7 @@ pub fn scan_all(storage: &crate::storage::Storage) -> Vec<LocalToolReport> {
         tools.push(dsh.join().unwrap_or_default());
         tools.push(hermes.join().unwrap_or_default());
         tools.push(zcode.join().unwrap_or_default());
+        tools.push(opencode.join().unwrap_or_default());
     });
     // 保留规则：有近 90 天数据的工具一律保留（它确实在用）；无数据的才要求
     // "已安装且近期仍活跃"——只看目录存在会把早已弃用的工具（如 Codex，其
@@ -150,7 +172,7 @@ pub fn scan_all(storage: &crate::storage::Storage) -> Vec<LocalToolReport> {
 }
 
 /// 受支持工具 id 列表（供 watch 增量扫描与前端工具胶囊使用）。
-pub const TOOL_IDS: [&str; 7] = [
+pub const TOOL_IDS: [&str; 8] = [
     "claude-code",
     "cherry-studio",
     "minimax-code",
@@ -158,6 +180,7 @@ pub const TOOL_IDS: [&str; 7] = [
     "hermes",
     "deepseek-harness",
     "zcode",
+    "opencode",
 ];
 
 /// 单个工具的一次扫描（watch 用到：只重扫变化的那一个）。
@@ -170,6 +193,7 @@ pub fn scan_tool(tool_id: &str, storage: &crate::storage::Storage) -> Option<Loc
         "hermes" => hermes::scan(storage),
         "deepseek-harness" => dsh::scan(),
         "zcode" => zcode::scan(),
+        "opencode" => opencode::scan(),
         _ => return None,
     };
     // 与 scan_all 同口径：有数据即保留；无数据则要求"已安装且近期仍活跃"，
@@ -208,6 +232,14 @@ impl LocalDay {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LocalModelUsage {
     pub model: String,
+    /// 这次用量**实际计费的上游账户**（dsh 的 `message.source.provider`、
+    /// Hermes 的 `billing_provider`），空串 = 工具没记。
+    ///
+    /// 有了它同一模型经不同账户调用才不会被并成一行：`deepseek-v4.1-flash`
+    /// 走 OpenCode Go 时账单在 OpenCode，只按模型名归因会算进 DeepSeek。
+    /// 前端归因顺序：本字段优先，模型名兜底（见 src/lib/model-provider.ts）。
+    #[serde(default)]
+    pub provider: String,
     pub total_tokens: f64,
     /// Provider-reported cost when the tool records it (0 if unknown).
     pub cost: f64,
@@ -312,6 +344,7 @@ pub fn persist_all_tools(storage: &crate::storage::Storage, tools: &[LocalToolRe
                 kind: "tool".to_string(),
                 date: d.date.clone(),
                 model: String::new(),
+                provider: String::new(),
                 input: d.input,
                 cache_read: d.cache_read,
                 output: d.output,
@@ -332,6 +365,7 @@ pub fn persist_all_tools(storage: &crate::storage::Storage, tools: &[LocalToolRe
                     kind: "tool".to_string(),
                     date: d.date.clone(),
                     model: m.model.clone(),
+                    provider: m.provider.clone(),
                     input: d.input,
                     cache_read: d.cache_read,
                     output: d.output,
@@ -367,6 +401,7 @@ pub fn finalize_models(
         let (cost, currency) = cost_by_model.get(&model).cloned().unwrap_or((0.0, String::new()));
         out.push(LocalModelUsage {
             model,
+            provider: String::new(),
             total_tokens,
             cost,
             currency,
@@ -418,6 +453,21 @@ mod tests {
         // 混用会让未知态被错误地拿去做替换归因。
         assert_ne!(ROUTED_MODEL, UNCLASSIFIED_MODEL);
         assert!(!ROUTED_MODEL.contains(UNCLASSIFIED_MODEL));
+    }
+
+    /// 路由**账户**判定：只认具体的路由服务名，不用子串匹配。
+    ///
+    /// `openrouter` 是真实存在的上游服务，`contains("router")` 会把它的用量
+    /// 全部改写成路由哨兵；空串是「源数据没记账户」，同样不是路由。
+    #[test]
+    fn router_provider_matches_names_not_substrings() {
+        assert!(is_router_provider("local-router"));
+        assert!(is_router_provider("  Local-Router  "));
+        assert!(is_router_provider("tokenrouter"));
+        assert!(!is_router_provider(""));
+        assert!(!is_router_provider("openrouter"));
+        assert!(!is_router_provider("opencode-go"));
+        assert!(!is_router_provider("deepseek"));
     }
 
     fn temp_db(tag: &str) -> (std::path::PathBuf, Storage) {
@@ -480,6 +530,7 @@ mod tests {
         );
         minimax.models.push(LocalModelUsage {
             model: "MiniMax-M3".into(),
+            provider: String::new(),
             total_tokens: 350.0,
             cost: 3.5,
             currency: "USD".into(),
@@ -523,6 +574,7 @@ mod tests {
         ]);
         m.models.push(LocalModelUsage {
             model: "GLM-5.3".into(),
+            provider: String::new(),
             total_tokens: 400.0,
             cost: 4.0,
             currency: "USD".into(),

@@ -46,6 +46,16 @@
 //! machine the two model fields agreed on 924 of 924 usage lines, so reading
 //! the requested one loses nothing.
 //!
+//! ## …and why the billing account is a separate dimension
+//!
+//! The same `source` object also carries `provider` — the upstream that will
+//! actually bill this call (`opencode-go`, `ark-cn`, `local-router`, …). Model
+//! and provider are orthogonal: `deepseek-v4.1-flash` sent through OpenCode Go
+//! is billed by OpenCode, not DeepSeek. Attributing by model-name prefix alone
+//! (the old behaviour) filed that usage under DeepSeek and made the trend page
+//! disagree with the user's invoices. We therefore bucket per
+//! `(provider, model)` and hand both up to the ledger.
+//!
 //! Sessions do switch models mid-run (observed: `MiniMax-M3` 675 lines,
 //! `deepseek-v4-flash` 249), so the per-model split is a real distinction
 //! rather than a cosmetic one. Lines with no model at all still fall into the
@@ -63,7 +73,7 @@
 //! attempts. Zero-valued usage (auth failures, quota errors) is skipped so a
 //! broken key doesn't fabricate rows.
 
-use super::{finalize_days, finalize_models, LocalToolReport};
+use super::{finalize_days, LocalModelUsage, LocalToolReport};
 use chrono::{Local, TimeZone, Utc};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -80,11 +90,12 @@ const KEEP_DAYS: usize = 90;
 const MAX_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Parse one decompressed JSONL line into
-/// `(input, cache_read, output, local_day, model)` when it carries dsh usage.
+/// `(input, cache_read, output, local_day, model, provider)` when it carries
+/// dsh usage.
 ///
 /// Handles both carriers described in the module docs. Only one is ever
 /// returned per line, so a line can never contribute twice.
-pub(crate) fn parse_line(line: &str) -> Option<(f64, f64, f64, String, String)> {
+pub(crate) fn parse_line(line: &str) -> Option<(f64, f64, f64, String, String, String)> {
     if !line.contains("usage") {
         return None;
     }
@@ -134,7 +145,28 @@ pub(crate) fn parse_line(line: &str) -> Option<(f64, f64, f64, String, String)> 
         .unwrap_or_default()
         .to_string();
 
-    Some((input, cache_read, output, date, model))
+    // 计费账户：`source.provider` 是 dsh 这一条消息实际打到的上游
+    // （`opencode-go` / `ark-cn` / `local-router`…）。它和模型名是两个维度：
+    // `deepseek-v4.1-flash` 经 OpenCode Go 调用时账单记在 OpenCode，只按模型名
+    // 归因会把这部分用量算进 DeepSeek——用户实际观测到的错账就是这么来的。
+    // 老版本日志没有这个字段，留空串表示"源数据没记"。
+    let provider = v
+        .pointer("/data/message/source/provider")
+        .and_then(|p| p.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    // 走本机路由的会话，模型名是 `auto`：路由在服务端决定实际承载模型，客户端
+    // 只看到这个占位名。它不是"未标记模型"（上游确实回了模型名），也不是任何
+    // 真实模型，所以统一落成 `__via_router__` 哨兵，由 TokenRouter 自己的记账行
+    // 在前端做替换归因。判据看 provider，不看 "auto" 这个字面量。
+    let model = if super::is_router_provider(&provider) {
+        super::ROUTED_MODEL.to_string()
+    } else {
+        model
+    };
+
+    Some((input, cache_read, output, date, model, provider))
 }
 
 fn day_of_epoch_millis(ms: u64) -> Option<String> {
@@ -150,7 +182,8 @@ fn day_of_epoch_millis(ms: u64) -> Option<String> {
 pub fn scan() -> LocalToolReport {
     let now = Utc::now().to_rfc3339();
     let mut by_day: BTreeMap<String, (f64, f64, f64)> = BTreeMap::new();
-    let mut by_model: BTreeMap<String, BTreeMap<String, (f64, f64, f64)>> = BTreeMap::new();
+    let mut by_account: BTreeMap<(String, String), BTreeMap<String, (f64, f64, f64)>> =
+        BTreeMap::new();
     let mut session_count: u64 = 0;
     let mut project_dirs: HashSet<String> = HashSet::new();
 
@@ -158,7 +191,7 @@ pub fn scan() -> LocalToolReport {
         scan_tree(
             &sessions,
             &mut by_day,
-            &mut by_model,
+            &mut by_account,
             &mut session_count,
             &mut project_dirs,
         );
@@ -166,31 +199,51 @@ pub fn scan() -> LocalToolReport {
 
     let daily = finalize_days(by_day.clone(), KEEP_DAYS);
     let total_tokens: f64 = daily.iter().map(|d| d.total).sum();
-    let mut models = finalize_models(by_model, &BTreeMap::new(), KEEP_DAYS);
-    for m in &mut models {
-        if m.cost > 0.0 {
+
+    // 按 (计费账户, 模型) 分桶，而不是只按模型名：同一模型可能经不同账户发生
+    // （订阅 vs 本机路由），并成一行就没法把账单归给正确的 provider。
+    let mut models: Vec<LocalModelUsage> = Vec::new();
+    for ((provider, model), days) in by_account {
+        let series = finalize_days(days, KEEP_DAYS);
+        let row_tokens: f64 = series.iter().map(|d| d.total).sum();
+        if row_tokens <= 0.0 {
             continue;
         }
+        let mut usage = LocalModelUsage {
+            model,
+            provider,
+            total_tokens: row_tokens,
+            cost: 0.0,
+            currency: String::new(),
+            cost_estimated: false,
+            daily: series,
+        };
         // Cache reads are billed at a discount by `compute_cost`, so they must
         // be passed through separately. Pre-merging them into `input` would
         // charge them at the full input rate — with cache at 80-98% of real
         // traffic that inflated the estimate badly.
-        let input: f64 = m.daily.iter().map(|d| d.input).sum();
-        let cache_read: f64 = m.daily.iter().map(|d| d.cache_read).sum();
-        let output: f64 = m.daily.iter().map(|d| d.output).sum();
+        let input: f64 = usage.daily.iter().map(|d| d.input).sum();
+        let cache_read: f64 = usage.daily.iter().map(|d| d.cache_read).sum();
+        let output: f64 = usage.daily.iter().map(|d| d.output).sum();
         if let Some(cost) = crate::pricing::compute_cost(&crate::providers::TokenBreakdown {
             input,
             cache_read,
             output,
-            model_id: Some(m.model.clone()),
+            model_id: Some(usage.model.clone()),
         }) {
             if cost > 0.0 {
-                m.cost = cost;
-                m.currency = "USD".to_string();
-                m.cost_estimated = true;
+                usage.cost = cost;
+                usage.currency = "USD".to_string();
+                usage.cost_estimated = true;
             }
         }
+        models.push(usage);
     }
+    models.sort_by(|a, b| {
+        b.total_tokens
+            .partial_cmp(&a.total_tokens)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     LocalToolReport {
         id: TOOL_ID.to_string(),
@@ -204,10 +257,13 @@ pub fn scan() -> LocalToolReport {
     }
 }
 
+/// `(计费账户, 模型)` → 逐日三项。账户与模型是两个独立维度，见 `scan`。
+type AccountModelDays = BTreeMap<(String, String), BTreeMap<String, (f64, f64, f64)>>;
+
 fn scan_tree(
     dir: &Path,
     by_day: &mut BTreeMap<String, (f64, f64, f64)>,
-    by_model: &mut BTreeMap<String, BTreeMap<String, (f64, f64, f64)>>,
+    by_account: &mut AccountModelDays,
     session_count: &mut u64,
     project_dirs: &mut HashSet<String>,
 ) {
@@ -225,8 +281,8 @@ fn scan_tree(
                     }
                 }
             }
-            scan_tree(&path, by_day, by_model, session_count, project_dirs);
-        } else if is_session_file(&path) && scan_file(&path, by_day, by_model) {
+            scan_tree(&path, by_day, by_account, session_count, project_dirs);
+        } else if is_session_file(&path) && scan_file(&path, by_day, by_account) {
             // Only the newest version of a session directory is counted; a
             // v3+v4 pair is one session, not two.
             *session_count += 1;
@@ -251,7 +307,7 @@ fn is_session_file(path: &Path) -> bool {
 fn scan_file(
     path: &Path,
     by_day: &mut BTreeMap<String, (f64, f64, f64)>,
-    by_model: &mut BTreeMap<String, BTreeMap<String, (f64, f64, f64)>>,
+    by_account: &mut AccountModelDays,
 ) -> bool {
     // A session directory may hold both v3 and v4; only read the newest.
     let Some(version) = session_version(path) else {
@@ -263,7 +319,7 @@ fn scan_file(
     // A session that exists but cannot be decoded still counts as a session;
     // it simply contributes no tokens.
     if let Some(text) = decompress_to_string(path) {
-        aggregate_lines(&text, by_day, by_model);
+        aggregate_lines(&text, by_day, by_account);
     }
     true
 }
@@ -271,10 +327,10 @@ fn scan_file(
 fn aggregate_lines(
     text: &str,
     by_day: &mut BTreeMap<String, (f64, f64, f64)>,
-    by_model: &mut BTreeMap<String, BTreeMap<String, (f64, f64, f64)>>,
+    by_account: &mut AccountModelDays,
 ) {
     for line in text.lines() {
-        if let Some((input, cache_read, output, date, model)) = parse_line(line) {
+        if let Some((input, cache_read, output, date, model, provider)) = parse_line(line) {
             if date.is_empty() {
                 continue;
             }
@@ -287,7 +343,7 @@ fn aggregate_lines(
             } else {
                 model
             };
-            let m = by_model.entry(model).or_default();
+            let m = by_account.entry((provider, model)).or_default();
             let me = m.entry(date).or_insert((0.0, 0.0, 0.0));
             me.0 += input;
             me.1 += cache_read;
@@ -350,6 +406,10 @@ fn decompress_capped(path: &Path, limit: u64) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// `message_line_with_model` 里写死的计费账户，真实日志里长这样
+    /// （另外还见过 `opencode-go`、`local-router`、`ark-cn`）。
+    const PROVIDER: &str = "volcanoagentplan";
+
     /// Legacy layout: usage is a chunk inside an attempt's stream.
     fn line_with(chunks: &str) -> String {
         format!(
@@ -376,15 +436,44 @@ mod tests {
     /// versioned `responseModel`. Only `source.model` is the requested model.
     fn message_line_with_model(input: u32, output: u32, model: &str) -> String {
         format!(
-            r#"{{"type":"assistant/message","seq":9,"time":1790577965809,"data":{{"turn":1,"step":2,"usage":{{"inputTokens":{input},"cacheReadTokens":0,"outputTokens":{output},"totalTokens":{}}},"message":{{"role":"assistant","content":[],"source":{{"kind":"model","provider":"volcanoagentplan","model":"{model}","replayState":{{"response":{{"kind":"pi-ai","model":"{model}","responseModel":"{model}-ga-260731"}}}}}}}}}}}}"#,
+            r#"{{"type":"assistant/message","seq":9,"time":1790577965809,"data":{{"turn":1,"step":2,"usage":{{"inputTokens":{input},"cacheReadTokens":0,"outputTokens":{output},"totalTokens":{}}},"message":{{"role":"assistant","content":[],"source":{{"kind":"model","provider":"{PROVIDER}","model":"{model}","replayState":{{"response":{{"kind":"pi-ai","model":"{model}","responseModel":"{model}-ga-260731"}}}}}}}}}}}}"#,
             input + output
         )
+    }
+
+    /// Same shape as [`message_line_with_model`] but with an explicit billing
+    /// account, for the cases where one model is served by several accounts.
+    fn message_line_with_source(input: u32, output: u32, model: &str, provider: &str) -> String {
+        // 用 json! 拼而不是手写 format!：手写大括号极易少一层，解析失败时
+        // `parse_line` 只会静默返回 None，测试会以"should parse"这种毫无信息
+        // 的断言失败（本函数上一版就是这么坏的）。
+        serde_json::json!({
+            "type": "assistant/message",
+            "seq": 9,
+            "time": 1790577965809u64,
+            "data": {
+                "turn": 1,
+                "step": 2,
+                "usage": {
+                    "inputTokens": input,
+                    "cacheReadTokens": 0,
+                    "outputTokens": output,
+                    "totalTokens": input + output,
+                },
+                "message": {
+                    "role": "assistant",
+                    "content": [],
+                    "source": {"kind": "model", "provider": provider, "model": model},
+                },
+            },
+        })
+        .to_string()
     }
 
     #[test]
     fn parses_usage_from_nested_stream_chunk() {
         let line = line_with(&usage_chunk(1200, 340));
-        let (input, cache_read, output, date, model) = parse_line(&line).expect("should parse");
+        let (input, cache_read, output, date, model, _p) = parse_line(&line).expect("should parse");
         assert_eq!(input, 1200.0);
         assert_eq!(output, 340.0);
         // The legacy attempt layout has no cache field, so cache must read as 0
@@ -402,7 +491,7 @@ mod tests {
     #[test]
     fn ignores_total_tokens_field() {
         let line = r#"{"type":"assistant/attempt","time":1790522454929,"data":{"stream":[{"type":"chunk","chunk":{"type":"usage","usage":{"inputTokens":10,"outputTokens":5,"totalTokens":999999}}}]}}"#;
-        let (input, _cache, output, _, _) = parse_line(line).expect("should parse");
+        let (input, _cache, output, _, _, _) = parse_line(line).expect("should parse");
         assert_eq!(input, 10.0);
         assert_eq!(output, 5.0);
     }
@@ -412,7 +501,7 @@ mod tests {
     #[test]
     fn takes_last_usage_chunk_on_retry() {
         let line = line_with(&format!("{},{}", usage_chunk(10, 1), usage_chunk(10, 1)));
-        let (input, _cache, output, _, _) = parse_line(&line).expect("should parse");
+        let (input, _cache, output, _, _, _) = parse_line(&line).expect("should parse");
         assert_eq!(input, 10.0, "must not sum chunks");
         assert_eq!(output, 1.0, "must not sum chunks");
     }
@@ -431,7 +520,7 @@ mod tests {
     #[test]
     fn parses_usage_from_current_message_layout() {
         let line = message_line(18172, 0, 2001, 20173);
-        let (input, cache_read, output, date, model) = parse_line(&line).expect("should parse");
+        let (input, cache_read, output, date, model, _p) = parse_line(&line).expect("should parse");
         assert_eq!(input, 18172.0);
         assert_eq!(cache_read, 0.0);
         assert_eq!(output, 2001.0);
@@ -445,7 +534,7 @@ mod tests {
     #[test]
     fn separates_cache_read_from_input() {
         let line = message_line(403, 12800, 266, 13469);
-        let (input, cache_read, output, _, _) = parse_line(&line).expect("should parse");
+        let (input, cache_read, output, _, _, _) = parse_line(&line).expect("should parse");
         assert_eq!(input, 403.0);
         assert_eq!(cache_read, 12800.0);
         assert_eq!(output, 266.0);
@@ -467,7 +556,7 @@ mod tests {
     #[test]
     fn keeps_cache_only_message() {
         let line = message_line(0, 9472, 0, 9472);
-        let (input, cache_read, output, _, _) = parse_line(&line).expect("should parse");
+        let (input, cache_read, output, _, _, _) = parse_line(&line).expect("should parse");
         assert_eq!(input, 0.0);
         assert_eq!(cache_read, 9472.0);
         assert_eq!(output, 0.0);
@@ -479,7 +568,7 @@ mod tests {
     #[test]
     fn reads_model_from_message_source() {
         let line = message_line_with_model(9677, 427, "deepseek-v4-flash");
-        let (_, _, _, _, model) = parse_line(&line).expect("should parse");
+        let (_, _, _, _, model, _) = parse_line(&line).expect("should parse");
         assert_eq!(model, "deepseek-v4-flash");
     }
 
@@ -489,7 +578,7 @@ mod tests {
     #[test]
     fn prefers_requested_model_over_response_model() {
         let line = message_line_with_model(100, 10, "MiniMax-M3");
-        let (_, _, _, _, model) = parse_line(&line).expect("should parse");
+        let (_, _, _, _, model, _) = parse_line(&line).expect("should parse");
         assert_eq!(
             model, "MiniMax-M3",
             "must not pick the -ga- versioned alias"
@@ -516,7 +605,7 @@ mod tests {
     fn observed_models_are_priceable() {
         for m in ["deepseek-v4-flash", "MiniMax-M3"] {
             let line = message_line_with_model(10, 5, m);
-            let (_, _, _, _, model) = parse_line(&line).expect("should parse");
+            let (_, _, _, _, model, _) = parse_line(&line).expect("should parse");
             assert_eq!(model, m, "model must survive extraction verbatim");
             if crate::pricing::COST_ESTIMATION_ENABLED {
                 assert!(
@@ -538,7 +627,7 @@ mod tests {
     #[test]
     fn message_without_source_leaves_model_unset() {
         let line = message_line(100, 0, 50, 150);
-        let (_, _, _, _, model) = parse_line(&line).expect("should parse");
+        let (_, _, _, _, model, _) = parse_line(&line).expect("should parse");
         assert!(model.is_empty(), "expected unclassified, got {model}");
     }
 
@@ -569,19 +658,109 @@ mod tests {
         );
 
         let mm: f64 = by_model
-            .get("MiniMax-M3")
+            .get(&(PROVIDER.into(), "MiniMax-M3".into()))
             .unwrap()
             .values()
             .map(|v| v.0 + v.1 + v.2)
             .sum();
         assert_eq!(mm, 1650.0, "1500 + 150");
         let ds: f64 = by_model
-            .get("deepseek-v4-flash")
+            .get(&(PROVIDER.into(), "deepseek-v4-flash".into()))
             .unwrap()
             .values()
             .map(|v| v.0 + v.1 + v.2)
             .sum();
         assert_eq!(ds, 4040.0);
+    }
+
+    /// 计费账户必须跟着每条消息走：真实日志里 `deepseek-v4.1-flash` 大部分
+    /// 是经 `opencode-go` 调用的。只读模型名会把账单算进 DeepSeek。
+    #[test]
+    fn reads_provider_from_message_source() {
+        let line = message_line_with_model(100, 10, "deepseek-v4.1-flash");
+        let (_, _, _, _, model, provider) = parse_line(&line).expect("should parse");
+        assert_eq!(model, "deepseek-v4.1-flash");
+        assert_eq!(provider, PROVIDER);
+    }
+
+    /// 老版 attempt 布局没有 `message.source`，账户只能留空（归因层再按模型名
+    /// 兜底），绝不能凭空捏一个账户。
+    #[test]
+    fn legacy_attempt_layout_leaves_provider_unset() {
+        let line = line_with(&usage_chunk(1200, 340));
+        let (_, _, _, _, _, provider) = parse_line(&line).expect("should parse");
+        assert!(provider.is_empty(), "expected no provider, got {provider}");
+    }
+
+    /// 走本机路由的会话模型名是 `auto`，必须落成哨兵而不是当真实模型记账。
+    /// 审计实测这批 1.14 亿 tokens 之前既没有进 `__via_router__` 替换链，也没
+    /// 归到任何真实模型，在模型页变成一个叫 "auto" 的假桶。
+    #[test]
+    fn routed_session_becomes_the_router_sentinel() {
+        let line = message_line_with_source(1000, 200, "auto", "local-router");
+        let (_, _, _, _, model, provider) = parse_line(&line).expect("should parse");
+        assert_eq!(model, crate::local::ROUTED_MODEL);
+        // 账户仍然要留着：它说明这批 token 是路由代付的，前端做替换归因要用。
+        assert_eq!(provider, "local-router");
+    }
+
+    /// 反例：`auto` 出现在真实上游账户下时是上游自己给的模型名，不能凭字面量
+    /// 当路由。判据必须是账户，不是 "auto" 这三个字母。
+    #[test]
+    fn auto_on_a_real_provider_is_not_a_routed_session() {
+        let line = message_line_with_source(1000, 200, "auto", "opencode-go");
+        let (_, _, _, _, model, provider) = parse_line(&line).expect("should parse");
+        assert_eq!(model, "auto");
+        assert_eq!(provider, "opencode-go");
+    }
+
+    /// 同一个模型经两个账户调用时要分成两桶：合成一行等于把账单强行归给其中
+    /// 一方，正是用户看到的"用量都算进 DeepSeek"那个 bug。
+    #[test]
+    fn same_model_on_two_providers_splits_into_two_buckets() {
+        let text = format!(
+            "{}\n{}\n{}",
+            message_line_with_source(900, 90, "deepseek-v4.1-flash", "opencode-go"),
+            message_line_with_source(100, 10, "deepseek-v4.1-flash", "deepseek"),
+            message_line_with_source(400, 40, "deepseek-v4.1-flash", "opencode-go"),
+        );
+        let mut by_day = BTreeMap::new();
+        let mut by_account = BTreeMap::new();
+        aggregate_lines(&text, &mut by_day, &mut by_account);
+
+        assert_eq!(by_account.len(), 2, "two accounts must stay separate");
+        let sum_for = |provider: &str| -> f64 {
+            by_account
+                .get(&(provider.to_string(), "deepseek-v4.1-flash".to_string()))
+                .unwrap()
+                .values()
+                .map(|v| v.0 + v.1 + v.2)
+                .sum()
+        };
+        assert_eq!(sum_for("opencode-go"), 1430.0, "900+90 + 400+40");
+        assert_eq!(sum_for("deepseek"), 110.0, "100+10");
+        let day_total: f64 = by_day.values().map(|v| v.0 + v.1 + v.2).sum();
+        assert_eq!(day_total, 1540.0, "per-day total must still reconcile");
+    }
+
+    /// 同上，但模型名的空值桶也要按账户拆开：未记模型的调用同样可能来自不同
+    /// 账户，合桶会让未分类用量归错账单。
+    #[test]
+    fn unclassified_model_is_still_split_by_provider() {
+        let text = format!(
+            "{}\n{}",
+            message_line_with_source(10, 1, "", "opencode-go"),
+            message_line_with_source(20, 2, "", "ark-cn"),
+        );
+        let mut by_day = BTreeMap::new();
+        let mut by_account = BTreeMap::new();
+        aggregate_lines(&text, &mut by_day, &mut by_account);
+
+        let unclassified = crate::local::UNCLASSIFIED_MODEL.to_string();
+        assert_eq!(by_account.len(), 2);
+        assert!(by_account
+            .contains_key(&("opencode-go".to_string(), unclassified.clone())));
+        assert!(by_account.contains_key(&("ark-cn".to_string(), unclassified)));
     }
 
     #[test]
@@ -654,7 +833,7 @@ mod tests {
         std::fs::write(&path, &buf).unwrap();
 
         let text = decompress_to_string(&path).expect("should decompress");
-        let (input, _cache, output, _, _) =
+        let (input, _cache, output, _, _, _) =
             parse_line(text.lines().next().unwrap()).expect("should parse");
         assert_eq!(input, 4242.0);
         assert_eq!(output, 24.0);

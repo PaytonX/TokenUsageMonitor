@@ -185,6 +185,7 @@ impl Provider for OpenAIProvider {
                     kind: "provider".to_string(),
                     date: date.to_string(),
                     model: String::new(),
+                    provider: String::new(),
                     input: 0.0,
                     cache_read: 0.0,
                     output: 0.0,

@@ -170,6 +170,9 @@ export function buildAggregateModels(devices: HubDevice[]): LocalModelUsage[] {
     if (total_tokens > 0) {
       out.push({
         model: dominantDisplayName(variants.get(key) ?? new Map()),
+        // 跨设备汇总时账户维度没法合并（同一模型在不同机器可能走不同 Key），
+        // 空串 = 未记；宁可留空也不猜一个账户。
+        provider: "",
         total_tokens,
         cost: 0,
         currency: "",

@@ -32,6 +32,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   kimi: "Kimi",
   doubao: "mp.doubao",
   xai: "xAI",
+  opencode: "OpenCode",
   other: "mp.other",
 };
 
@@ -195,6 +196,104 @@ export function providerForModel(model: string, source?: string): string {
   if (best) return best.key;
   if (source && TOOL_DEFAULT_PROVIDER[source]) return TOOL_DEFAULT_PROVIDER[source];
   return "other";
+}
+
+/**
+ * 账本里的**上游计费账户 id** → provider key；认不出返回 null。
+ *
+ * 为什么账户不能靠模型名推：`deepseek-v4.1-flash` 是本机最常经 **OpenCode Go**
+ * 调的模型，只按名字归因会把整笔账单算到 DeepSeek 名下（用户实测"趋势页
+ * Provider 用量都算进 DeepSeek"，879 条消息 / 77.7M tokens 就是这么错的）。
+ * 账户 id 记在账本的 `provider` 列（`message.source.provider`），是权威来源。
+ *
+ * 取值形态来自各家客户端，写法不统一（`opencode-go` / `ark-cn` /
+ * `minimax-cn` / `volcanoagentplan`），所以先查别名表，再复用模型名的前缀
+ * 规则做兜底；两者都不中就是 null —— 由调用方退回按模型名归因，而不是猜。
+ *
+ * 注意 `local-router` 这类**本机路由**返回 null：路由行的真实模型来自路由台账
+ * （见 `providerForRoutedSlice`），账户名在这里不代表任何厂商。
+ */
+const ACCOUNT_ALIASES: Record<string, string> = {
+  "opencode-go": "opencode",
+  "opencode-zen": "opencode",
+  "opencode-go-zen": "opencode",
+  opencode: "opencode",
+  ark: "volcengine",
+  "ark-cn": "volcengine",
+  volcanoagentplan: "volcengine",
+  volcengine: "volcengine",
+  "minimax-cn": "minimax",
+  minimax: "minimax",
+  deepseek: "deepseek",
+  "deepseek-cn": "deepseek",
+  glm: "glm",
+  zhipu: "glm",
+  anthropic: "anthropic",
+  openai: "openai",
+  gemini: "gemini",
+  qwen: "qwen",
+  kimi: "kimi",
+  moonshot: "kimi",
+  xai: "xai",
+  doubao: "doubao",
+};
+
+/** 本机路由账户名——显式排除，避免被别名/前缀误认成厂商。 */
+const ROUTER_ACCOUNTS = new Set([
+  "local-router",
+  "local_router",
+  "localrouter",
+  "token-router",
+  "tokenrouter",
+  "tum-router",
+]);
+
+/**
+ * 账户名是否指向本机路由。带后缀的变体（`local-router-minimax` 这种把承载
+ * 厂商拼进实例名的写法）也要认：否则前缀兜底会把路由账户当厂商账户，
+ * 账单就会挂到一个压根没出钱的 Provider 上。
+ */
+function isRouterAccount(a: string): boolean {
+  return (
+    ROUTER_ACCOUNTS.has(a) ||
+    a.startsWith("local-router") ||
+    a.startsWith("local_router") ||
+    a.startsWith("token-router") ||
+    a.startsWith("tokenrouter")
+  );
+}
+
+export function providerKeyForAccount(account: string | undefined | null): string | null {
+  const a = (account ?? "").trim().toLowerCase();
+  if (!a) return null;
+  if (isRouterAccount(a)) return null;
+  const alias = ACCOUNT_ALIASES[a];
+  if (alias) return alias;
+  // 别名表没收录的新账户（各家客户端随时会加）：借模型前缀规则兜底。
+  // 只在前缀真正命中时采用，命不中就返回 null，绝不落到 "other"——
+  // "other" 是归因结论，不该由一个认不出的账户名决定。
+  let best: { len: number; key: string } | null = null;
+  for (const [prefix, key] of PREFIX_RULES) {
+    if (a.includes(prefix) && (!best || prefix.length > best.len)) {
+      best = { len: prefix.length, key };
+    }
+  }
+  return best ? best.key : null;
+}
+
+/**
+ * 账本一行的 provider 归因：**账户优先，模型名兜底**。
+ *
+ * 与 `providerForRoutedSlice`（路由台账行）同一原则。直连行的 `provider` 通常
+ * 为空（工具没记账户），此时行为与旧版完全一致；只有真正记了账户的行才改变
+ * 归属——这正是修复"经 OpenCode Go 的 DeepSeek 用量被算进 DeepSeek"的最小切口。
+ */
+export function providerForLedgerRow(row: {
+  model: string;
+  source?: string;
+  provider?: string;
+}): string {
+  return providerKeyForAccount(row.provider) ?? providerForModel(row.model, row.source);
 }
 
 /** 路由台账来源键前缀。镜像后端 `router::ledger_source` 的 `router:`。 */

@@ -1852,10 +1852,16 @@ pub async fn upsert_account(
         let client = state.http.read().await.clone();
         if let Some(provider) = build_account_provider(&account, client, state.storage.clone()) {
             registry.insert(provider.clone());
-            crate::scheduler::spawn_one(app, provider, instance_id.clone());
+            crate::scheduler::spawn_one(app.clone(), provider, instance_id.clone());
         }
     }
     drop(registry);
+    // 账户目录是主窗的 settings 快照的一部分。这里只发 settings_wake 时，主窗
+    // 仍拿着旧账户列表；它下一次「整对象保存」（胶囊展开/折叠、路由快速开关）
+    // 会把刚加的账户写没，设置窗再保存就会报 accounts 冲突。所以账户增删必须
+    // 与其他 settings 写入一样广播完整快照。
+    let saved = state.settings.get().await;
+    let _ = app.emit("settings-changed", &saved);
     let _ = state.settings_wake.send(delta);
     Ok(instance_id)
 }
@@ -1863,6 +1869,7 @@ pub async fn upsert_account(
 /// Remove an account and its credentials. Polling for it stops.
 #[tauri::command]
 pub async fn remove_account(
+    app: AppHandle,
     state: State<'_, AppState>,
     instance_id: String,
 ) -> Result<(), String> {
@@ -1883,6 +1890,23 @@ pub async fn remove_account(
     state.credentials.write().await.remove(&instance_id);
     state.registry.write().await.remove(&instance_id);
     state.state.write().await.remove(&instance_id);
+    // 账本对账：被删账户的 `kind='provider'` 日账行再没有写入方，留着就会在
+    // 跨来源视图里永久撑大总量（实测换 id 后同一账号被算了两遍）。
+    let live: std::collections::BTreeSet<String> = state
+        .settings
+        .get()
+        .await
+        .accounts
+        .iter()
+        .map(|a| a.instance_id.clone())
+        .collect();
+    if let Err(e) = state.storage.prune_orphan_provider_rows(&live) {
+        tracing::warn!(target: "tum.storage", "pruning orphan ledger rows after removal failed: {e:#}");
+    }
+    // 与 upsert_account 同理：删除也必须让主窗丢掉旧快照，否则它下次整对象
+    // 保存会把已删账户写回来（或者把仍存在的账户写没）。
+    let saved = state.settings.get().await;
+    let _ = app.emit("settings-changed", &saved);
     let _ = state.settings_wake.send(delta);
     Ok(())
 }

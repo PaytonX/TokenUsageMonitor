@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>胶囊圆环信息方案 — 视觉确认稿（2026-10-27）</title>
+<style>
+  /* 设计令牌与 src/styles/tokens.css 同源，内联以便自包含预览 */
+  :root {
+    --tum-bg: #1a1b1e;
+    --tum-surface: rgba(255, 255, 255, 0.055);
+    --tum-surface-hover: rgba(255, 255, 255, 0.085);
+    --tum-border: rgba(255, 255, 255, 0.09);
+    --tum-border-strong: rgba(255, 255, 255, 0.16);
+    --tum-text-primary: #e6e8ea;
+    --tum-text-secondary: #b3b9c0;
+    --tum-text-muted: #8b949e;
+    --tum-accent: #4cc2ff;
+    --tum-accent-fill: rgba(76, 194, 255, 0.12);
+    --tum-accent-stroke: rgba(76, 194, 255, 0.45);
+    --tum-accent-glow: rgba(76, 194, 255, 0.35);
+    --tum-ok: #6ccb5f;
+    --tum-warn: #ffc83d;
+    --tum-crit: #ff5f56;
+    --tum-amber: #fbbf24;
+    --tum-radius-xs: 4px;
+    --tum-radius-sm: 8px;
+    --tum-radius-md: 12px;
+    --tum-radius-lg: 16px;
+    --tum-radius-pill: 999px;
+    --tum-font: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    --tum-font-mono: "Cascadia Code", "Cascadia Mono", Consolas, monospace;
+    --tum-blur: 24px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { min-height: 100%; }
+  body {
+    background: var(--tum-bg);
+    color: var(--tum-text-primary);
+    font-family: var(--tum-font);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+    padding: 18px;
+  }
+
+  header { max-width: 1040px; margin: 0 auto 12px; }
+  h1 { font-size: 17px; font-weight: 600; letter-spacing: .2px; }
+  .sub { color: var(--tum-text-muted); font-size: 12px; margin-top: 5px; line-height: 1.65; max-width: 860px; }
+  .toolbar {
+    display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
+    margin-top: 12px; padding: 10px 12px;
+    border: 1px solid var(--tum-border); border-radius: var(--tum-radius-md);
+    background: rgba(255,255,255,.025);
+  }
+  .ctl { display: inline-flex; align-items: center; gap: 8px; }
+  .ctl > span { font-size: 11px; color: var(--tum-text-muted); font-family: var(--tum-font-mono); }
+  .seg { display: inline-flex; border: 1px solid var(--tum-border-strong); border-radius: var(--tum-radius-sm); overflow: hidden; }
+  .seg button {
+    border: none; background: transparent; color: var(--tum-text-muted);
+    font-size: 12px; font-family: inherit; padding: 5px 11px; cursor: pointer;
+    transition: color .15s ease, background .15s ease;
+  }
+  .seg button:hover { color: var(--tum-text-primary); }
+  .seg button.is-active { background: var(--tum-accent-fill); color: var(--tum-text-primary); }
+  .seg button:focus-visible { outline: 2px solid var(--tum-accent); outline-offset: 2px; }
+  select {
+    background: var(--tum-surface); color: var(--tum-text-secondary);
+    border: 1px solid var(--tum-border-strong); border-radius: var(--tum-radius-sm);
+    padding: 4px 8px; font-family: inherit; font-size: 12px;
+  }
+  select:focus-visible { outline: 2px solid var(--tum-accent); outline-offset: 1px; }
+  .note { color: var(--tum-text-muted); font-size: 11px; font-family: var(--tum-font-mono); }
+
+  /* 舞台：模拟桌面（透明窗外能看到的东西） */
+  .stage-wrap { max-width: 1040px; margin: 0 auto; }
+  .stage {
+    position: relative; min-height: 500px; overflow: hidden;
+    border: 1px solid var(--tum-border); border-radius: var(--tum-radius-lg);
+    background:
+      radial-gradient(90% 70% at 78% 12%, rgba(64, 120, 180, .35), transparent 60%),
+      radial-gradient(70% 60% at 12% 88%, rgba(120, 70, 160, .22), transparent 62%),
+      linear-gradient(145deg, #18202b 0%, #10141a 55%, #0b0e12 100%);
+  }
+  .stage::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(255,255,255,.022) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.022) 1px, transparent 1px);
+    background-size: 34px 34px;
+    mask-image: radial-gradient(80% 80% at 50% 40%, #000 30%, transparent 78%);
+  }
+  .stage__label {
+    position: absolute; top: 12px; left: 14px; z-index: 1;
+    font-family: var(--tum-font-mono); font-size: 10px; letter-spacing: .8px;
+    text-transform: uppercase; color: rgba(230,232,234,.5);
+  }
+  .stage__hint {
+    position: absolute; top: 12px; right: 14px; z-index: 1;
+    font-family: var(--tum-font-mono); font-size: 10px; color: rgba(230,232,234,.42);
+  }
+  .zoom { transform-origin: 50% 38%; }
+  .zoom.one { transform: scale(1); }
+  .zoom.onefive { transform: scale(1.35); }
+
+  /* 模拟 Tauri 窗口边界：胶囊只能渲染在自己的窗口里，展开必须改窗口尺寸 */
+  .win {
+    position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%);
+    width: 168px; min-height: 56px;
+    border: 1px dashed rgba(76,194,255,.28);
+    border-radius: 20px;
+    transition: height .24s cubic-bezier(.22,.9,.28,1), width .24s cubic-bezier(.22,.9,.28,1), border-color .2s ease;
+  }
+  .win.no-outline { border-color: transparent; }
+  .win.is-wide { width: 300px; }
+  .win.is-tall { min-height: 218px; }
+
+  /* 胶囊本体 */
+  .pill {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    border-radius: 20px;
+    border: 1px solid var(--tum-border-strong);
+    background: rgba(24, 26, 30, .82);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 10px 30px rgba(0,0,0,.45);
+    overflow: hidden;
+  }
+  .pill__main {
+    height: 56px; flex: none;
+    display: flex; align-items: center; gap: 6px; padding: 0 10px 0 8px;
+  }
+  .pill__ringbtn {
+    display: flex; align-items: center; gap: 6px;
+    background: transparent; border: none; color: inherit; font: inherit;
+    padding: 0; min-width: 0; cursor: pointer; text-align: left;
+  }
+  .pill__ringbtn:focus-visible { outline: 2px solid var(--tum-accent); outline-offset: 2px; border-radius: 12px; }
+  .pill__pct {
+    font-family: var(--tum-font-mono); font-size: 12px; color: var(--tum-text-primary);
+    font-variant-numeric: tabular-nums; letter-spacing: .2px;
+  }
+  .pill__pct.is-crit { color: var(--tum-crit); }
+  .pill__divider { width: 1px; height: 20px; background: var(--tum-border); flex: none; }
+  .pill__badge {
+    font-size: 11px; color: var(--tum-text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* B1：三环同心的图例常驻在主行里，因此要挤掉账户名 */
+  .pill__legend { display: none; flex-direction: column; gap: 1px; min-width: 0; }
+  .pill__legend.is-on { display: flex; }
+  .pill__legend .legend__row { gap: 3px; font-size: 8px; }
+  .pill__legend .legend__name { font-size: 8px; }
+  .pill__legend .legend__pct { font-size: 8px; }
+  /* B2：三个小环并排，环下带标签与百分比 */
+  .trios--compact { gap: 6px; }
+  .trios--compact .trio { gap: 1px; }
+  .trios--compact .trio__name { font-size: 7px; }
+  .trios--compact .trio__pct { font-size: 9px; }
+  .pill__spacer { flex: 1; }
+  .pill__x {
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 1px solid var(--tum-border); background: transparent;
+    color: var(--tum-text-muted); font-size: 10px; line-height: 1; cursor: pointer;
+  }
+  .pill__x:hover { color: var(--tum-text-primary); border-color: var(--tum-border-strong); }
+  .pill__detail {
+    display: none;
+    flex: 1; min-height: 0; overflow: hidden;
+    border-top: 1px solid var(--tum-border);
+    padding: 8px;
+    flex-direction: column; gap: 7px;
+    opacity: 0; transform: translateY(-4px);
+    transition: opacity .18s ease, transform .18s ease;
+  }
+  .pill.is-open .pill__detail { display: flex; opacity: 1; transform: none; }
+  .pill__detail-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+  }
+  .pill__detail-name { font-size: 11px; font-weight: 600; }
+  .pill__detail-plan {
+    font-family: var(--tum-font-mono); font-size: 9px; color: var(--tum-text-muted);
+    text-transform: uppercase; letter-spacing: .6px;
+  }
+  .pill__detail-note { font-size: 9px; color: var(--tum-text-muted); line-height: 1.45; }
+
+  /* 窗口用量行（方案 A 的核心） */
+  .wrow { display: flex; flex-direction: column; gap: 3px; }
+  .wrow__top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+  .wrow__label {
+    font-family: var(--tum-font-mono); font-size: 9px; letter-spacing: .7px;
+    color: var(--tum-text-muted); text-transform: uppercase;
+  }
+  .wrow__amount {
+    font-family: var(--tum-font-mono); font-size: 9px; color: var(--tum-text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .wrow__pct {
+    font-family: var(--tum-font-mono); font-size: 11px; font-variant-numeric: tabular-nums;
+  }
+  .wrow__track { height: 3px; border-radius: 2px; background: rgba(255,255,255,.09); overflow: hidden; }
+  .wrow__fill { display: block; height: 100%; border-radius: 2px; }
+  .wrow__reset {
+    font-family: var(--tum-font-mono); font-size: 8px; color: var(--tum-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .tone-ok { color: var(--tum-ok); }
+  .tone-warn { color: var(--tum-warn); }
+  .tone-crit { color: var(--tum-crit); }
+
+  /* 多圆环（方案 B） */
+  .multi { display: flex; align-items: center; gap: 8px; }
+  .legend { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .legend__row { display: flex; align-items: baseline; gap: 4px; font-size: 9px; }
+  .legend__dot { width: 5px; height: 5px; border-radius: 50%; flex: none; }
+  .legend__name { color: var(--tum-text-muted); font-family: var(--tum-font-mono); letter-spacing: .4px; }
+  .legend__pct { margin-left: auto; font-family: var(--tum-font-mono); font-variant-numeric: tabular-nums; }
+  .trios { display: flex; align-items: flex-end; gap: 10px; }
+  .trio { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .trio__name {
+    font-family: var(--tum-font-mono); font-size: 8px; letter-spacing: .5px;
+    color: var(--tum-text-muted); text-transform: uppercase;
+  }
+  .trio__pct { font-family: var(--tum-font-mono); font-size: 10px; font-variant-numeric: tabular-nums; }
+
+  /* 说明区 */
+  .compare { max-width: 1040px; margin: 16px auto 30px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .card {
+    border: 1px solid var(--tum-border); border-radius: var(--tum-radius-md);
+    background: rgba(255,255,255,.028); padding: 12px;
+    display: flex; flex-direction: column; gap: 7px;
+  }
+  .card h2 { font-size: 12px; font-weight: 600; letter-spacing: .3px; }
+  .card .tag {
+    align-self: flex-start; font-family: var(--tum-font-mono); font-size: 9px;
+    letter-spacing: .6px; text-transform: uppercase; color: var(--tum-accent);
+    border: 1px solid var(--tum-accent-stroke); border-radius: 3px; padding: 1px 5px;
+  }
+  .card p { font-size: 11px; color: var(--tum-text-secondary); line-height: 1.6; }
+  .card ul { padding-left: 14px; display: flex; flex-direction: column; gap: 4px; }
+  .card li { font-size: 11px; color: var(--tum-text-secondary); line-height: 1.55; }
+  .card .pro { color: var(--tum-ok); }
+  .card .con { color: var(--tum-warn); }
+  .recommend {
+    max-width: 1040px; margin: 0 auto 24px;
+    border: 1px solid var(--tum-accent-stroke); border-radius: var(--tum-radius-md);
+    background: linear-gradient(120deg, rgba(76,194,255,.10), rgba(76,194,255,.03));
+    padding: 12px 14px; display: flex; flex-direction: column; gap: 5px;
+  }
+  .recommend strong { font-size: 12px; color: var(--tum-accent); }
+  .recommend p { font-size: 11.5px; color: var(--tum-text-secondary); line-height: 1.65; }
+  .kbd { font-family: var(--tum-font-mono); font-size: 10px; border: 1px solid var(--tum-border-strong); border-radius: 3px; padding: 0 4px; color: var(--tum-text-secondary); }
+</style>
+</head>
+<body>
+<header>
+  <h1>胶囊圆环：把「一个窗口」扩到「全部窗口」的两种方案</h1>
+  <p class="sub">
+    胶囊常态是 168×56 的透明窗口，圆环目前只显示 <code>ring_window</code> 选中的那一个窗口
+    （auto = 最吃紧的窗口）。下面两种方案都保持「不展开时仍然只有一枚圆环」，
+    区别在于额外信息放在哪里。虚线框表示 Tauri 窗口边界——浮层不能超出窗口，
+    展开必然意味着改窗口尺寸（现有 <code>expandPill()</code> 已经在做这件事）。
+  </p>
+  <div class="toolbar">
+    <div class="ctl">
+      <span>方案</span>
+      <div class="seg" id="scheme">
+        <button data-scheme="a" class="is-active">A · 悬浮窗口明细</button>
+        <button data-scheme="b1">B1 · 三环同心</button>
+        <button data-scheme="b2">B2 · 三环并排</button>
+      </div>
+    </div>
+    <div class="ctl">
+      <span>账户</span>
+      <select id="account">
+        <option value="minimax">MiniMax Token Plan（token 制）</option>
+        <option value="opencode">OpenCode Go（百分比制）</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <span>缩放</span>
+      <div class="seg" id="zoom">
+        <button data-zoom="1" class="is-active">1×</button>
+        <button data-zoom="1.35">1.35×</button>
+      </div>
+    </div>
+    <div class="ctl">
+      <span>边界</span>
+      <div class="seg" id="outline">
+        <button data-outline="1" class="is-active">显示</button>
+        <button data-outline="0">隐藏</button>
+      </div>
+    </div>
+    <span class="note">把指针移到圆环 / 胶囊上，或点击圆环切换展开。</span>
+  </div>
+</header>
+
+<div class="stage-wrap">
+  <div class="stage">
+    <span class="stage__label">Desktop · 透明窗外的桌面</span>
+    <span class="stage__hint" id="stageHint">方案 A · 悬停圆环展开 →</span>
+    <div class="zoom onefive" id="zoomBox" style="position:absolute; inset:0;">
+      <div class="win" id="win">
+        <div class="pill" id="pill">
+          <div class="pill__main">
+            <button class="pill__ringbtn" id="ringBtn" aria-label="展开窗口用量明细">
+              <span id="ringSlot"></span>
+              <span class="pill__pct" id="ringPct">62%</span>
+            </button>
+            <span class="pill__divider" id="divider"></span>
+            <span class="pill__badge" id="badge">MiniMax</span>
+            <span class="pill__legend" id="mainLegend"></span>
+            <span class="pill__spacer"></span>
+            <button class="pill__x" aria-label="关闭">×</button>
+          </div>
+          <div class="pill__detail" id="detail"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="compare">
+  <div class="card">
+    <span class="tag">方案 A</span>
+    <h2>悬停圆环 → 窗口明细</h2>
+    <p>复用现有的「悬停展开」链路：胶囊长高，展开区从「每个账户一行」换成当前聚焦账户的三个窗口。</p>
+    <ul>
+      <li class="pro">+ 信息完整：5h / 周 / 月各自的已用、额度、重置时间都能放下。</li>
+      <li class="pro">+ 不改变常态：收起时仍是一枚圆环，不占额外宽度。</li>
+      <li class="pro">+ 与详情卡同一套语言，用户不用学新图例。</li>
+      <li class="con">− 需要悬停/点击才看得到，不是一眼可读。</li>
+      <li class="con">− 贴边态展开方向要按边处理（现有 expandPill 已解决）。</li>
+    </ul>
+  </div>
+  <div class="card">
+    <span class="tag">B1</span>
+    <h2>三环同心</h2>
+    <p>一枚 38px 圆环里画三条弧：内 5h、中 周、外 月；图例塞进 56px 主行，替掉账户名与大数字。</p>
+    <ul>
+      <li class="pro">+ 常驻可见，不需要悬停。</li>
+      <li class="pro">+ 仍只占一枚环的位置，窗口宽度不变。</li>
+      <li class="con">− 38px 下三条弧各约 3px，方向/长度都难分辨。</li>
+      <li class="con">− 必须配图例；图例又挤掉了账户名。</li>
+      <li class="con">− 色觉障碍用户无法区分弧线。</li>
+    </ul>
+  </div>
+  <div class="card">
+    <span class="tag">B2</span>
+    <h2>三环并排</h2>
+    <p>三个 22px 小环并排，各带窗口标签与百分比。阅读顺序最直白。</p>
+    <ul>
+      <li class="pro">+ 每个窗口独立、无需图例，一眼对应。</li>
+      <li class="pro">+ 能塞进 168px 宽，不必改窗口几何。</li>
+      <li class="con">− 必须挤掉账户名与「最吃紧窗口」的大数字。</li>
+      <li class="con">− 22px 环 + 8px 标签，远看几乎只剩三个点。</li>
+      <li class="con">− 想同时保留账户名就得加宽窗口，贴边定位要重算。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="recommend">
+  <strong>推荐：A，并把 B 作为「聚焦账户后的常驻摘要」的备选</strong>
+  <p>
+    现有 <code>expandPill()</code> 已经解决了「窗口长高、贴边方向、收起动画」三件事，
+    A 只需要把展开内容从「所有账户各一行」改成「当前账户的三个窗口 + 重置时间」，
+    实现风险最低，也最符合现有详情卡的阅读方式。B1 的三条弧在 38px 下各约 3px，
+    实际使用中大概率仍然要靠图例，而图例已经把账户名挤掉了；B2 虽然能塞进
+    168px，但代价是账户名与「最吃紧窗口」的大数字一起消失，胶囊退化成三个仪表点。
+    若你更看重「不悬停也能看到」，建议单独在展开区做一个 2×2 的窗口摘要，
+    而不是把三个环塞进常态胶囊。
+  </p>
+</div>
+
+<script>
+  const ACCOUNTS = {
+    minimax: {
+      name: 'MiniMax Token Plan',
+      short: 'MiniMax',
+      plan: 'Max',
+      unit: 'tokens',
+      windows: [
+        { key: '5h', used: 34.2e6, quota: 50e6, reset: '2h 10m' },
+        { key: 'W', used: 180e6, quota: 250e6, reset: '4d 06h' },
+        { key: 'M', used: 620e6, quota: 860e6, reset: '18d 04h' },
+      ],
+    },
+    opencode: {
+      name: 'OpenCode Go',
+      short: 'OpenCode',
+      plan: 'Go',
+      unit: 'percent',
+      windows: [
+        { key: '5h', used: 34, quota: 100, reset: '3h 42m' },
+        { key: 'W', used: 62, quota: 100, reset: '2d 11h' },
+        { key: 'M', used: 91, quota: 100, reset: '9d 08h' },
+      ],
+    },
+  };
+
+  const fmt = (v, unit) => {
+    if (unit === 'percent') return `${Math.round(v)}%`;
+    if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
+    if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+    if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+    return `${Math.round(v)}`;
+  };
+  const pctOf = (w) => Math.min(100, (w.used / w.quota) * 100);
+  const toneOf = (p) => (p >= 95 ? 'crit' : p >= 80 ? 'warn' : 'ok');
+  const toneVar = (p) => (p >= 95 ? 'var(--tum-crit)' : p >= 80 ? 'var(--tum-warn)' : 'var(--tum-ok)');
+
+  let scheme = 'a';
+  let accountKey = 'minimax';
+  let open = true;
+  let pinOpen = false;
+  let showOutline = true;
+
+  const $ = (id) => document.getElementById(id);
+  const win = $('win');
+  const pill = $('pill');
+  const detail = $('detail');
+  const ringSlot = $('ringSlot');
+  const ringPct = $('ringPct');
+  const divider = $('divider');
+  const badge = $('badge');
+  const mainLegend = $('mainLegend');
+  const stageHint = $('stageHint');
+
+  function ringSvg(value, size, stroke, color) {
+    const r = (size - stroke) / 2;
+    const c = 2 * Math.PI * r;
+    return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">
+      <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="rgba(255,255,255,.10)" stroke-width="${stroke}"/>
+      <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${color}" stroke-width="${stroke}"
+        stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - value)}"
+        transform="rotate(-90 ${size / 2} ${size / 2})"/>
+    </svg>`;
+  }
+
+  function tripleSvg(account, size) {
+    const colors = ['var(--tum-accent)', '#b58cf5', 'var(--tum-amber)'];
+    const radii = [0.30, 0.41, 0.52].map((f) => (size / 2 - 2) * f);
+    const stroke = Math.max(2, size * 0.075);
+    return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">
+      <circle cx="${size / 2}" cy="${size / 2}" r="${radii[2] + stroke}" fill="none" stroke="rgba(255,255,255,.11)" stroke-width="${stroke + 2}"/>
+      ${account.windows.map((w, i) => {
+        const r = radii[i];
+        const c = 2 * Math.PI * r;
+        return `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${colors[i]}" stroke-width="${stroke}"
+          stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pctOf(w) / 100)}"
+          transform="rotate(-90 ${size / 2} ${size / 2})"/>`;
+      }).join('')}
+    </svg>`;
+  }
+
+  const LEGEND_COLORS = ['var(--tum-accent)', '#b58cf5', 'var(--tum-amber)'];
+
+  function legendRows(account) {
+    return account.windows.map((w, i) => {
+      const p = pctOf(w);
+      return `<span class="legend__row"><span class="legend__dot" style="background:${LEGEND_COLORS[i]}"></span><span class="legend__name">${w.key}</span><span class="legend__pct tone-${toneOf(p)}">${Math.round(p)}%</span></span>`;
+    }).join('');
+  }
+
+  /** B2：三个小环并排，环下带窗口名与百分比（挤掉账户名与大数字）。 */
+  function compactTrios(account) {
+    return `<span class="trios trios--compact">${account.windows.map((w) => {
+      const p = pctOf(w);
+      return `<span class="trio">
+        ${ringSvg(p / 100, 22, 2.5, toneVar(p))}
+        <span class="trio__name">${w.key}</span>
+        <span class="trio__pct tone-${toneOf(p)}">${Math.round(p)}%</span>
+      </span>`;
+    }).join('')}</span>`;
+  }
+
+  function render() {
+    const account = ACCOUNTS[accountKey];
+    const worst = account.windows.reduce((a, b) => (pctOf(a) >= pctOf(b) ? a : b));
+    const worstPct = pctOf(worst);
+    const isA = scheme === 'a';
+    // 展开后详情头部已经有完整账户名，顶栏再放一个只会被 168px 挤成省略号。
+    const showBadge = isA && !open;
+
+    // 主行：A 保持单环 + 大数字 + 账户名；B1/B2 用圆环本身承载三窗口信息，
+    // 因此把大数字、分隔线、账户名让位出来。
+    ringSlot.innerHTML =
+      scheme === 'b1'
+        ? tripleSvg(account, 38)
+        : scheme === 'b2'
+          ? compactTrios(account)
+          : ringSvg(worstPct / 100, 38, 3.5, toneVar(worstPct));
+    ringPct.style.display = isA ? '' : 'none';
+    ringPct.textContent = `${Math.round(worstPct)}%`;
+    ringPct.className = `pill__pct ${toneOf(worstPct) === 'crit' ? 'is-crit' : ''}`;
+    divider.style.display = showBadge ? '' : 'none';
+    badge.style.display = showBadge ? '' : 'none';
+    badge.textContent = account.short;
+    mainLegend.classList.toggle('is-on', scheme === 'b1');
+    mainLegend.innerHTML = scheme === 'b1' ? legendRows(account) : '';
+
+    pill.classList.toggle('is-open', isA ? open : false);
+    win.style.minHeight = isA ? (open ? '258px' : '56px') : '56px';
+    win.classList.toggle('no-outline', !showOutline);
+
+    if (isA) {
+      stageHint.textContent = '方案 A · 悬停圆环 / 胶囊展开窗口明细 →';
+      detail.innerHTML = `
+        <div class="pill__detail-head">
+          <span class="pill__detail-name">${account.name}</span>
+          <span class="pill__detail-plan">${account.plan}</span>
+        </div>
+        ${account.windows.map((w) => {
+          const p = pctOf(w);
+          return `<div class="wrow">
+            <div class="wrow__top">
+              <span class="wrow__label">${w.key}</span>
+              <span class="wrow__amount">${fmt(w.used, account.unit)} / ${fmt(w.quota, account.unit)}</span>
+              <span class="wrow__pct tone-${toneOf(p)}">${Math.round(p)}%</span>
+            </div>
+            <span class="wrow__track"><span class="wrow__fill" style="width:${p}%;background:${toneVar(p)}"></span></span>
+            <span class="wrow__reset">重置 · ${w.reset}</span>
+          </div>`;
+        }).join('')}
+        <div class="pill__detail-note">5h / 周 / 月各有独立额度，数字不可相加。</div>
+      `;
+    } else if (scheme === 'b1') {
+      stageHint.textContent = '方案 B1 · 三环同心，图例常驻在 56px 主行里 →';
+      detail.innerHTML = '';
+    } else {
+      stageHint.textContent = '方案 B2 · 三环并排，塞进 56px 主行 →';
+      detail.innerHTML = '';
+    }
+  }
+
+  // 方案 A：悬停展开，移出 260ms 收起；点击可钉住
+  let hideTimer = null;
+  function show() {
+    clearTimeout(hideTimer);
+    if (scheme === 'a') { open = true; render(); }
+  }
+  function scheduleHide() {
+    if (pinOpen) return;
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => { if (scheme === 'a') { open = false; render(); } }, 260);
+  }
+  pill.addEventListener('pointerenter', show);
+  pill.addEventListener('pointerleave', scheduleHide);
+  $('ringBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (scheme !== 'a') return;
+    pinOpen = !pinOpen;
+    open = pinOpen ? true : open;
+    render();
+  });
+
+  // 工具条
+  $('scheme').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-scheme]');
+    if (!btn) return;
+    scheme = btn.dataset.scheme;
+    pinOpen = false;
+    open = true;
+    [...e.currentTarget.querySelectorAll('button')].forEach((b) => b.classList.toggle('is-active', b === btn));
+    render();
+  });
+  $('account').addEventListener('change', (e) => { accountKey = e.target.value; render(); });
+  $('zoom').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-zoom]');
+    if (!btn) return;
+    [...e.currentTarget.querySelectorAll('button')].forEach((b) => b.classList.toggle('is-active', b === btn));
+    $('zoomBox').className = `zoom ${btn.dataset.zoom === '1' ? 'one' : 'onefive'}`;
+  });
+  $('outline').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-outline]');
+    if (!btn) return;
+    [...e.currentTarget.querySelectorAll('button')].forEach((b) => b.classList.toggle('is-active', b === btn));
+    showOutline = btn.dataset.outline === '1';
+    render();
+  });
+
+  render();
+</script>
+</body>
+</html>

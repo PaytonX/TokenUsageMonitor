@@ -50,6 +50,15 @@ export const PILL_MINI_ROW = 24;
 /** 明细行间距（px）。 */
 export const PILL_MINI_GAP = 6;
 
+/** 窗口明细（方案 A）每行高度：标签/数值一行 + 进度条 + 重置时间。 */
+export const PILL_DETAIL_ROW = 38;
+
+/** 窗口明细头部（账户名 + 套餐）高度。 */
+const PILL_DETAIL_HEAD = 34;
+
+/** 窗口明细底部说明与内边距。 */
+const PILL_DETAIL_FOOT = 26;
+
 /** 明细区上下内边距（px）。 */
 const PILL_MINI_PAD_TOP = 2;
 const PILL_MINI_PAD_BOTTOM = 8;
@@ -67,6 +76,23 @@ export function pillExpandedHeight(rows: number): number {
     PILL_MINI_PAD_BOTTOM -
     PILL_MINI_GAP +
     rows * (PILL_MINI_ROW + PILL_MINI_GAP)
+  );
+}
+
+/**
+ * 胶囊展开为「单账户窗口明细」时的高度（px）。
+ *
+ * 与 MiniPanel 的按账户行列表不同，方案 A 的展开内容是固定的三段结构：
+ * 账户头 + N 个窗口行 + 一行说明。下限按 1 行算——即使账户没有可展示的
+ * 窗口，也要留出说明文字的位置，不能把窗口缩到 56px 后让内容被裁。
+ */
+export function pillDetailHeight(rows: number): number {
+  const n = Math.max(1, Math.floor(rows));
+  return (
+    PILL_COLLAPSED_SIZE.height +
+    PILL_DETAIL_HEAD +
+    n * PILL_DETAIL_ROW +
+    PILL_DETAIL_FOOT
   );
 }
 

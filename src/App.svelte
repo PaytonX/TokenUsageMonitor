@@ -3,7 +3,8 @@
   import { flip } from "svelte/animate";
   import { fly } from "svelte/transition";
   import { get } from "svelte/store";
-  import { highlightKeyForKind, ledgerSeriesForKind } from "./lib/calendar-linkage";
+  import { toggleCardFocus } from "./lib/calendar-linkage";
+  import { applyDropIndex, dropIndexFor } from "./lib/card-order";
   import { LogicalSize } from "@tauri-apps/api/dpi";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import {
@@ -44,6 +45,7 @@
     type BurnInfo,
     type PeekSide,
     type RouterStatus,
+    defaultRouterSettings,
     ringWindowRemaining,
     providerShortName,
     payAsYouGoLabel,
@@ -73,12 +75,14 @@
     DASHBOARD_SIZE,
     PILL_COLLAPSED_SIZE,
     createSizeWriteQueue,
+    pillDetailHeight,
     pillExpandedHeight,
     shouldApplySizeWrite,
   } from "./lib/window-size";
   import ProviderCard from "./lib/components/ProviderCard.svelte";
   import ProgressRing from "./lib/components/ProgressRing.svelte";
   import MiniPanel from "./lib/components/MiniPanel.svelte";
+  import PillWindowDetail from "./lib/components/PillWindowDetail.svelte";
   import DetailCard from "./lib/components/DetailCard.svelte";
   import ProviderLogo from "./lib/components/ProviderLogo.svelte";
   import TrendPanel from "./lib/components/TrendPanel.svelte";
@@ -198,6 +202,8 @@
     }
   }
   function onCardHover(id: string, hovering: boolean) {
+    // 拖动排序时不弹详情：覆盖层会挡住落点，且拖过每张卡都触发一次很吵。
+    if (draggingId !== null) return;
     if (hovering) {
       cancelOverlayHide();
       hoveredId = id;
@@ -255,16 +261,16 @@
     placeOverlay();
   });
 
-  // 总量页卡片拖拽排序：snapshots 保持后端到达顺序（usage-updated 刷新不打断
-  // 用户排序），展示顺序由 cardOrder 偏好重排；拖拽经过时实时让位（dragOrder
-  // 临时序列 + flip 动画），dragend 提交并持久化，未拖成则原样还原。
+  // 总量页卡片拖拽排序：拖动期间**不动列表**，只在落点画一条线，松手才提交。
+  // 旧实现每次 dragover 都实时重排，指针跨中线时列表在指针下反复换位，
+  // 卡片会在两个位置之间抖，用户很难把它放到想要的位置。
   let cardOrder = $state<string[]>(readCardOrder());
   let draggingId = $state<string | null>(null);
-  let dragOrder = $state<string[]>([]);
+  /** 落点：在**排除被拖项之后**的列表里插入的下标；null = 不显示落点线。 */
+  let dropIndex = $state<number | null>(null);
   const orderedSnapshots = $derived.by(() => {
-    const order = draggingId !== null ? dragOrder : cardOrder;
-    if (order.length === 0) return snapshots;
-    const pos = new Map(order.map((id, i) => [id, i]));
+    if (cardOrder.length === 0) return snapshots;
+    const pos = new Map(cardOrder.map((id, i) => [id, i]));
     const known = snapshots
       .filter((s) => pos.has(s.provider_id))
       .sort(
@@ -273,32 +279,59 @@
     const fresh = snapshots.filter((s) => !pos.has(s.provider_id));
     return [...known, ...fresh];
   });
+  /** 落点线画在哪个槽位之前；`__after__` = 最后一项之后。 */
+  const dropLineBefore = $derived.by(() => {
+    if (draggingId === null || dropIndex === null) return null;
+    const rest = orderedSnapshots
+      .map((s) => s.provider_id)
+      .filter((id) => id !== draggingId);
+    return rest[dropIndex] ?? "__after__";
+  });
   function onCardDragStart(e: DragEvent, id: string) {
     draggingId = id;
-    dragOrder = orderedSnapshots.map((s) => s.provider_id);
+    dropIndex = null;
+    // 拖动期间不要弹详情浮层：它会盖住正在瞄准的落点区。
+    hoveredId = null;
     e.dataTransfer?.setData("text/plain", id);
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
   }
-  function onCardDragOver(e: DragEvent, targetId: string) {
+  function onCardDragOver(e: DragEvent) {
+    if (!draggingId) return;
     e.preventDefault();
-    if (!draggingId || targetId === draggingId) return;
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const before = e.clientY < rect.top + rect.height / 2;
-    if (dragOrder.indexOf(draggingId) < 0 || dragOrder.indexOf(targetId) < 0)
-      return;
-    const next = dragOrder.filter((id) => id !== draggingId);
-    const at = next.indexOf(targetId);
-    next.splice(before ? at : at + 1, 0, draggingId);
-    dragOrder = next;
+    const list = e.currentTarget as HTMLElement;
+    const box = list.getBoundingClientRect();
+    // 靠近上下边缘时自动滚动：长列表里不用反复挪指针。
+    const edge = 26;
+    if (e.clientY < box.top + edge) list.scrollTop -= 12;
+    else if (e.clientY > box.bottom - edge) list.scrollTop += 12;
+    // 实时重排时这里的矩形会随重排变化（反馈回路），现在列表不动，
+    // 矩形就是用户看到的稳定布局，落点只随指针变化。
+    const rects = Array.from(
+      list.querySelectorAll<HTMLElement>("[data-card-slot]"),
+    )
+      .filter((el) => el.dataset.cardId !== draggingId)
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        return { top: r.top, height: r.height };
+      });
+    dropIndex = dropIndexFor(rects, e.clientY);
+  }
+  function onCardDrop(e: DragEvent) {
+    e.preventDefault();
+    const id = draggingId;
+    if (!id) return;
+    const order = orderedSnapshots.map((s) => s.provider_id);
+    const next = applyDropIndex(order, id, dropIndex ?? order.indexOf(id));
+    cardOrder = next;
+    writeCardOrder(next);
+    draggingId = null;
+    dropIndex = null;
   }
   function onCardDragEnd() {
+    // drop 已经清过状态；走到这里说明松手在列表外或被取消，原样保留。
     if (draggingId === null) return;
-    if (dragOrder.length > 0) {
-      cardOrder = dragOrder;
-      writeCardOrder(cardOrder);
-    }
     draggingId = null;
-    dragOrder = [];
+    dropIndex = null;
   }
   const PILL_DRAG_THRESHOLD_PX = 4;
 
@@ -361,22 +394,19 @@
   /** 快速开关：翻转 router.enabled 并整体保存，settings-changed 事件会带回新态。 */
   async function toggleRouter() {
     if (!settings) return;
-    const next: Settings = {
-      ...settings,
-      router: {
-        ...(settings.router ?? {
-          port: 43211,
-          proactive_threshold_percent: 20,
-          error_cooldown_secs: 300,
-          conn_breaker_count: 3,
-          probe_start_secs: 60,
-          probe_max_attempts: 5,
-          routes: [],
-        }),
-        enabled: !routerOn,
-      },
-    };
     try {
+      // 先读后端当前值再改一个字段。不能拿本窗的 settings 快照整对象写：
+      // 本窗在设置窗添加账户后不会立刻收到新账户（旧实现只在保存设置时广播），
+      // 整对象写会把刚加的账户/刚改的路由覆盖回旧值——用户看到的就是
+      // 「路由配置保存了却不生效」「总提示 accounts 被修改」。
+      const current = await getSettings();
+      const next: Settings = {
+        ...current,
+        router: {
+          ...(current.router ?? defaultRouterSettings()),
+          enabled: !(current.router?.enabled ?? false),
+        },
+      };
       await saveSettings(next);
       settings = next;
     } catch {
@@ -625,6 +655,18 @@
   let headerIsPayAsYouGo = $derived(
     focusedSnapshot ? isPayAsYouGo(focusedSnapshot) : false,
   );
+  /** 展开区是否走「单账户窗口明细」（方案 A）。按量付费没有额度窗口，仍走列表。 */
+  let pillShowsWindowDetail = $derived(
+    !!focusedSnapshot && !headerIsPayAsYouGo,
+  );
+  /** 聚焦账户可用于窗口明细的行数（只算有额度分母的窗口）。 */
+  function focusedQuotaWindowCount(): number {
+    const w = focusedSnapshot?.windows;
+    if (!w) return 0;
+    return [w.five_hour, w.daily, w.weekly, w.monthly].filter(
+      (win) => !!win && win.quota > 0,
+    ).length;
+  }
 
   // 日历高亮焦点：在趋势页（TrendPanel → CalendarSection）消费，跨页共享。
   // 总览页卡片点击会预置它，切到趋势页即生效——这是日历迁走后，卡片↔日历
@@ -907,7 +949,9 @@
   async function expandPill() {
     if (mode !== "compact" || snapshots.length === 0) return;
     const gen = ++pillResizeGen;
-    const height = pillExpandedHeight(snapshots.length);
+    const height = pillShowsWindowDetail
+      ? pillDetailHeight(focusedQuotaWindowCount())
+      : pillExpandedHeight(snapshots.length);
     // ⚠️ 顺序要紧：先挂内容、**再**扩窗，不要 await setSize 之后才置位。
     // 原先是「窗口先长高 → 空窗一拍 → 内容再浮现」，割裂感正是本次要消除的。
     // 先置位后，fly 的 opacity:0 起点会盖住窗口尚矮时内容被压扁的那几帧，
@@ -1353,9 +1397,16 @@
     // 记住显示形态：Rust 下次启动会在显示窗口前按此设定尺寸并拉回屏内，
     // 因此这里必须持久化，否则「常态即胶囊」在重启后会丢。
     if (settings) {
-      settings = { ...settings, compact_mode: next === "compact" };
       try {
-        await saveSettings(settings);
+        // 只改 compact_mode 一个字段，但必须先读后端当前值再写回：本窗的
+        // settings 可能早于设置窗刚才的账户/路由修改，整对象写会把它们抹掉。
+        const current = await getSettings();
+        const nextSettings: Settings = {
+          ...current,
+          compact_mode: next === "compact",
+        };
+        await saveSettings(nextSettings);
+        settings = nextSettings;
       } catch {
         // 持久化失败不影响本次切换本身。
       }
@@ -1461,10 +1512,12 @@
                 class:pill__percent--crit={pillTone === "crit"}
               >{headerMoney ?? ringArcLabel}</span>
             </span>
-            <span class="pill__divider"></span>
-            <span class="pill__badge" style={badgeStyle} title={providerFullName}
-              >{$t(focusedName)}</span
-            >
+            {#if !(pillExpanded && pillShowsWindowDetail)}
+              <span class="pill__divider"></span>
+              <span class="pill__badge" style={badgeStyle} title={providerFullName}
+                >{$t(focusedName)}</span
+              >
+            {/if}
           </button>
           <button
             type="button"
@@ -1488,7 +1541,18 @@
             class="pill__mini"
             in:fly={{ y: reducedMotion ? 0 : -6, duration: reducedMotion ? 120 : 160 }}
           >
-            <MiniPanel {snapshots} {actives} countdown={displayRemaining} accentFor={(id) => accentById[id]} />
+            {#if pillShowsWindowDetail && focusedSnapshot}
+              <!-- 方案 A：聚焦账户时显示 5h/日/周/月明细；账户名已在明细头部，
+                   顶栏的徽标让位（168px 放不下两者）。 -->
+              <PillWindowDetail
+                snapshot={focusedSnapshot}
+                countdown={displayRemaining}
+                now={now.getTime()}
+                accent={focusedColor}
+              />
+            {:else}
+              <MiniPanel {snapshots} {actives} countdown={displayRemaining} accentFor={(id) => accentById[id]} />
+            {/if}
           </div>
         {/if}
       </div>
@@ -1570,9 +1634,9 @@
          the same selection via the card title button (see ProviderCard). -->
     <section
       class="shell__cards"
-      ondragover={(e) => {
-        if (draggingId) e.preventDefault();
-      }}
+      class:shell__cards--dragging={draggingId !== null}
+      ondragover={onCardDragOver}
+      ondrop={onCardDrop}
     >
       {#if snapshots.length === 0}
         <div class="shell__empty">
@@ -1582,18 +1646,21 @@
       {:else}
         {#each orderedSnapshots as snap (snap.provider_id)}
           <!-- svelte-ignore a11y_no_static_element_interactions:
-               drag handle wrapper; selection stays keyboard-accessible via the
-               card title button (see ProviderCard). -->
+               拖动由整张卡片承载（原生 DnD），落点线只做视觉提示；键盘用户的
+               选中路径仍是卡片标题按钮（见 ProviderCard）。 -->
           <div
             class="shell__card-slot"
             class:shell__card-slot--dragging={draggingId === snap.provider_id}
+            data-card-slot
+            data-card-id={snap.provider_id}
             draggable="true"
             ondragstart={(e) => onCardDragStart(e, snap.provider_id)}
-            ondragover={(e) => onCardDragOver(e, snap.provider_id)}
             ondragend={onCardDragEnd}
-            ondrop={(e) => e.preventDefault()}
             animate:flip={{ duration: 200 }}
           >
+            {#if dropLineBefore === snap.provider_id}
+              <span class="shell__drop-line shell__drop-line--before" aria-hidden="true"></span>
+            {/if}
             <ProviderCard
               snapshot={snap}
               error={errors[snap.provider_id] ?? null}
@@ -1607,27 +1674,18 @@
               countdown={displayRemaining}
               onHover={onCardHover}
               onSelect={() => {
+                // 选择与联动分开：无按日序列的 kind（OpenCode / Codex 差分类）
+                // 也必须能被选中——焦点圆环、顶棚读数、迷你胶囊都独立成立，
+                // 只是趋势页日历里没有它的序列，`highlightKey` 置 null 即可。
                 const kind = snap.provider_id.split("-")[0];
-                const series = ledgerSeriesForKind(kind, snap.provider_id);
-                // 无按日数据的 kind（差分类）：不猜、不静默改视图，交给
-                // DetailCard 说明。点击既不改焦点也不改高亮。
-                if (!series) return;
-                // 再点一次已聚焦的卡片 = 取消高亮，让焦点可撤销。
-                if (focus === snap.provider_id && highlightKey !== null) {
-                  focus = "all";
-                  highlightKey = null;
-                  return;
-                }
-                focus = snap.provider_id;
-                // 日历已迁至趋势页，卡片点击不再直接驱动它；但仍把高亮焦点
-                // 预置到趋势页，切过去即可看到该 provider 的逐日构成。
-                // 日历恒为合并口径（服务端优先），**所有**注册 provider 都能
-                // 在日历里出现——火山走自己的 tokens 日账，OpenAI/xAI 走本机
-                // 工具归因（它们的 USD 日账不进 token 日历）。故判据是"有没有
-                // provider key"，不再是"有没有账户日账口径"。
-                highlightKey = highlightKeyForKind(kind);
+                const next = toggleCardFocus(kind, snap.provider_id, focus);
+                focus = next.focus;
+                highlightKey = next.highlightKey;
               }}
             />
+            {#if dropLineBefore === "__after__" && snap.provider_id === orderedSnapshots[orderedSnapshots.length - 1]?.provider_id}
+              <span class="shell__drop-line shell__drop-line--after" aria-hidden="true"></span>
+            {/if}
           </div>
         {/each}
       {/if}
@@ -1924,6 +1982,7 @@
   }
 
   .shell__card-slot {
+    position: relative;
     min-width: 0;
     cursor: grab;
   }
@@ -1932,8 +1991,34 @@
     cursor: grabbing;
   }
 
+  .shell__cards--dragging,
+  .shell__cards--dragging .shell__card-slot {
+    cursor: grabbing;
+  }
+
   .shell__card-slot--dragging {
-    opacity: 0.45;
+    opacity: 0.35;
+  }
+
+  /* 拖动落点线：绝对定位在卡片间隙里，不参与布局。松手前列表保持完全静止，
+     落点因此可预测；旧实现实时重排会让卡片在指针下反复换位。 */
+  .shell__drop-line {
+    position: absolute;
+    left: 4px;
+    right: 4px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--tum-accent);
+    box-shadow: 0 0 8px var(--tum-accent-glow, rgba(76, 194, 255, 0.35));
+    pointer-events: none;
+  }
+
+  .shell__drop-line--before {
+    top: -5px;
+  }
+
+  .shell__drop-line--after {
+    bottom: -5px;
   }
 
   .shell__empty {

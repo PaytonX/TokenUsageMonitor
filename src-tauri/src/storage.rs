@@ -26,6 +26,18 @@ pub struct UsageDailyRow {
     pub kind: String, // "tool" | "provider"
     pub date: String, // YYYY-MM-DD 本地日
     pub model: String,
+    /// 这次调用**实际计费的上游账户/provider id**，来自工具自身的会话记录
+    /// （dsh 的 `message.source.provider`、Hermes 的 `billing_provider`、
+    /// opencode 的 `providerID`，如 `opencode-go` / `ark-cn` / `local-router`）。
+    /// 空串 = 源数据没记。
+    ///
+    /// 为什么必须单独存一列：模型名回答"这是谁家的模型"，账户回答"谁出的钱"，
+    /// 两者经常不一致——`deepseek-v4.1-flash` 经 OpenCode Go 调用时账单在
+    /// OpenCode，而按模型名前缀归因会把它算进 DeepSeek（用户实际观测到的
+    /// "趋势页 Provider 用量都被算进 DeepSeek"）。归因顺序因此是
+    /// **provider 列优先，模型名兜底**，与路由行"账户优先"的规则一致
+    /// （见 src/lib/model-provider.ts）。
+    pub provider: String,
     pub input: f64,
     pub cache_read: f64,
     pub output: f64,
@@ -35,6 +47,33 @@ pub struct UsageDailyRow {
     pub currency: Option<String>,
     pub cost_estimated: bool,
 }
+
+/// `usage_daily` 的表定义。单独抽出来是因为**改主键要重建表**（见
+/// [`Storage::open`] 里的迁移），重建时必须用与新建完全一致的 DDL。
+///
+/// 主键含 `provider`：同一天同一个模型可能经不同账户调用——`deepseek-v4.1-flash`
+/// 既能走 OpenCode Go 订阅、也能走本机路由/其他中转，只按 (source, date, model)
+/// 去重会让后写的行覆盖先写的那部分用量。`provider` 用 `''` 而非 NULL 表示
+/// "源数据没记"：SQLite 的唯一约束里 NULL 互不相等，用 NULL 会退化成不去重。
+const USAGE_DAILY_DDL: &str = "
+    CREATE TABLE IF NOT EXISTS usage_daily (
+        source       TEXT NOT NULL,             -- 来源键：工具 id（claude-code/zcode/minimax-code…）或 provider 键（volcengine…）
+        kind         TEXT NOT NULL,             -- 'tool' | 'provider' | 'router'
+        date         TEXT NOT NULL,             -- YYYY-MM-DD 本地日
+        model        TEXT NOT NULL DEFAULT '',  -- '' = 来源总量行；非空 = 该模型的分项行
+        provider     TEXT NOT NULL DEFAULT '',  -- 实际上游账户 id（opencode-go / ark-cn…）；'' = 源数据未记
+        input        REAL NOT NULL DEFAULT 0,
+        cache_read   REAL NOT NULL DEFAULT 0,
+        output       REAL NOT NULL DEFAULT 0,
+        total        REAL NOT NULL DEFAULT 0,
+        unit         TEXT NOT NULL DEFAULT 'tokens',
+        cost         REAL,                      -- 分摊到该日的成本（cherry 实报 / openai·xai 服务端日账）
+        currency     TEXT,
+        cost_estimated INTEGER NOT NULL DEFAULT 0,
+        captured_at  TEXT NOT NULL,
+        PRIMARY KEY (source, date, model, provider)
+    );
+";
 
 impl Storage {
     /// Open (or create) the SQLite database at `path`. Schema is migrated on
@@ -102,26 +141,50 @@ impl Storage {
                 rate       REAL NOT NULL,               -- 每 1 USD 兑该币种的数值
                 updated_at TEXT NOT NULL                -- ISO8601 UTC 抓取时间
             );
-            CREATE TABLE IF NOT EXISTS usage_daily (
-                source       TEXT NOT NULL,             -- 来源键：工具 id（claude-code/zcode/minimax-code…）或 provider 键（volcengine…）
-                kind         TEXT NOT NULL,             -- 'tool' | 'provider'
-                date         TEXT NOT NULL,             -- YYYY-MM-DD 本地日
-                model        TEXT NOT NULL DEFAULT '',  -- '' = 来源总量行；非空 = 该模型的分项行
-                input        REAL NOT NULL DEFAULT 0,
-                cache_read   REAL NOT NULL DEFAULT 0,
-                output       REAL NOT NULL DEFAULT 0,
-                total        REAL NOT NULL DEFAULT 0,
-                unit         TEXT NOT NULL DEFAULT 'tokens',
-                cost         REAL,                      -- 分摊到该日的成本（cherry 实报 / openai·xai 服务端日账）
-                currency     TEXT,
-                cost_estimated INTEGER NOT NULL DEFAULT 0,
-                captured_at  TEXT NOT NULL,
-                PRIMARY KEY (source, date, model)
-            );
-            CREATE INDEX IF NOT EXISTS idx_usage_daily_lookup
-                ON usage_daily(kind, date DESC);
             ",
         )?;
+        conn.execute_batch(USAGE_DAILY_DDL)?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_usage_daily_lookup
+                ON usage_daily(kind, date DESC);",
+        )?;
+        // 既有库的表迁移：`usage_daily.provider`（计费账户）是后加的，而且必须
+        // 进主键（见 USAGE_DAILY_DDL 的注释）。SQLite 改不了主键，只能重建表：
+        // 改名旧表 → 建新表 → 拷贝（旧行没记账户就落 ''）→ 删旧表。
+        let columns: Vec<(String, i64)> = conn
+            .prepare("PRAGMA table_info(usage_daily)")?
+            .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, i64>(5)?)))?
+            .filter_map(|c| c.ok())
+            .collect();
+        let provider_in_pk = columns.iter().any(|(name, pk)| name == "provider" && *pk > 0);
+        if !provider_in_pk {
+            let had_provider = columns.iter().any(|(name, _)| name == "provider");
+            let provider_expr = if had_provider { "COALESCE(provider, '')" } else { "''" };
+            // 整段必须在一个事务里：这是 5 条 DDL 的复合重建，中途失败（磁盘满、
+            // 另一个连接持锁、进程被杀）会停在"旧表已改名、新表还空着"，日历/
+            // 趋势/模型三个历史视图会一起变空。SQLite 的 DDL 可回滚，所以
+            // BEGIN IMMEDIATE … COMMIT 能把这类半成品整段撤回。
+            conn.execute_batch(&format!(
+                "BEGIN IMMEDIATE;
+                 DROP INDEX IF EXISTS idx_usage_daily_lookup;
+                 ALTER TABLE usage_daily RENAME TO usage_daily_legacy;
+                 {USAGE_DAILY_DDL}
+                 INSERT INTO usage_daily
+                     (source, kind, date, model, provider, input, cache_read, output,
+                      total, unit, cost, currency, cost_estimated, captured_at)
+                 SELECT source, kind, date, model, {provider_expr}, input, cache_read, output,
+                        total, unit, cost, currency, cost_estimated, captured_at
+                 FROM usage_daily_legacy;
+                 DROP TABLE usage_daily_legacy;
+                 CREATE INDEX IF NOT EXISTS idx_usage_daily_lookup
+                     ON usage_daily(kind, date DESC);
+                 COMMIT;"
+            ))?;
+            tracing::info!(
+                target: "tum.storage",
+                "migrated usage_daily: provider is now part of the primary key"
+            );
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -262,8 +325,10 @@ impl Storage {
     //
     // 三个历史视图（日历/趋势/模型）共用的唯一日用量账本。与 daily_snapshots
     // 的区别：写入方只有**全量回放型**来源（本机工具重扫、volcengine/openai/xai
-    // 服务端日账回放），逐行 REPLACE 幂等；差分类 provider（窗口/余额差分）不
-    // 写此表，避免 MAX/SUM 语义在同表冲突。
+    // 服务端日账回放、opencode 的额度百分比日序列），逐行 REPLACE 幂等。
+    // 金额差分类（DeepSeek/Kimi 的 CNY 余额差分）仍不写此表：它们按 SUM 语义
+    // 累积，混进全量回放表会互相打架。额度百分比进表时只带 unit='percent'，
+    // 与 token 行永不相加（见 providers/opencode.rs 与 docs/adr/0001）。
 
     /// 全量回放一批账本行：先删除批内涉及来源的旧行再插入。幂等，且天然清掉
     /// 滚动窗口之外的过期日（工具扫描只保留 90 天）。
@@ -286,8 +351,8 @@ impl Storage {
             let now = chrono::Utc::now().to_rfc3339();
             let mut ins = tx.prepare(
                 "INSERT OR REPLACE INTO usage_daily
-                 (source, kind, date, model, input, cache_read, output, total, unit, cost, currency, cost_estimated, captured_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 (source, kind, date, model, provider, input, cache_read, output, total, unit, cost, currency, cost_estimated, captured_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             )?;
             for r in rows {
                 ins.execute(params![
@@ -295,6 +360,7 @@ impl Storage {
                     r.kind,
                     r.date,
                     r.model,
+                    r.provider,
                     r.input,
                     r.cache_read,
                     r.output,
@@ -323,31 +389,76 @@ impl Storage {
         .to_string();
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT source, kind, date, model, input, cache_read, output, total, unit, cost, currency, cost_estimated
+            "SELECT source, kind, date, model, provider, input, cache_read, output, total, unit, cost, currency, cost_estimated
              FROM usage_daily
              WHERE date >= ?1 AND (?2 IS NULL OR kind = ?2)
              ORDER BY date, source, model",
         )?;
         let rows = stmt.query_map(params![cutoff, kind], |r| {
-            let unit_str: String = r.get(8)?;
+            let unit_str: String = r.get(9)?;
             Ok(UsageDailyRow {
                 source: r.get(0)?,
                 kind: r.get(1)?,
                 date: r.get(2)?,
                 model: r.get(3)?,
-                input: r.get(4)?,
-                cache_read: r.get(5)?,
-                output: r.get(6)?,
-                total: r.get(7)?,
+                provider: r.get(4)?,
+                input: r.get(5)?,
+                cache_read: r.get(6)?,
+                output: r.get(7)?,
+                total: r.get(8)?,
                 unit: unit_from_db_str(&unit_str),
-                cost: r.get(9)?,
-                currency: r.get(10)?,
-                cost_estimated: r.get::<_, i64>(11)? != 0,
+                cost: r.get(10)?,
+                currency: r.get(11)?,
+                cost_estimated: r.get::<_, i64>(12)? != 0,
             })
         })?;
         Ok(rows.flatten().collect())
     }
 
+    /// 删除 `kind='provider'` 里已经没有对应账户的账本行（"幽灵来源"）。
+    ///
+    /// 症状：给同一账号换 Key / 改 instance_id 后，旧 source 的历史行永远留着
+    /// —— `replace_usage_daily` 只删"本批出现过的 source"，没人替消失的账户
+    /// 报到。实测 `volcengine` 与 `test-volcengine` 是同一账号两代 id，19 天
+    /// 逐日数值完全相同、各 4.27 亿 tokens，跨来源视图因此翻倍。
+    ///
+    /// 只在"当前注册账户集合"可知时调用（启动后、移除账户后），且仅限
+    /// `kind='provider'`：`kind='tool'` 的来源由本机扫描器全量回放接管，
+    /// `kind='router'` 是路由自记账，二者都不该按账户表清理。
+    pub fn prune_orphan_provider_rows(&self, live: &std::collections::BTreeSet<String>) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT source FROM usage_daily WHERE kind = 'provider'")
+            .with_context(|| "listing provider ledger sources")?;
+        let sources: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+
+        let orphans: Vec<&String> = sources.iter().filter(|s| !live.contains(*s)).collect();
+        if orphans.is_empty() {
+            return Ok(0);
+        }
+        let tx = conn
+            .unchecked_transaction()
+            .with_context(|| "starting orphan-ledger prune tx")?;
+        let mut removed = 0usize;
+        for source in &orphans {
+            removed += tx
+                .execute(
+                    "DELETE FROM usage_daily WHERE kind = 'provider' AND source = ?1",
+                    [source],
+                )
+                .with_context(|| "deleting orphan provider ledger rows")?;
+        }
+        tx.commit().with_context(|| "committing orphan-ledger prune")?;
+        tracing::info!(
+            target: "tum.storage",
+            "pruned {removed} provider ledger rows from {} orphan source(s)",
+            orphans.len()
+        );
+        Ok(removed)
+    }
     /// 路由记账：把一次经 TokenRouter 转发的用量增量累计进统一账本
     /// （`source = router:<instance_id>`，`kind` 由调用方给，`model` 为**实际
     /// 承载模型**——候选指定了就用它，未指定（透传）就用工具请求里的原始模型名）。
@@ -370,9 +481,9 @@ impl Storage {
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO usage_daily
-             (source, kind, date, model, input, cache_read, output, total, unit, cost, currency, cost_estimated, captured_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'tokens', NULL, NULL, 0, ?9)
-             ON CONFLICT(source, date, model) DO UPDATE SET
+             (source, kind, date, model, provider, input, cache_read, output, total, unit, cost, currency, cost_estimated, captured_at)
+             VALUES (?1, ?2, ?3, ?4, '', ?5, ?6, ?7, ?8, 'tokens', NULL, NULL, 0, ?9)
+             ON CONFLICT(source, date, model, provider) DO UPDATE SET
                 input = input + excluded.input,
                 cache_read = cache_read + excluded.cache_read,
                 output = output + excluded.output,
@@ -463,11 +574,22 @@ impl Storage {
         }
 
         // hermes：逐日分模型台账 → 账本分项行。
+        //
+        // hermes_daily 没有 provider 列，新账本把计费账户编进了 model 键
+        // （`<provider>\u{1f}<model>`，见 local/hermes.rs）。迁移时拆回两列，
+        // 否则老台账会在模型页里留下一批带控制字符的伪模型名。
         if has("hermes")? == 0 {
             conn.execute(
                 "INSERT INTO usage_daily
-                 (source, kind, date, model, input, cache_read, output, total, unit, cost, currency, cost_estimated, captured_at)
-                 SELECT 'hermes', 'tool', date, model, input, cache_read, output,
+                 (source, kind, date, model, provider, input, cache_read, output, total, unit, cost, currency, cost_estimated, captured_at)
+                 SELECT 'hermes', 'tool', date,
+                        CASE WHEN instr(model, char(31)) > 0
+                             THEN substr(model, instr(model, char(31)) + 1)
+                             ELSE model END,
+                        CASE WHEN instr(model, char(31)) > 0
+                             THEN substr(model, 1, instr(model, char(31)) - 1)
+                             ELSE '' END,
+                        input, cache_read, output,
                         input + cache_read + output, 'tokens', cost, 'USD', cost_estimated, ?1
                  FROM hermes_daily",
                 params![now],
@@ -812,10 +934,118 @@ mod storage_unit_tests {
         Storage::open(&path).unwrap()
     }
 
+    /// 差分型日值必须累加，不能取峰值。
+    ///
+    /// OpenCode 每次轮询只算出"这 30 秒的增量"（例如 0.4 / 0.6 / 0.5 个百分点）。
+    /// 走 `record_daily_on`（MAX 合并，为 MiniMax 的窗口关闭设计）会把一天压成
+    /// 其中最大的那一小段，整天的累计几乎全部丢失；`accumulate_daily` 才是这类
+    /// 序列的正确合并方式。这条测试把两者的语义差钉住。
+    #[test]
+    fn percent_daily_rows_accumulate_instead_of_peaking() {
+        let s = temp_storage();
+        let today = chrono::Local::now().date_naive();
+        for slice in [0.4_f64, 0.6, 0.5] {
+            s.accumulate_daily("opencode", slice, UsageUnit::Percent)
+                .unwrap();
+        }
+        let cells = s.load_heatmap("opencode", 7).unwrap();
+        assert_eq!(cells.len(), 1, "同一天只应有一行: {cells:?}");
+        assert_eq!(cells[0].date, today);
+        assert!(
+            (cells[0].value - 1.5).abs() < 1e-9,
+            "应累加为 1.5，实际 {}",
+            cells[0].value
+        );
+        assert!(matches!(cells[0].unit, UsageUnit::Percent));
+    }
+
+    /// Hermes 旧台账的账户前缀必须在迁移时拆开。
+    ///
+    /// `hermes_daily` 没有 provider 列，新记账把账户编进了 model 键
+    /// （`opencode-go\u{1f}deepseek-v4.1-flash`）。如果不拆，模型页会出现带
+    /// 控制字符的伪模型名，且账户归因全部丢失。
+    #[test]
+    fn hermes_legacy_migration_splits_the_account_prefix() {
+        let s = temp_storage();
+        s.add_hermes_daily(
+            "2026-10-01",
+            "opencode-go\u{1f}deepseek-v4.1-flash",
+            10.0,
+            5.0,
+            3.0,
+            0.02,
+            false,
+        )
+        .unwrap();
+        s.migrate_legacy_usage_ledger().unwrap();
+        let rows = s.load_usage_daily(Some("tool"), 400).unwrap();
+        let r = rows
+            .iter()
+            .find(|r| r.source == "hermes")
+            .expect("hermes 台账应被迁进账本");
+        assert_eq!(r.model, "deepseek-v4.1-flash", "模型名不能带账户前缀");
+        assert_eq!(r.provider, "opencode-go", "账户要回到 provider 列");
+        assert!((r.total - 18.0).abs() < 1e-9, "total 应为 input+cache_read+output");
+    }
+    /// 幽灵 provider 来源必须被清掉，且只清 `kind='provider'`。
+    ///
+    /// 症状：给账号换 Key（instance_id 随之变化）后，旧 source 的历史日账再没有
+    /// 写入方，而 `replace_usage_daily` 只删"本批出现过的 source"——实测同一账号
+    /// 的 `volcengine` 与 `test-volcengine` 逐日数值完全相同，跨来源视图翻倍。
+    #[test]
+    fn orphan_provider_sources_are_pruned_but_tools_and_routers_survive() {
+        let s = temp_storage();
+        let today = chrono::Local::now().date_naive();
+        let provider_row = |source: &str| UsageDailyRow {
+            source: source.to_string(),
+            kind: "provider".to_string(),
+            date: today.to_string(),
+            model: String::new(),
+            provider: String::new(),
+            input: 0.0,
+            cache_read: 0.0,
+            output: 0.0,
+            total: 534_000_000.0,
+            unit: UsageUnit::Tokens,
+            cost: None,
+            currency: None,
+            cost_estimated: false,
+        };
+        // 现行账户 + 它的幽灵前身 + 一个本机工具来源 + 一条路由自记账。
+        s.replace_usage_daily(&[provider_row("volcengine-1791169791-0")])
+            .unwrap();
+        s.replace_usage_daily(&[provider_row("test-volcengine")])
+            .unwrap();
+        s.replace_usage_daily(&[provider_row("volcengine")])
+            .unwrap();
+        s.replace_usage_daily(&[UsageDailyRow {
+            kind: "tool".to_string(),
+            ..provider_row("minimax-code")
+        }])
+        .unwrap();
+        s.accumulate_usage_daily("router", "router:volcengine-1791169791-0", today, "", 10.0, 0.0, 0.0)
+            .unwrap();
+
+        let live: std::collections::BTreeSet<String> =
+            ["volcengine-1791169791-0".to_string()].into_iter().collect();
+        let removed = s.prune_orphan_provider_rows(&live).unwrap();
+
+        assert_eq!(removed, 2, "只应删掉两个幽灵 provider 来源");
+        let left: Vec<String> =
+            s.load_usage_daily(None, 7).unwrap().into_iter().map(|r| r.source).collect();
+        assert!(left.contains(&"volcengine-1791169791-0".to_string()), "现行账户必须留下: {left:?}");
+        assert!(left.contains(&"minimax-code".to_string()), "工具来源归扫描器回放管: {left:?}");
+        assert!(
+            left.contains(&"router:volcengine-1791169791-0".to_string()),
+            "路由自记账不按账户表清理: {left:?}"
+        );
+        assert!(!left.iter().any(|s| s == "test-volcengine" || s == "volcengine"), "幽灵来源应消失: {left:?}");
+        // 幂等：再跑一次没有可删的。
+        assert_eq!(s.prune_orphan_provider_rows(&live).unwrap(), 0);
+    }
     /// 只清旧 kind 的路由行，且**幂等**；同批里的服务端日账与新路由行必须留下。
     #[test]
-    fn purge_legacy_router_ledger_only_touches_old_kind() {
-        let s = temp_storage();
+    fn purge_legacy_router_ledger_only_touches_old_kind() {        let s = temp_storage();
         let today = chrono::Local::now().date_naive();
         // 旧路由行：kind='provider' + router: 来源 —— 应被清掉
         s.accumulate_usage_daily("provider", "router:acct-1", today, "", 100.0, 0.0, 0.0)

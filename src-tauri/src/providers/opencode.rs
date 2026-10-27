@@ -35,18 +35,19 @@ use crate::providers::{
 };
 use crate::storage::Storage;
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
+use chrono::{DateTime, Duration, Utc};
 use reqwest::Client;
 use serde::Deserialize;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 const USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
 
 /// How many days of synthesized heatmap history to keep. The endpoint reports
-/// only three rolling windows, never a per-day series, so the calendar
-/// heatmap is built from the deltas we observe across polls (same approach as
-/// MiniMax): each poll attributes its own consumption to the current day.
+/// only rolling windows, never a per-day series, so the calendar heatmap is
+/// built from the deltas we observe across polls: each poll's consumption is
+/// **accumulated** onto the current day (the 30-second slice it represents).
+/// Only the monthly window feeds the series — it is the one additive window
+/// (see `fetch_usage`).
 const KEEP_DAYS: usize = 200;
 
 pub struct OpenCodeProvider {
@@ -163,11 +164,14 @@ fn window(w: Option<&Window>) -> Option<WindowUsage> {
     })
 }
 
-/// 跨轮询的窗口增量 → 今天的日用量。
+/// 跨轮询的窗口增量（consumed 百分点）。
 ///
-/// 同形如 minimax.rs：首次观察只建基线；同一窗口取 consumed 增量（回退按 0）；
-/// 窗口滚动（resetsAt 变化）则把当前 consumed 全部计入今天。
-/// 百分比制额度下日值可以 >100%，含义是"当日消耗的窗口额度当量"。
+/// 首次观察只建基线（返回 0，不猜历史）；同一窗口取 consumed 增量，回退（服务端
+/// 重算/时钟偏差）按 0 截断；窗口滚动（resetsAt 变化）则把当前 consumed 全部计入
+/// 今天——那是新周期开张以来烧掉的部分，此前没有被任何一天记过。
+///
+/// 语义是"这一个窗口里、这一段时间内的消耗"，**不能跨窗口相加**：调用方只把它
+/// 用在可加的那一个窗口上（见 `fetch_usage` 的月度差分说明）。
 fn window_delta(prev: Option<(i64, f64)>, cur: (i64, f64)) -> f64 {
     match prev {
         None => 0.0,
@@ -176,9 +180,25 @@ fn window_delta(prev: Option<(i64, f64)>, cur: (i64, f64)) -> f64 {
     }
 }
 
-const KV_ROLLING: &str = "oc_go_rolling";
-const KV_WEEKLY: &str = "oc_go_weekly";
+/// 月度窗口的上次观察值。只有它被持久化：按日序列由月度差分累加而成，滚动/周
+/// 窗口不参与记账，留它们的基线只会让人以为它们在记。旧版本写下的
+/// `oc_go_rolling` / `oc_go_weekly` 键留在库里无害（不再被读取）。
 const KV_MONTHLY: &str = "oc_go_monthly";
+
+/// 今天的记账增量：只取**月度窗口**的差分。
+///
+/// 单独抽出来是为了把"哪些窗口可以相加"这条判断钉在测试里。三个窗口各有自己
+/// 的额度分母，同一笔消费会在每个窗口里各涨一次；只有月度在计费周期内单调，
+/// 逐日差分之和才等于"本月已用%"。月度缺失时不记账（也不拿别的窗口顶替）。
+fn daily_increment(
+    monthly_prev: Option<(i64, f64)>,
+    monthly_cur: Option<(i64, f64)>,
+) -> f64 {
+    match monthly_cur {
+        Some(cur) => window_delta(monthly_prev, cur),
+        None => 0.0,
+    }
+}
 
 /// 解析 KV 里存的 `"{resetsAt_epoch_secs}:{consumed_pct}"` 基线。
 fn parse_baseline(raw: &str) -> Option<(i64, f64)> {
@@ -268,37 +288,71 @@ impl Provider for OpenCodeProvider {
         let weekly = window(usage.weekly.as_ref());
         let monthly = window(usage.monthly.as_ref());
 
-        // ── synthesized heatmap: today's consumption = the three window deltas
-        let today = Local::now().date_naive();
-        let mut by_day: BTreeMap<NaiveDate, f64> = BTreeMap::new();
-        for (key, w) in [(KV_ROLLING, &five_hour), (KV_WEEKLY, &weekly), (KV_MONTHLY, &monthly)] {
-            let Some(w) = w else { continue };
-            let end = w.reset_at.map(|d| d.timestamp()).unwrap_or(0);
+        // ── synthesized heatmap: today's consumption, attributed by the monthly delta
+        //
+        // 三个窗口的分母是三份**不同的额度**（近 5 小时 / 周 / 月各有一条额度线），
+        // 把它们的百分点增量相加是跨分母相加：同一笔消费会在三个窗口里各记一次，
+        // 日值轻易超过 100%，既不可解释也不可比。这里只用月度窗口——
+        // 它在计费周期内单调不减，逐日差分之和恰好等于"本月已用百分比"，
+        // 是唯一自洽的可加口径；周窗口只用于展示。
+        //
+        // 写入必须是**累加**而不是取峰值：每次轮询算出来的是这 30 秒的增量，
+        // 峰值合并会把当天压成"最大的一次增量"，也就是十几分钟里最热的 30 秒。
+        let monthly_obs = monthly
+            .as_ref()
+            .map(|w| (w.reset_at.map(|d| d.timestamp()).unwrap_or(0), w.used));
+        let mut today_delta = 0.0;
+        if let Some(cur) = monthly_obs {
             let prev = self
                 .storage
-                .kv_get(self.self_id(), key)
+                .kv_get(self.self_id(), KV_MONTHLY)
                 .ok()
                 .flatten()
                 .and_then(|raw| parse_baseline(&raw));
-            let delta = window_delta(prev, (end, w.used));
-            if delta > 0.0 {
-                *by_day.entry(today).or_default() += delta;
-            }
+            today_delta = daily_increment(prev, Some(cur));
             let _ = self
                 .storage
-                .kv_set(self.self_id(), key, &format!("{}:{}", end, w.used));
+                .kv_set(self.self_id(), KV_MONTHLY, &format!("{}:{}", cur.0, cur.1));
         }
-
-        // Persist each observed day (max-merge) and serve a long window.
-        for (date, value) in &by_day {
+        if today_delta > 0.0 {
             let _ = self
                 .storage
-                .record_daily_on(self.self_id(), *date, *value, UsageUnit::Percent);
+                .accumulate_daily(self.self_id(), today_delta, UsageUnit::Percent);
         }
         let heatmap: Vec<HeatmapCell> = self
             .storage
             .load_heatmap(self.self_id(), KEEP_DAYS as u32)
             .unwrap_or_default();
+
+        // ── 统一账本双写：百分比日值也进 `usage_daily`
+        //
+        // 差分类 Provider 过去只写 `daily_snapshots`，而趋势/统计视图只读
+        // `usage_daily`，于是 OpenCode 在统计页**根本没有入口**。这里按
+        // volcengine / openai / xai 的双写模式把同一串日值也写进账本
+        // （kind=provider、unit=percent）：token 日历只吸收 tokens 行，
+        // percent 行自成一条额度轨道，两者永不相加。整段 replace 幂等，
+        // 每次轮询重放整段历史。
+        let ledger: Vec<crate::storage::UsageDailyRow> = heatmap
+            .iter()
+            .map(|cell| crate::storage::UsageDailyRow {
+                source: self.instance_id.clone(),
+                kind: "provider".to_string(),
+                date: cell.date.to_string(),
+                model: String::new(),
+                provider: String::new(),
+                input: 0.0,
+                cache_read: 0.0,
+                output: 0.0,
+                total: cell.value,
+                unit: cell.unit,
+                cost: None,
+                currency: None,
+                cost_estimated: false,
+            })
+            .collect();
+        if !ledger.is_empty() {
+            let _ = self.storage.replace_usage_daily(&ledger);
+        }
 
         Ok(UsageSnapshot {
             provider_id: self.instance_id.clone(),
@@ -410,6 +464,21 @@ mod tests {
         assert_eq!(window_delta(Some((100, 42.0)), (100, 40.0)), 0.0);
         // Window rolled → everything consumed so far lands on today.
         assert_eq!(window_delta(Some((100, 42.0)), (200, 7.0)), 7.0);
+    }
+
+    #[test]
+    fn daily_increment_counts_the_monthly_window_only() {
+        // 同一笔消费让 rolling/weekly/monthly 各涨 1 个百分点。旧实现把三个增量
+        // 相加得到 3——那是跨分母相加（5h/周/月是三份不同的额度），会把一天记成
+        // 三倍。可加的只有月度：日值必须是 1。
+        let prev = Some((1_000, 12.0));
+        assert_eq!(daily_increment(prev, Some((1_000, 13.0))), 1.0);
+        // 月度窗口滚动 → 当前 consumed 全部计入今天（新周期开张以来烧掉的）。
+        assert_eq!(daily_increment(prev, Some((2_000, 5.0))), 5.0);
+        // 首次观察只建基线，不猜历史。
+        assert_eq!(daily_increment(None, Some((1_000, 13.0))), 0.0);
+        // 月度缺失 → 不记账；绝不拿周/滚动窗口顶替。
+        assert_eq!(daily_increment(prev, None), 0.0);
     }
 
     #[test]
