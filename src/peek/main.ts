@@ -30,11 +30,13 @@ if (host) {
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100%; overflow: hidden; background: transparent; }
     .peek {
-      /* ⚠️ 必须填满整个窗口，不能写死 7px / 58px。
-         Windows 会把窗口撑到最小尺寸（横向 ~136px），写死尺寸会让画出来的条
-         落在窗口的固定一端，贴左边时整条被推到屏幕外 —— 表现为「贴左边没有
-         小把手」。填满窗口后「把手可见条 = 屏幕边缘那 thickness px」由 Rust 的
-         几何唯一决定，CSS 不再需要知道窗口被撑成多大。 */
+      /* 填满整个窗口（100%），不写死 7px / 58px：可见条的位置与朝向由 Rust
+         的几何（peek_rect）唯一决定。历史上窗口出生时会被系统钳到最小跟踪
+         尺寸（~136×39，CreateWindowExW 的首次 WM_GETMINMAXINFO 读不到约束），
+         写死尺寸会让画出来的条落在窗口固定一端、贴左边时整条被推出屏外
+         （「贴左边没有小把手」）；现在 build_peek_window 在建窗后已用
+         set_size 缩回真实尺寸，100% 恰好就是 7×58，但「填满」仍是与 Rust
+         几何契约对齐的安全写法。 */
       width: 100%;
       height: 100%;
       display: flex;
@@ -48,10 +50,11 @@ if (host) {
       cursor: default;
     }
     /* 对齐到「屏内可见的那一端」（见 dock.rs::peek_rect 的表）。
-       水平边：窗口宽度被系统最小值撑大，多余部分被推出屏外 → 填满窗口即可。
-       竖直边：系统**不允许**窗口越过显示器上下沿，y 必被钳回边界，整块 39px 高的
-       窗口会压在屏幕内沿上（真机表现：一大块黑砖）。所以竖直边只画 7px 的一条，
-       其余高度透明。 */
+       历史上窗口出生时被系统钳到最小跟踪尺寸（~136×39）：水平边靠「多余部分
+       推出屏外」隐藏，竖直边因 y 必被钳回屏幕内沿（真机表现：一大块黑砖）只能
+       画 7px 高的一条。现在 build_peek_window 建窗后已把窗口缩回真实尺寸，
+       这些规则退化为兜底——若窗口再被撑大（混 DPI 等），它们仍保证可见条贴在
+       正确的端点上，而不是整块深色压在屏内。 */
     .peek[data-side="right"]  { flex-direction: row; justify-content: flex-start; transform-origin: left center; }
     .peek[data-side="left"]   { flex-direction: row; justify-content: flex-end;   transform-origin: right center; }
     .peek[data-side="bottom"],

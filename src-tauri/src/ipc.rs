@@ -1052,6 +1052,19 @@ fn build_peek_window(app: &AppHandle, side: DockSide) -> Result<WebviewWindow, S
         crate::i18n::WindowPage::PeekHandle,
     ))
     .inner_size(pw, ph)
+    // 7×58 低于 Windows 的最小跟踪尺寸（SM_CXMINTRACK×SM_CYMINTRACK ≈ 136×39），
+    // 而 CreateWindowExW 的**首次** WM_GETMINMAXINFO 发生在 tao 挂上 userdata
+    // 之前、读不到尺寸约束，只能落回 DefWindowProc 的系统最小值——所以无论
+    // builder 里写多大的 inner_size，窗口**出生时**必然被钳成 136 宽（真机实测
+    // 136×58）。出生钳制躲不开，只能两步走：
+    //   ① min_inner_size 声明同尺寸 → 创建之后的 WM_GETMINMAXINFO 由 tao 接管
+    //      （ptMinTrackSize = 7×58），后续 set_size 不再被系统钳回 136；
+    //   ② 紧接着 set_size 缩回真实尺寸 → 窗口尺寸 = 可见尺寸，peek_rect 的
+    //      「推出屏外」兜底彻底闲置。
+    // 此前窗口终身保持 136×58：多出的 ~129px 靠出屏溢出隐藏，一旦被系统拉回
+    // 屏内（显示模式变化 / 异步定位钳制 / RDP），就是用户截图里压在屏幕边缘
+    // 的整块黑砖。
+    .min_inner_size(pw, ph)
     .resizable(false)
     .decorations(false)
     .transparent(true)
@@ -1063,6 +1076,11 @@ fn build_peek_window(app: &AppHandle, side: DockSide) -> Result<WebviewWindow, S
     .initialization_script(format!("window.__PEEK_SIDE__ = {:?};", side.as_str()))
     .build()
     .map_err(|e| e.to_string())?;
+    // 见上 ②：出生钳制后的补救缩回。set_size 内部走 SWP_ASYNCWINDOWPOS，本函数
+    // 返回时外层紧跟着的 peek_placement 会读 outer_size 定位——读到旧值 136 也
+    // 无碍：缩回落地后窗口就只剩屏内 7px，下一次 reposition_peek 自会按真实
+    // 尺寸重算。
+    let _ = built.set_size(tauri::LogicalSize::new(pw, ph));
     #[cfg(windows)]
     crate::dwm_corner::disable_corner_artifacts(&built);
     Ok(built)
@@ -1220,16 +1238,31 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
         .ok_or_else(|| "dashboard window not found".to_string())?;
     // 边与沿边坐标**先算出来并落位**，再拿去建/放把手。旧实现先按胶囊当前位置
     // 推断边、再 dock，于是把手拿到的边可能与最终贴定的边不一致。
-    let Some(anchor) = current_anchor(&dash) else {
-        return Err("dashboard window has no monitor".to_string());
+    //
+    // ⚠️ 锚点只对 revealed/docked 有意义，**不能**当总闸门：浮动态（离四条边都
+    // 远）时 `current_anchor` 恰好返回 None，若在此处 Err 早退，下面的 floating
+    // 分支就永远走不到——常驻的把手窗在胶囊脱离边缘后留在屏幕上（用户实测的
+    // 「把手残留」）。floating 的隐藏动作本身不需要锚点。
+    let anchor = current_anchor(&dash);
+    let side_str = match &anchor {
+        Some(a) => a.side.as_str().to_string(),
+        None => {
+            // 浮动态的返回值只喂给前端 `pillSide`（emitPeekShow 用），
+            // 取把手窗最后记录的边兜底；从未建过把手就按默认右边。
+            app.state::<AppState>()
+                .peek_side
+                .lock()
+                .ok()
+                .and_then(|g| *g)
+                .map(|s| s.as_str().to_string())
+                .unwrap_or_else(|| DockSide::Right.as_str().to_string())
+        }
     };
-    let side = anchor.side;
-    let side_str = side.as_str();
 
     // 只在 compact 胶囊态才有把手；dashboard 态（可能是模式切换竞态）直接
     // 返回所在边，不重建刚被 set_window_mode 关掉的窗口。
     if !app.state::<AppState>().compact_mode.load(Ordering::SeqCst) {
-        return Ok(side_str.to_string());
+        return Ok(side_str);
     }
 
     match state.as_str() {
@@ -1271,6 +1304,12 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
             }
         }
         "revealed" | "docked" => {
+            // 贴边态必须真的贴着边：取不到锚点说明窗口离四条边都很远，与请求的
+            // 状态矛盾（前端只在 pillDocked 时才发这两种），按旧约定报错，前端
+            // catch 后保持现状。
+            let anchor =
+                anchor.ok_or_else(|| "dashboard window is not docked".to_string())?;
+            let side = anchor.side;
             // 分段计时（方案 issues/05 §1.7）。探针关闭时整段退化成「一次 relaxed
             // 原子读 + 若干分支」——不取时钟、不打日志，生产构建零开销。
             let mut seg = crate::perf_probe::Segments::start();
@@ -1305,18 +1344,19 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
                     );
                     let _ = dash.set_ignore_cursor_events(false);
                     let _ = dash.emit("peek-reveal", ());
-                    return Ok(side_str.to_string());
+                    return Ok(side_str);
                 }
             };
 
-            // 刚建出来时还不知道系统实际最小尺寸：拿到真实 outer_size 后由
-            // peek_placement 重算，把垂直于贴边轴的多余部分推出屏幕
-            // （贴左边/上边时尤其关键）。
+            // 建窗时的出生钳制（首次 WM_GETMINMAXINFO 落回系统最小跟踪尺寸
+            // 136×39）已由 build_peek_window 内的建后 set_size 缩回：这里拿到的
+            // 把手窗就是真实尺寸。
             //
             // ℹ️ 本分支**没有** set_size 调用（把手尺寸在建窗时定死），所以
             // `set_size_ms` 恒为 0、`set_size_done` 恒为 false。§2.1 门禁②
-            // 「set_size 能不能把被系统钳制的 136×39 缩回 7×58」若要落地，
-            // set_size 应插在这里，并在其后调 `seg.mark_set_size()`。
+            // 「set_size 能不能把被系统钳制的 136×39 缩回 7×58」已由建窗内的
+            // 补救缩回正面回答：能（min_inner_size 接管创建后的 MINMAXINFO，
+            // set_size 不再被钳）。
             if let Some(p) = peek_placement(&dash, side, anchor.along) {
                 let _ = peek.set_position(p);
             }
@@ -1355,12 +1395,12 @@ pub async fn sync_peek_window(app: AppHandle, state: String) -> Result<String, S
             // 代价是「宿主把事件推进 peek webview 要多久」这一段量不到——那是
             // **已知缺口**，要补得另开一次性探针，不能混进稳态循环里。
 
-            seg.log(&state, side_str);
+            seg.log(&state, &side_str);
         }
         other => return Err(format!("unknown peek state: {other}")),
     }
 
-    Ok(side_str.to_string())
+    Ok(side_str)
 }
 /// 前端在开始原生拖拽时置位、手势结束（或收到 pointerup 快路径）时清零。
 /// 与 Rust 侧的「窗口停止移动」检测配合判定拖拽结束。
