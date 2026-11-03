@@ -269,7 +269,9 @@ fn build_app_menu(handle: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{PredefinedMenuItem, Submenu};
 
     let app_submenu = Submenu::new(handle, "TokenUsageMonitor", true)?;
-    app_submenu.append(&PredefinedMenuItem::about(handle, None)?)?;
+    // about 的第三个参数是 AboutMetadata（None = 系统默认：应用名/版本由
+    // bundle 信息填充）。
+    app_submenu.append(&PredefinedMenuItem::about(handle, None, None)?)?;
     // "CmdOrCtrl+,"：muda 的解析失败会被 with_id 静默降级为无快捷键
     // （菜单项本身仍可用），所以这里不需要错误处理。
     app_submenu.append(&MenuItem::with_id(
