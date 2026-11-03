@@ -223,6 +223,13 @@ pub fn nearest_side(
 /// 一条、其余透明。代价：那块透明区仍属 webview，会吞掉该区域的鼠标事件
 /// （贴上边时是一条约 136×32 的横向带，正好覆盖在胶囊自身范围内，可接受）。
 ///
+/// ⚠️ 「多余部分」如今是**兜底**而非常规路径：`build_peek_window` 已用
+/// `min_inner_size`（保住创建后的 set_size 不再被系统钳制）加建后立刻
+/// `set_size` 缩回，把窗口钉在真实尺寸上（7×58 / 58×7）——正常情况下
+/// `actual == 可见尺寸`、窗口整扇贴边落在屏内——一旦 `actual` 再被撑大
+/// （混 DPI 等），下表的机制仍然成立，护栏见
+/// `peek_rect_keeps_the_unstretched_window_fully_onscreen` 测试。
+///
 /// 参数：
 /// - `along`：胶囊沿边轴的起点（相对 work_area 原点，与 DockAnchor::along 同义）
 /// - `pill_span`：胶囊在沿边轴上的尺寸
@@ -609,6 +616,33 @@ mod tests {
         assert_eq!((x, y), (1913.0, 299.0));
         let (x, y) = peek(DockSide::Left, 300.0, THICK, LEN);
         assert_eq!((x, y), (0.0, 299.0));
+    }
+
+    /// 「黑砖」缺陷的护栏（build_peek_window 已用 min_inner_size 把窗口钉在
+    /// 真实尺寸上）：窗口不被系统撑大时，四条边的把手窗都必须**完全在屏内**，
+    /// 且可见条仍贴边——定位从此不依赖「把多余部分推出屏外」。
+    /// 一旦谁把尺寸撑回去（或重新依赖出屏溢出），这里先红。
+    #[test]
+    fn peek_rect_keeps_the_unstretched_window_fully_onscreen() {
+        for side in [DockSide::Left, DockSide::Right, DockSide::Top, DockSide::Bottom] {
+            let (aw, ah) = side.peek_size(); // 真实尺寸：左右 (7,58) / 上下 (58,7)
+            let (x, y) = peek(side, 400.0, aw, ah);
+            assert!(
+                x >= AREA_X && x + aw <= AREA_X + AREA_W,
+                "side={side:?} 横向出屏：x={x} w={aw}"
+            );
+            assert!(
+                y >= AREA_Y && y + ah <= AREA_Y + AREA_H,
+                "side={side:?} 纵向出屏：y={y} h={ah}"
+            );
+            // 贴边轴上窗口正好占满 thickness：可见条 = 整扇窗。
+            match side {
+                DockSide::Left => assert_eq!(x + aw, AREA_X + THICK),
+                DockSide::Right => assert_eq!(x, AREA_X + AREA_W - THICK),
+                DockSide::Top => assert_eq!(y + ah, AREA_Y + THICK),
+                DockSide::Bottom => assert_eq!(y, AREA_Y + AREA_H - THICK),
+            }
+        }
     }
 
     #[test]

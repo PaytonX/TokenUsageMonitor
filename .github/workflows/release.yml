@@ -59,3 +59,41 @@ jobs:
         with:
           files: dist-release/*
           generate_release_notes: true
+
+  build-macos:
+    name: 打包并发布（macOS DMG，未签名）
+    runs-on: macos-latest
+    env:
+      # rust-toolchain.toml 钉的 stable-x86_64-pc-windows-gnu 是 Windows 宿主
+      # 工具链，macOS 上不可用；与 ci.yml 同理用 RUSTUP_TOOLCHAIN 覆盖。
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # universal 二进制：arm64 runner 上补 x86_64 目标，产物同时覆盖
+      # Apple Silicon 与 Intel Mac（调研文档 §7.1）。
+      - run: rustup target add x86_64-apple-darwin
+      - run: rustup show active-toolchain
+      - run: npm ci
+      # 未签名 DMG 是拍板项（开源直发）：无 APPLE_* secrets，Tauri 跳过签名
+      # 与公证；下载侧的 Gatekeeper 绕过步骤写在 README（§安装说明）。
+      - run: npm run tauri:build:mac
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist-release
+          cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg dist-release/
+          ls -la dist-release
+      # 校验和独立成 SHA256SUMS-macos.txt：与 Windows job 并行上传同一 Release，
+      # 各自维护清单，避免两个 job 互相覆盖同一份汇总文件。
+      - name: Generate checksums
+        run: |
+          cd dist-release
+          shasum -a 256 *.dmg > SHA256SUMS-macos.txt
+          cat SHA256SUMS-macos.txt
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-release/*

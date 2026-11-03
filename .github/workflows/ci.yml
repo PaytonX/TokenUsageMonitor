@@ -53,3 +53,32 @@ jobs:
 
       - name: 运行测试
         run: cargo test --locked
+
+  rust-macos:
+    name: Rust 测试（macOS，aarch64）
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    env:
+      # rust-toolchain.toml 钉的 stable-x86_64-pc-windows-gnu 是 Windows 宿主
+      # 工具链，macOS 上不可用；与 Windows job 同理用 RUSTUP_TOOLCHAIN 覆盖
+      # （macos-latest 是 arm64 runner，默认宿主即 aarch64-apple-darwin）。
+      RUSTUP_TOOLCHAIN: stable
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 显示工具链
+        run: |
+          rustup show active-toolchain
+          rustc -vV
+
+      # macOS 侧新增了大量 cfg(target_os = "macos") 代码（托盘 popover、
+      # 应用菜单、平台装饰），本机（Windows）编译不到它们——这个 job 是
+      # 这部分代码唯一的编译/测试关卡，不许降级为 allow-fail。
+      - name: 编译测试二进制
+        run: cargo test --locked --no-run
+
+      - name: 运行测试
+        run: cargo test --locked

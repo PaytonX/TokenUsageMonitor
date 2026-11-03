@@ -458,6 +458,12 @@ pub async fn poll_one(
                     last_updated_at: Some(Utc::now()),
                 },
             );
+            // 写锁先落：update_tray_title 会再读 SharedProviderState，tokio
+            // RwLock 不可重入，带着 guard 调它会死锁。放在 insert 之后是为了
+            // 菜单栏直显（macOS）能读到刚入库的这一份，不慢一个轮询周期；
+            // Windows 上该函数按 profile 早退，是无害的空操作。
+            drop(guard);
+            crate::update_tray_title(app).await;
         }
         Err(err) => {
             // Only the first failure inside the cool down reaches the frontend.

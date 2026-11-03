@@ -12,7 +12,9 @@
     "test:watch": "vitest",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:dev:mac": "RUSTUP_TOOLCHAIN=stable tauri dev",
+    "tauri:build:mac": "RUSTUP_TOOLCHAIN=stable tauri build --target universal-apple-darwin"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.0"

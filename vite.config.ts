@@ -9,7 +9,8 @@ const port = process.env.TAURI_DEV_PORT
 
 // Multi-page build: dashboard (index.html) + settings window (settings.html)
 // + standalone full-window trend view (trend.html) + local-tools window
-// (toolwindow.html) + the compact pill's edge handle (peek.html). All share
+// (toolwindow.html) + the compact pill's edge handle (peek.html) + the
+// macOS menu-bar popover panel (popover.html). All share
 // src/lib/ modules; only the entry module differs.
 export default defineConfig({
   plugins: [svelte()],
@@ -31,6 +32,7 @@ export default defineConfig({
         trend: resolve(__dirname, "trend.html"),
         tools: resolve(__dirname, "toolwindow.html"),
         peek: resolve(__dirname, "peek.html"),
+        popover: resolve(__dirname, "popover.html"),
       },
     },
   },

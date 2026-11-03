@@ -7,7 +7,7 @@
 **Aggregated AI token usage on a transparent always-on-top Windows widget**
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT_OR_Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#build)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS%2013.1%2B-lightgrey.svg)](#build)
 [![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB.svg)](https://tauri.app)
 
 中文文档：[README.md](README.md)
@@ -115,6 +115,26 @@ Three things you should know:
    can clear it to disable auth). Do not enable it on untrusted networks.
 
 See [SECURITY.md](SECURITY.md) for details.
+
+## macOS Install (unsigned DMG)
+
+The macOS build ships as an **unsigned DMG** (direct distribution, not
+notarized). Gatekeeper will block the first launch — either approve it in
+System Settings → Privacy & Security → "Open Anyway", or run:
+`xattr -dr com.apple.quarantine /Applications/TokenUsageMonitor.app`
+
+Requires **macOS 13.1+** (universal binary: Apple Silicon + Intel).
+Credentials live in the login Keychain (the system asks on first save).
+The app lives in the menu bar (no Dock icon); closing a window hides it —
+quit via the menu bar item or ⌘Q.
+
+Build from source (macOS 13.1+):
+
+```bash
+npm install
+npm run tauri:dev:mac     # dev (overrides the Windows-pinned rust toolchain)
+npm run tauri:build:mac   # universal DMG (aarch64 + x86_64)
+```
 
 ## Build
 

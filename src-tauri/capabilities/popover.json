@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "popover",
+  "description": "菜单栏 popover 面板（macOS 主入口）：读用量快照、触发打开主面板/设置/退出；自身显隐由宿主控制，不授窗口管理权限。",
+  "windows": ["popover"],
+  "permissions": [
+    "core:event:default"
+  ]
+}
