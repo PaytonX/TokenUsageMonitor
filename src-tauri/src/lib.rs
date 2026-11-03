@@ -20,6 +20,7 @@ pub mod local;
 pub mod notify;
 pub mod p2p;
 pub mod perf_probe;
+pub mod platform;
 pub mod pricing;
 pub mod providers;
 pub mod router;
@@ -106,10 +107,11 @@ pub struct AppState {
     pub pill_drag: Arc<AtomicBool>,
     /// 窗口最近一次 Moved 的时间戳（epoch ms），供 watcher 判断是否停稳。
     pub pill_last_move_ms: Arc<AtomicU64>,
-    /// Holds the tray icon alive for the app lifetime. Never referenced after
-    /// construction.
+    /// Holds the tray icon alive for the app lifetime. macOS 额外用它做
+    /// 菜单栏百分比直显（`set_title`）；Windows 上无此能力，字段保持存活
+    /// 仅为托盘生命周期（dead_code 抑制的是 Windows 侧的未读警告）。
     #[allow(dead_code)]
-    pub _tray: TrayIcon,
+    pub tray: TrayIcon,
     /// Cache for aggregated local-tool usage (Claude Code logs). Short TTL so
     /// the tool view isn't re-parsing hundreds of session files on every poll.
     pub local: local::SharedLocalCache,
@@ -243,19 +245,68 @@ async fn build_self_device(
 }
 
 /// 按语言构建托盘菜单。启动（setup）与语言切换（ipc::save_settings）两处
-/// 使用；菜单项 id 恒为 "show"/"quit"，on_menu_event 分发不随语言变。
+/// 使用；菜单项 id 恒为 "show"/"open-settings"/"quit"，事件分发在全局
+/// `on_menu_event`（App 级），托盘菜单与 macOS 应用菜单共用同一个分发器。
 pub fn build_tray_menu(
     handle: &AppHandle,
     lang: i18n::Lang,
 ) -> tauri::Result<Menu<tauri::Wry>> {
     let show_item = MenuItem::with_id(handle, "show", i18n::tray_show(lang), true, None::<&str>)?;
+    let settings_item =
+        MenuItem::with_id(handle, "open-settings", i18n::tray_settings(lang), true, None::<&str>)?;
     let quit_item = MenuItem::with_id(handle, "quit", i18n::tray_quit(lang), true, None::<&str>)?;
-    Menu::with_items(handle, &[&show_item, &quit_item])
+    Menu::with_items(handle, &[&show_item, &settings_item, &quit_item])
 }
 
-/// 从托盘恢复主面板：显示 + 聚焦；若此前处于 compact 胶囊态，把贴边把手
+/// macOS 应用菜单（⌘ 快捷键的来源）。`set_menu` 会把它挂到所有未显式指定
+/// 菜单的窗口上；菜单项 id 走全局 `on_menu_event` 分发。
+///
+/// 预定义项（about/hide/quit/close_window…）自带系统标准行为与快捷键；
+/// close_window 触发系统关闭流程 → `CloseRequested` → 被关闭拦截器转成
+/// 隐藏（platform.rs `close_hides_forced`），不会真的销毁窗口。
+#[cfg(target_os = "macos")]
+fn build_app_menu(handle: &AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{PredefinedMenuItem, Submenu};
+
+    let app_submenu = Submenu::new(handle, "TokenUsageMonitor", true)?;
+    app_submenu.append(&PredefinedMenuItem::about(handle, None)?)?;
+    // "CmdOrCtrl+,"：muda 的解析失败会被 with_id 静默降级为无快捷键
+    // （菜单项本身仍可用），所以这里不需要错误处理。
+    app_submenu.append(&MenuItem::with_id(
+        handle,
+        "open-settings",
+        "设置…",
+        true,
+        Some("CmdOrCtrl+,"),
+    )?)?;
+    app_submenu.append(&PredefinedMenuItem::separator(handle)?)?;
+    app_submenu.append(&PredefinedMenuItem::hide(handle, None)?)?;
+    app_submenu.append(&PredefinedMenuItem::quit(handle, None)?)?;
+
+    let edit_submenu = Submenu::new(handle, "编辑", true)?;
+    edit_submenu.append(&PredefinedMenuItem::undo(handle, None)?)?;
+    edit_submenu.append(&PredefinedMenuItem::redo(handle, None)?)?;
+    edit_submenu.append(&PredefinedMenuItem::separator(handle)?)?;
+    edit_submenu.append(&PredefinedMenuItem::cut(handle, None)?)?;
+    edit_submenu.append(&PredefinedMenuItem::copy(handle, None)?)?;
+    edit_submenu.append(&PredefinedMenuItem::paste(handle, None)?)?;
+    edit_submenu.append(&PredefinedMenuItem::select_all(handle, None)?)?;
+
+    let window_submenu = Submenu::new(handle, "窗口", true)?;
+    window_submenu.append(&PredefinedMenuItem::minimize(handle, None)?)?;
+    window_submenu.append(&PredefinedMenuItem::close_window(handle, None)?)?;
+
+    let menu = Menu::new(handle)?;
+    menu.append(&app_submenu)?;
+    menu.append(&edit_submenu)?;
+    menu.append(&window_submenu)?;
+    handle.set_menu(menu)?;
+    Ok(())
+}
+
+/// 从托盘/菜单栏恢复主面板：显示 + 聚焦；若此前处于 compact 胶囊态，把贴边把手
 /// 一并拉起并对齐（close-to-tray 会把把手一起隐藏，否则胶囊无法被唤醒）。
-fn show_dashboard(app: &AppHandle) {
+pub(crate) fn show_dashboard(app: &AppHandle) {
     let Some(window) = app.get_webview_window("dashboard") else { return; };
     let _ = window.show();
     let _ = window.set_focus();
@@ -283,6 +334,26 @@ fn show_dashboard(app: &AppHandle) {
             }
         }
     }
+}
+
+/// 菜单栏百分比直显（macOS 拍板项）：显示所有账户里**最紧张窗口**的已用
+/// 百分比。复用 `UsageSnapshot::min_remaining_percent`（= 1 − max 已用比），
+/// quota<=0 的窗口自然被排除。没有可显示数据时清空标题。
+///
+/// Windows 的 TrayIcon 不支持 `set_title`，函数按 profile 早退，调用点
+/// （scheduler 的 usage-updated 路径）无需 cfg。
+pub async fn update_tray_title(app: &AppHandle) {
+    if !platform::profile().menu_bar_title {
+        return;
+    }
+    let Some(state) = app.try_state::<AppState>() else { return };
+    let guard = state.state.read().await;
+    let best = guard
+        .values()
+        .filter_map(|ps| ps.snapshot.as_ref())
+        .map(|snap| (100.0 - snap.min_remaining_percent()).round().clamp(0.0, 99.0) as u8)
+        .max();
+    let _ = state.tray.set_title(best.map(|p| format!("{p}%")));
 }
 
 pub fn run() {
@@ -335,6 +406,13 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            // macOS 外壳：菜单栏常驻应用。打包态由 Info.plist 的 LSUIElement
+            // 声明（macos/Info.plist）；`tauri dev` 不经过打包，运行时再设
+            // 一次 Accessory 保证开发期行为一致（无 Dock 图标、不进 Cmd+Tab）。
+            // 两者同时设置是幂等的（同一策略）。
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             // Resolve OS app-data dir and open the SQLite store there.
             let data_dir = app
                 .path()
@@ -692,8 +770,20 @@ pub fn run() {
             let tray_lang =
                 i18n::resolve(&settings_store.read_blocking().language);
             let tray_menu = build_tray_menu(&tray_mgr, tray_lang)?;
+            // 托盘/菜单栏图标：Windows 沿用应用彩色图标；macOS 用单色模板图
+            // （icon_as_template 自动适配深浅色菜单栏与选中态；彩色 App 图标
+            // 直接放菜单栏会发灰、在浅色菜单栏上过艳）。
+            #[cfg(target_os = "macos")]
+            let tray_icon = tauri::image::Image::from_bytes(include_bytes!(
+                "../icons/tray-template.png"
+            ))
+            .expect("bundled tray template icon must decode");
+            #[cfg(not(target_os = "macos"))]
+            let tray_icon =
+                app.default_window_icon().expect("default window icon").clone();
             let tray = TrayIconBuilder::with_id("main-tray")
-                .icon(app.default_window_icon().expect("default window icon").clone())
+                .icon(tray_icon)
+                .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("TokenUsageMonitor")
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
@@ -704,15 +794,52 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        show_dashboard(tray.app_handle());
+                        // 主入口按平台分流（platform.rs）：macOS 左键弹菜单栏
+                        // popover，Windows 左键唤出悬浮面板；右键在两个平台上
+                        // 都弹托盘菜单（menu_on_left_click=false 的约定行为）。
+                        match crate::platform::profile().primary_entry {
+                            crate::platform::PrimaryEntry::MenuBar => {
+                                ipc::toggle_popover_panel_sync(tray.app_handle());
+                            }
+                            crate::platform::PrimaryEntry::Tray => {
+                                show_dashboard(tray.app_handle());
+                            }
+                        }
                     }
                 })
-                .on_menu_event(|app_handle, event| match event.id().as_ref() {
-                    "show" => show_dashboard(app_handle),
-                    "quit" => app_handle.exit(0),
-                    _ => {}
-                })
                 .build(&tray_mgr)?;
+
+            // 菜单事件全局分发：托盘菜单与 macOS 应用菜单共用同一套 id
+            // （show / open-settings / refresh-all / quit）。语言切换会重建
+            // 菜单，但 id 不随语言变，监听器无需重挂。
+            tray_mgr.on_menu_event(|app_handle, event| match event.id().as_ref() {
+                "show" => show_dashboard(app_handle),
+                "open-settings" => {
+                    let app_handle = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = ipc::open_settings(app_handle).await;
+                    });
+                }
+                "refresh-all" => {
+                    let app_handle = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app_handle.state::<AppState>();
+                        if let Err(e) =
+                            ipc::force_refresh(state, app_handle.clone(), None).await
+                        {
+                            tracing::warn!(target: "tum.app", "menu refresh failed: {e}");
+                        }
+                    });
+                }
+                "quit" => app_handle.exit(0),
+                _ => {}
+            });
+
+            // macOS 应用菜单：About / 设置…(⌘,) / Hide(⌘H) / Quit(⌘Q) +
+            // Edit（剪贴板四件套）+ Window（⌘W → CloseRequested → 拦截后
+            // 隐藏）。Windows 不设应用菜单，托盘入口覆盖同等操作。
+            #[cfg(target_os = "macos")]
+            build_app_menu(&tray_mgr)?;
 
             // TokenRouter 本地路由代理：无论开关都常驻监听（停用时对请求回
             // 503 + 原因），开关翻转零延迟；端口变化由 save_settings 触发
@@ -746,7 +873,8 @@ pub fn run() {
                 peek_side: Arc::new(std::sync::Mutex::new(None)),
                 pill_drag: Arc::new(AtomicBool::new(false)),
                 pill_last_move_ms: Arc::new(AtomicU64::new(0)),
-                _tray: tray,
+                #[allow(dead_code)] // Windows 上无 set_title 消费方，字段仅为托盘生命周期存活
+                tray,
                 local,
                 router: router_core,
             };
@@ -792,6 +920,11 @@ pub fn run() {
                     .compact_mode
                     .store(true, std::sync::atomic::Ordering::SeqCst);
             }
+            // macOS：悬浮面板跨 Space 常驻（拍板项）。该行为仅对 macOS 生效——
+            // 走 cfg 分支而不是共享配置，因为 Windows 侧的 tao 实现并非空操作，
+            // 不能为了 macOS 的增强去改动 Windows 现状。
+            #[cfg(target_os = "macos")]
+            let _ = dash.set_visible_on_all_workspaces(true);
             let _ = dash.show();
             // 恢复了贴边锚点时**不能再跑**下面那个 first-focus 夹取：
             // clamp_rect 是「无条件留 8px 余量」而非「只在出屏时才拉」，于是它会把
@@ -812,12 +945,18 @@ pub fn run() {
             // Close-to-tray: when the user closes the dashboard, hide it to the
             // tray instead of quitting. The tray's "退出" item calls app.exit
             // which bypasses this. Reads the cached flag synchronously.
+            //
+            // macOS 例外（platform.rs close_hides_forced）：关窗恒隐藏——⌘W 是
+            // 原生「关闭窗口」语义，应用常驻菜单栏；退出只走 ⌘Q / 菜单「退出」。
+            // 设置里的 close_to_tray 在 macOS 不参与判定。
             let close_flag = dash.clone();
             let close_flag_inner = close_flag.clone();
             let close_to_tray_flag = app.state::<AppState>().close_to_tray.clone();
             close_flag.on_window_event(move |event| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    if close_to_tray_flag.load(Ordering::SeqCst) {
+                    let hide = crate::platform::profile().close_hides_forced
+                        || close_to_tray_flag.load(Ordering::SeqCst);
+                    if hide {
                         api.prevent_close();
                         // 把手一起收起：胶囊被隐藏后把手无法唤醒任何东西。
                         if let Some(peek) =
@@ -966,6 +1105,10 @@ pub fn run() {
             ipc::set_autostart,
             ipc::get_router_status,
             ipc::fetch_upstream_models,
+            ipc::toggle_popover_panel,
+            ipc::hide_popover_panel,
+            ipc::show_dashboard_window,
+            ipc::quit_app,
             app_meta::get_app_meta,
             app_meta::open_url,
             app_meta::check_app_update,

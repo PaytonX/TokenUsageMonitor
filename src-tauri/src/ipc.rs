@@ -1418,6 +1418,144 @@ pub async fn set_pill_dragging(state: State<'_, AppState>, active: bool) -> Resu
     Ok(())
 }
 
+// --- 菜单栏 popover 面板（macOS 主入口，platform.rs PrimaryEntry::MenuBar） ---
+
+/// popover 面板的逻辑尺寸（DIP）。宽度对齐原型（300）；高度 = 头部 + 环 + 三行
+/// 账户 + 页脚，账户更多时内部滚动。定位在状态项正下方、右缘对齐。
+pub(crate) const POPOVER_LOGICAL_SIZE: (f64, f64) = (300.0, 324.0);
+
+/// 新建 popover 窗口。只有 macOS 主入口会走到这里；懒加载——首次点状态项才建，
+/// 建一次常驻复用（隐藏/显示，不销毁），避免每次打开都付 WebView 初始化。
+pub(crate) fn build_popover_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    let (w, h) = POPOVER_LOGICAL_SIZE;
+    let built = WebviewWindowBuilder::new(
+        app,
+        "popover",
+        tauri::WebviewUrl::App("popover.html".into()),
+    )
+    .inner_size(w, h)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    // 原生投影：popover 是「浮在桌面上的一层」，无影会读成贴在屏幕上。
+    .shadow(true)
+    .focused(false)
+    .visible(false)
+    // 平台标识注入（platform.rs id）：popover 页据此选浅色令牌与 ⌘ 文案。
+    .initialization_script(format!(
+        "window.__TUM_PLATFORM__ = {:?};",
+        crate::platform::profile().id
+    ))
+    .build()
+    .map_err(|e| e.to_string())?;
+    // 失焦即收起：popover 的原生语义（点外面 = 关闭）。Esc 由页面自己
+    // 调 hide_popover_panel，两条路都只 hide 不销毁。
+    let win = built.clone();
+    built.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Focused(false)) {
+            let _ = win.hide();
+        }
+    });
+    Ok(built)
+}
+
+/// 把 popover 摆到状态项正下方：右缘与状态项右缘对齐（各留 6pt），顶部与
+/// 状态项底部留 5pt。`TrayIcon::rect` 是物理像素（原点随平台，统一经
+/// `to_physical` 归一到本窗缩放），所以按当前显示器缩放换算逻辑尺寸。
+pub(crate) fn position_popover(app: &AppHandle) {
+    let Some(pop) = app.get_webview_window("popover") else { return };
+    let Some(state) = app.try_state::<AppState>() else { return };
+    let Ok(Some(rect)) = state.tray.rect() else { return };
+    let scale = pop
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+    let pos = rect.position.to_physical::<f64>(scale);
+    let size = rect.size.to_physical::<f64>(scale);
+    let (w, h) = (POPOVER_LOGICAL_SIZE.0 * scale, POPOVER_LOGICAL_SIZE.1 * scale);
+    let mut x = pos.x + size.width - w - 6.0 * scale;
+    let mut y = pos.y + size.height + 5.0 * scale;
+    // 兜底：面板底部超出主工作区时改弹到状态项上方（多行 Dock / 底部工具栏
+    // 场景）。work_area 已排除菜单栏与 Dock，取主显示器即可。
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let area = monitor.work_area();
+        let bottom = f64::from(area.position.y + area.size.height as i32);
+        if y + h > bottom {
+            y = pos.y - h - 5.0 * scale;
+        }
+        let right = f64::from(area.position.x + area.size.width as i32);
+        if x + w > right {
+            x = right - w - 6.0 * scale;
+        }
+        x = x.max(f64::from(area.position.x));
+    }
+    let _ = pop.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+}
+
+/// 左键状态项：开合 popover。已存在则复用（隐藏 ↔ 显示），不存在才建。
+pub(crate) fn toggle_popover_panel_sync(app: &AppHandle) {
+    if let Some(existing) = app.get_webview_window("popover") {
+        if existing.is_visible().unwrap_or(false) {
+            let _ = existing.hide();
+            return;
+        }
+        position_popover(app);
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return;
+    }
+    match build_popover_window(app) {
+        Ok(w) => {
+            position_popover(app);
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+        Err(e) => {
+            // 建窗失败不能把托盘入口弄坏：退回「显示主面板」的兜底路径。
+            tracing::warn!(target: "tum.window", "build popover failed: {e}");
+            crate::show_dashboard(app);
+        }
+    }
+}
+
+/// 前端 / 托盘左键：开合菜单栏 popover。
+#[tauri::command]
+pub async fn toggle_popover_panel(app: AppHandle) -> Result<(), String> {
+    toggle_popover_panel_sync(&app);
+    Ok(())
+}
+
+/// 前端 Esc / 选中动作后收起 popover。
+#[tauri::command]
+pub async fn hide_popover_panel(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("popover") {
+        let _ = w.hide();
+    }
+    Ok(())
+}
+
+/// popover「打开主面板」：收起自己，按平台语义唤出主面板。
+#[tauri::command]
+pub async fn show_dashboard_window(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("popover") {
+        let _ = w.hide();
+    }
+    crate::show_dashboard(&app);
+    Ok(())
+}
+
+/// popover / 应用菜单「退出」：绕过一切 CloseRequested 拦截直接退出。
+/// macOS 上这是唯一显式退出路径（关窗 = 隐藏，见 lib.rs 关闭拦截器）。
+#[tauri::command]
+pub async fn quit_app(app: AppHandle) -> Result<(), String> {
+    app.exit(0);
+    Ok(())
+}
+
 /// Open the Settings window. If it already exists, just focus it.
 /// The window is created lazily so the dashboard doesn't pay the cost on
 /// startup if the user never opens Settings.
@@ -1429,7 +1567,7 @@ pub async fn open_settings(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let window = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         &app,
         "settings",
         tauri::WebviewUrl::App("settings.html".into()),
@@ -1446,14 +1584,26 @@ pub async fn open_settings(app: AppHandle) -> Result<(), String> {
     .resizable(true)
     .min_inner_size(540.0, 600.0)
     .visible(false)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(false)
-    .skip_taskbar(false)
-    .shadow(false)
-    .center()
-    .build()
-    .map_err(|e| e.to_string())?;
+    .center();
+    // 二级窗口装饰按平台分流（platform.rs native_titlebar）：macOS 用系统
+    // 标题栏（Overlay 红绿灯 + hiddenTitle + 原生拖边缩放），窗口不透明、
+    // 顶部避让与去圆角由前端 data-platform CSS 处理；Windows 保持无边框
+    // 自绘 + DWM 兜底（macos 原生标题栏是拍板项，见调研文档 §四 P1-6）。
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .decorations(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .transparent(false)
+        .shadow(true);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(false)
+        .skip_taskbar(false)
+        .shadow(false);
+    let window = builder.build().map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
     crate::dwm_corner::disable_corner_artifacts(&window);
@@ -1508,7 +1658,7 @@ pub async fn open_trend_window(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let window = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         &app,
         "trend",
         tauri::WebviewUrl::App("trend.html".into()),
@@ -1522,14 +1672,23 @@ pub async fn open_trend_window(app: AppHandle) -> Result<(), String> {
     .resizable(true)
     .min_inner_size(880.0, 600.0)
     .visible(false)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(false)
-    .skip_taskbar(false)
-    .shadow(false)
-    .center()
-    .build()
-    .map_err(|e| e.to_string())?;
+    .center();
+    // 平台分流见 open_settings 内注释（platform.rs native_titlebar）。
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .decorations(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .transparent(false)
+        .shadow(true);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(false)
+        .skip_taskbar(false)
+        .shadow(false);
+    let window = builder.build().map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
     crate::dwm_corner::disable_corner_artifacts(&window);
@@ -1560,7 +1719,7 @@ pub async fn open_tool_window(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let window = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         &app,
         "tools",
         tauri::WebviewUrl::App("toolwindow.html".into()),
@@ -1570,14 +1729,23 @@ pub async fn open_tool_window(app: AppHandle) -> Result<(), String> {
     .resizable(true)
     .min_inner_size(520.0, 360.0)
     .visible(false)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(false)
-    .skip_taskbar(false)
-    .shadow(false)
-    .center()
-    .build()
-    .map_err(|e| e.to_string())?;
+    .center();
+    // 平台分流见 open_settings 内注释（platform.rs native_titlebar）。
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .decorations(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .transparent(false)
+        .shadow(true);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(false)
+        .skip_taskbar(false)
+        .shadow(false);
+    let window = builder.build().map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
     crate::dwm_corner::disable_corner_artifacts(&window);
@@ -1668,7 +1836,7 @@ pub async fn save_settings(
         let lang = crate::i18n::resolve(&new_settings.language);
         match crate::build_tray_menu(&app, lang) {
             Ok(menu) => {
-                let _ = state._tray.set_menu(Some(menu));
+                let _ = state.tray.set_menu(Some(menu));
             }
             Err(e) => tracing::warn!(target: "tum.settings", error = %e, "rebuild tray menu after language switch failed"),
         }

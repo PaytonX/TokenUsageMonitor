@@ -44,6 +44,13 @@ pub fn tray_show(lang: Lang) -> &'static str {
     }
 }
 
+pub fn tray_settings(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "设置…",
+        Lang::En => "Settings…",
+    }
+}
+
 pub fn tray_quit(lang: Lang) -> &'static str {
     match lang {
         Lang::ZhCn => "退出",
