@@ -58,7 +58,7 @@
 |---|---|
 | 仓库 | `PaytonX/TokenUsageMonitor`（公开） |
 | 分支 | `feat/macos-shell` |
-| 交接时 HEAD | `0933d96`（`docs(macos): 迁移 SOP`；以 bundle 内实际为准） |
+| 交接时 HEAD | 以 bundle 内实际 tip 为准；校验 `git log -1 --format=%s` 应为 `docs(macos): AI 交接手册…`（本文件随该提交入库） |
 | PR | [#1](https://github.com/PaytonX/TokenUsageMonitor/pull/1)（draft，勿合并） |
 | 设计原则 | 共享核心 + 两套平台外壳：Windows 保持胶囊/托盘；macOS 菜单栏常驻 |
 
@@ -126,7 +126,7 @@ git bundle verify token-usage-monitor-macos.bundle
 mkdir -p ~/dev && cd ~/dev
 git clone <复制过来的目录>/token-usage-monitor-macos.bundle TokenUsageMonitor
 cd TokenUsageMonitor
-git log -1 --format=%H                  # 应为交接 HEAD（见 §2.1 / PR #1）
+git log -1 --format=%s                  # 应以 docs(macos): AI 交接手册 开头（见 §2.1）
 test -f docs/AI-HANDOFF-macos.md && echo "handoff doc OK"
 ```
 
