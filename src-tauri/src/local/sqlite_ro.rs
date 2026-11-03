@@ -456,6 +456,12 @@ mod tests {
 
     /// 构造"直接只读打开必然失败"的场景：把 `-shm` 造成一个目录。SQLite 映射 shm
     /// 必然失败，而回退只复制是普通文件的伴生文件，到下个临时目录即可正常打开。
+    ///
+    /// ⚠️ 仅 Windows：CI 的 rust-macos job 实测，macOS 上同样构造后直接只读打开
+    /// **会成功**（WAL 库 checkpoint 后没有 -wal 文件时，SQLite 只读打开不需要
+    /// shm），前提不成立。回退路径本身是为 Windows 的 `\\wsl$` 9p 共享写的
+    /// （见模块头），macOS 不涉及这个场景。
+    #[cfg(windows)]
     #[test]
     fn falls_back_to_temp_copy_when_direct_open_fails() {
         let root = temp_root("fallback");
