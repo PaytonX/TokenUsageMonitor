@@ -3,6 +3,10 @@
 #
 # If you have MSVC Build Tools installed and would rather use that, delete
 # this file or change `channel` to `stable-x86_64-pc-windows-msvc`.
+#
+# ⚠️ macOS 上不可用：这是 Windows 宿主工具链。macOS 贡献者请用
+#   RUSTUP_TOOLCHAIN=stable npm run tauri:dev:mac   （或 tauri:build:mac）
+# 覆盖本钉子（npm scripts 与 CI 均已内置该覆盖）。
 [toolchain]
 channel = "stable-x86_64-pc-windows-gnu"
 components = ["rustfmt", "clippy"]

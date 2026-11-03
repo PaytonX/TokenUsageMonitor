@@ -80,8 +80,8 @@ pub fn get_app_meta() -> AppMeta {
     }
 }
 
-/// 在系统浏览器打开一个白名单内的 https 链接。仅支持仓库相关页面，
-/// 所以只实现了 Windows（本项目唯一目标平台）。
+/// 在系统浏览器打开一个白名单内的 https 链接。桌面三平台各自交给系统
+/// 打开器（explorer / open / xdg-open）；移动端不支持。
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), String> {
     if !is_allowed_open_url(&url) {
@@ -95,10 +95,27 @@ pub fn open_url(url: String) -> Result<(), String> {
             .map_err(|e| format!("opening browser failed: {e}"))?;
         Ok(())
     }
-    #[cfg(not(windows))]
+    // macOS：`open` 走 LaunchServices，用默认浏览器打开，不等待返回。
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("opening browser failed: {e}"))?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("opening browser failed: {e}"))?;
+        Ok(())
+    }
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     {
         let _ = url;
-        Err("open_url is only implemented on Windows".to_string())
+        Err("open_url is not supported on this platform".to_string())
     }
 }
 

@@ -16,8 +16,11 @@ crate-type = ["staticlib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# Tauri core - include features needed for transparent always-on-top window
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# Tauri core. Features:
+# - tray-icon / image-png: 常驻托盘 + PNG 图标（含 macOS 模板托盘图）
+# - macos-private-api: macOS 透明窗依赖的私有 API；由 tauri.conf.json 的
+#   app.macOSPrivateApi 声明并经 tauri-build 的 allowlist 校验，两处必须一致
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-notification = "2"
@@ -46,8 +49,12 @@ dirs = "5"
 # Storage
 rusqlite = { version = "0.32", features = ["bundled"] }
 
-# Credential storage (Windows DPAPI via OS credential manager)
-keyring = { version = "3", features = ["windows-native"] }
+# Credential storage via the OS credential manager. Two platform stores:
+# Windows Credential Manager (DPAPI) and macOS login Keychain. The crate's
+# platform deps are target-gated, so enabling both is cross-platform safe;
+# missing the matching feature for a target leaves that platform with NO
+# credential store (all providers permanently NotConfigured).
+keyring = { version = "3", features = ["windows-native", "apple-native"] }
 
 # HMAC + SHA256 for Volcano signing
 hmac = "0.12"

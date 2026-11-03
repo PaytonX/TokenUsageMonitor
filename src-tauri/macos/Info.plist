@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  打包时与 Tauri 默认 Info.plist 合并（tauri.macos.conf.json → bundle.macOS.infoPlist）。
+
+  - LSUIElement：菜单栏常驻应用（无 Dock 图标、不进 Cmd+Tab）。这是 macOS
+    原生约定（调研文档 §〇 能力矩阵），Windows 侧对应的 skipTaskbar 不受影响。
+  - NSLocalNetworkUsageDescription：macOS 14+ 的本地网络隐私门槛；mDNS 发现
+    （p2p.rs，mdns-sd）会触发组播，未声明时系统直接拒绝且无提示。
+-->
+<plist version="1.0">
+<dict>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>TokenUsageMonitor 需要访问本地网络来发现并汇总局域网内其他设备的 AI 用量。</string>
+</dict>
+</plist>
