@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TokenUsageMonitor · 用量面板</title>
+    <!-- 设计令牌（含 macOS 浅色档）必须在样式注入前可用：面板背景/描边/文字
+         全部走 var(--tum-*)，缺了会渲染成全透明。peek 页不引它是因为把手样式
+         全是字面量；popover 用令牌以跟随深浅档。 -->
+    <link rel="stylesheet" href="/src/styles/tokens.css" />
+  </head>
+  <body>
+    <div id="popover"></div>
+    <script type="module" src="/src/popover/main.ts"></script>
+  </body>
+</html>

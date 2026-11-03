@@ -82,7 +82,7 @@
    * 等宽区：拉丁/数字仍走 Cascadia（数字表格特性好），中文字形显式落到
    * MiSans VF —— 否则泛型 monospace 的中文兜底是宋体（切换前的主要违和源）。 */
   --tum-font: "MiSans VF", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --tum-font-mono: "Cascadia Code", "Cascadia Mono", "MiSans VF", Consolas, monospace;
+  --tum-font-mono: "Cascadia Code", "Cascadia Mono", "SF Mono", ui-monospace, Menlo, "MiSans VF", Consolas, monospace;
   --tum-font-size-xs: 10px;
   --tum-font-size-sm: 11px;
   --tum-font-size-base: 13px;
@@ -202,3 +202,64 @@ input[type="number"],
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ============ macOS 外壳分支（2026-11-02 拍板，调研文档 §四 P1） ============
+   作用域统一挂在 html[data-platform="macos"]（src/lib/platform.ts 在各窗口
+   入口 mount 前写入；值来自建窗 initialization_script 注入的
+   window.__TUM_PLATFORM__）。Windows 不命中以下任何规则，观感与行为保持
+   原状（「Windows 不退化」约束）。
+
+   浅色档取值对齐原型 docs/mockups/2026-11-02-macos-shell.html 场景⑤：
+   同色相、提对比 —— accent 加深到 #0071e3 保证浅底对比度，状态色同步加深；
+   玻璃面板在浅色下整体提亮（半透明白）。组件内仍有个别硬编码暗色，逐步
+   迁移到令牌（真机上按视觉验收推进）。 */
+@media (prefers-color-scheme: light) {
+  html[data-platform="macos"] {
+    --tum-bg: #f3f4f6;
+    --tum-bg-solid: #f3f4f6;
+    --tum-surface: rgba(20, 24, 32, 0.05);
+    --tum-surface-hover: rgba(20, 24, 32, 0.085);
+    --tum-surface-hover-raised: rgba(20, 24, 32, 0.1);
+    --tum-border: rgba(20, 24, 32, 0.11);
+    --tum-border-strong: rgba(20, 24, 32, 0.18);
+    --tum-text-primary: #1d2026;
+    --tum-text-secondary: #4b515b;
+    --tum-text-muted: #7d8590;
+    --tum-accent: #0071e3;
+    --tum-accent-hover: #0060c0;
+    --tum-accent-glow: rgba(0, 113, 227, 0.28);
+    --tum-accent-fill: rgba(0, 113, 227, 0.1);
+    --tum-accent-fill-strong: rgba(0, 113, 227, 0.18);
+    --tum-accent-stroke: rgba(0, 113, 227, 0.38);
+    --tum-ok: #2e9e26;
+    --tum-warn: #a86e00;
+    --tum-crit: #d5312a;
+    --tum-grad-ok: linear-gradient(90deg, #0071e3, #2e9e26);
+    --tum-grad-warn: linear-gradient(90deg, #8a5a00, #a86e00);
+    --tum-grad-crit: linear-gradient(90deg, #b02a24, #d5312a);
+    --tum-warn-fill: rgba(168, 110, 0, 0.1);
+    --tum-warn-stroke: rgba(168, 110, 0, 0.4);
+    --tum-crit-stroke: rgba(213, 49, 42, 0.4);
+    --tum-success-fill: rgba(46, 158, 38, 0.1);
+    --tum-danger-fill: rgba(213, 49, 42, 0.1);
+    --tum-amber: #a16207;
+    --tum-amber-glow: rgba(161, 98, 7, 0.3);
+    --tum-glass: rgba(248, 249, 251, 0.94);
+  }
+}
+
+/* macOS 二级窗口（settings / trend / tools）改用系统标题栏：窗口本体不
+   透明（ipc.rs transparent(false) + Overlay 红绿灯），圆角与投影交给系统；
+   面板去掉自绘圆角与描边、通铺到底，顶部避让红绿灯（≈40pt）。
+   两处硬编码的暗色玻璃底在 macOS 上换成令牌底色（跟随深浅档）。 */
+html[data-platform="macos"] .settings,
+html[data-platform="macos"] .tw {
+  background: var(--tum-bg-solid);
+  border: none;
+  border-radius: 0;
+  padding-top: 40px;
+}
+
+/* 等宽栈补 macOS 兜底：Cascadia/Consolas 在 mac 上缺席，之前会落到
+   Courier New。SF Mono / ui-monospace 接管数字表格；MiSans VF 仍兜中文字形，
+   Windows 命中顺序不变（Cascadia 仍在最前）。 */
