@@ -490,6 +490,9 @@ jobs:
 
 ### 7.5 本机从 Windows 迁移到 macOS
 
+> 逐步操作手册（Mac 基础操作、工具链安装、数据迁移、验收清单与排错）见
+> [`docs/macos-migration-sop.md`](macos-migration-sop.md)。本节只保留数据层面的结论。
+
 既然是"换机器继续用"，这些数据/配置的迁移路径要提前明确：
 
 | 数据 | 位置（Windows） | 位置（macOS） | 能否直接搬 |
