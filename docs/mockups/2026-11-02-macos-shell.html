@@ -1,0 +1,830 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>macOS 外壳原型 — 菜单栏 Popover · 悬浮挂件 · 原生标题栏 · 浅色模式（2026-11-02）</title>
+<!-- MiSans 可变字体直接复用应用内字体（经 vite dev server 提供；file:// 打开时回退系统字体） -->
+<link rel="stylesheet" href="/src/styles/fonts/misans/MiSansVF.min.css" />
+<style>
+  /* ============ 设计令牌（与 src/styles/tokens.css 同源，内联以便自包含预览） ============
+     深色值 = 线上现状；浅色值 = 本次原型新增的候选档（拍板后并入 tokens.css）。 */
+  :root {
+    --page-bg: #16171a;
+    --page-text: #e6e8ea;
+    --page-muted: #8b949e;
+    --page-border: rgba(255,255,255,.09);
+    --page-card: rgba(255,255,255,.03);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { min-height: 100%; }
+  body {
+    background: var(--page-bg);
+    color: var(--page-text);
+    font-family: "MiSans VF", "PingFang SC", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+    padding: 20px 22px 60px;
+  }
+  header { max-width: 1120px; margin: 0 auto 14px; }
+  h1 { font-size: 17px; font-weight: 600; letter-spacing: .2px; }
+  .sub { color: var(--page-muted); font-size: 12px; margin-top: 6px; line-height: 1.7; max-width: 940px; }
+  .sub b { color: var(--page-text); font-weight: 600; }
+  .decisions {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
+  }
+  .decisions span {
+    font-size: 11px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--page-border); background: var(--page-card); color: var(--page-muted);
+  }
+  .decisions span b { color: var(--page-text); font-weight: 600; }
+
+  /* 工具条 */
+  .toolbar {
+    display: flex; gap: 16px; flex-wrap: wrap; align-items: center;
+    max-width: 1120px; margin: 0 auto 18px; padding: 10px 12px;
+    border: 1px solid var(--page-border); border-radius: 12px;
+    background: var(--page-card);
+  }
+  .ctl { display: inline-flex; align-items: center; gap: 8px; }
+  .ctl > span { font-size: 11px; color: var(--page-muted); }
+  .seg { display: inline-flex; border: 1px solid var(--page-border); border-radius: 8px; overflow: hidden; }
+  .seg button {
+    border: none; background: transparent; color: var(--page-muted);
+    font-size: 12px; font-family: inherit; padding: 5px 12px; cursor: pointer;
+  }
+  .seg button:hover { color: var(--page-text); }
+  .seg button.on { background: rgba(76,194,255,.14); color: #4cc2ff; }
+
+  section { max-width: 1120px; margin: 0 auto 34px; }
+  section > h2 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  section > .why { color: var(--page-muted); font-size: 12px; line-height: 1.7; margin-bottom: 12px; max-width: 940px; }
+  .frame-caption { color: var(--page-muted); font-size: 11.5px; line-height: 1.7; margin-top: 8px; }
+  .frame-caption code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; color: var(--page-text); }
+
+  /* ============ 模拟桌面（每个场景一个 .desktop，主题变量作用域在此） ============ */
+  .desktop {
+    position: relative; border-radius: 14px; overflow: hidden;
+    background:
+      radial-gradient(900px 620px at 18% 14%, rgba(94,116,183,.55), transparent 60%),
+      radial-gradient(760px 560px at 84% 88%, rgba(56,142,158,.42), transparent 62%),
+      linear-gradient(158deg, #2c3a66 0%, #202a4d 46%, #131a30 100%);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.07);
+  }
+  /* ---- 主题变量：深色（默认，同线上） ---- */
+  .desktop {
+    --tum-bg: #1a1b1e;
+    --tum-surface: rgba(255,255,255,.055);
+    --tum-surface-hover: rgba(255,255,255,.09);
+    --tum-border: rgba(255,255,255,.09);
+    --tum-border-strong: rgba(255,255,255,.16);
+    --tum-text-primary: #e6e8ea;
+    --tum-text-secondary: #b3b9c0;
+    --tum-text-muted: #8b949e;
+    --tum-accent: #4cc2ff;
+    --tum-accent-fill: rgba(76,194,255,.12);
+    --tum-accent-stroke: rgba(76,194,255,.45);
+    --tum-ok: #6ccb5f;
+    --tum-warn: #ffc83d;
+    --tum-crit: #ff5f56;
+    --tum-glass: rgba(22,25,31,.92);
+    --vibrancy-tint: rgba(30,33,40,.55);
+    --panel-shadow: 0 14px 44px rgba(0,0,0,.42), 0 2px 8px rgba(0,0,0,.28);
+    --mb-bg: rgba(28,28,33,.55);
+    --mb-text: #f2f2f5;
+    --mb-active: rgba(255,255,255,.16);
+    --mb-muted: rgba(242,242,245,.62);
+    --radius-win: 12px;
+    --blur: blur(30px) saturate(1.7);
+  }
+  /* ---- 主题变量：浅色（新增候选档） ---- */
+  .desktop[data-scheme="light"] {
+    --tum-bg: #f3f4f6;
+    --tum-surface: rgba(20,24,32,.05);
+    --tum-surface-hover: rgba(20,24,32,.085);
+    --tum-border: rgba(20,24,32,.11);
+    --tum-border-strong: rgba(20,24,32,.18);
+    --tum-text-primary: #1d2026;
+    --tum-text-secondary: #4b515b;
+    --tum-text-muted: #7d8590;
+    --tum-accent: #0071e3;
+    --tum-accent-fill: rgba(0,113,227,.10);
+    --tum-accent-stroke: rgba(0,113,227,.38);
+    --tum-ok: #2e9e26;
+    --tum-warn: #a86e00;
+    --tum-crit: #d5312a;
+    --tum-glass: rgba(248,249,251,.94);
+    --vibrancy-tint: rgba(252,252,254,.58);
+    --panel-shadow: 0 14px 44px rgba(20,30,60,.22), 0 2px 8px rgba(20,30,60,.12);
+    --mb-bg: rgba(247,247,249,.62);
+    --mb-text: #1d1d1f;
+    --mb-active: rgba(0,0,0,.11);
+    --mb-muted: rgba(29,29,31,.55);
+  }
+  @media (prefers-color-scheme: light) {
+    .desktop[data-scheme="auto"] {
+      --tum-bg: #f3f4f6;
+      --tum-surface: rgba(20,24,32,.05);
+      --tum-surface-hover: rgba(20,24,32,.085);
+      --tum-border: rgba(20,24,32,.11);
+      --tum-border-strong: rgba(20,24,32,.18);
+      --tum-text-primary: #1d2026;
+      --tum-text-secondary: #4b515b;
+      --tum-text-muted: #7d8590;
+      --tum-accent: #0071e3;
+      --tum-accent-fill: rgba(0,113,227,.10);
+      --tum-accent-stroke: rgba(0,113,227,.38);
+      --tum-ok: #2e9e26;
+      --tum-warn: #a86e00;
+      --tum-crit: #d5312a;
+      --tum-glass: rgba(248,249,251,.94);
+      --vibrancy-tint: rgba(252,252,254,.58);
+      --panel-shadow: 0 14px 44px rgba(20,30,60,.22), 0 2px 8px rgba(20,30,60,.12);
+      --mb-bg: rgba(247,247,249,.62);
+      --mb-text: #1d1d1f;
+      --mb-active: rgba(0,0,0,.11);
+      --mb-muted: rgba(29,29,31,.55);
+    }
+  }
+  /* 「降低透明度」回退：vibrancy → 不透明玻璃 */
+  .desktop[data-rt="on"] { --vibrancy-tint: var(--tum-glass); --blur: none; }
+
+  .tum-num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+
+  /* ============ 模拟菜单栏 ============ */
+  .menubar {
+    position: absolute; top: 0; left: 0; right: 0; height: 26px; z-index: 30;
+    display: flex; align-items: center; padding: 0 9px; gap: 1px;
+    font-family: -apple-system, "SF Pro Text", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+    font-size: 12.5px; color: var(--mb-text);
+    background: var(--mb-bg); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  }
+  .desktop[data-rt="on"] .menubar { backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .mb-item { padding: 3px 9px; border-radius: 5px; white-space: nowrap; }
+  .mb-item.bold { font-weight: 600; }
+  .mb-item.dim { color: var(--mb-muted); }
+  .mb-item.active { background: var(--mb-active); }
+  .mb-right { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+  .mb-glyph { display: inline-flex; align-items: center; padding: 3px 7px; border-radius: 5px; color: var(--mb-muted); }
+  .status-item {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 8px; border-radius: 6px; cursor: pointer;
+    color: var(--mb-text); user-select: none;
+  }
+  .status-item:hover { background: var(--mb-active); }
+  .status-item.open { background: var(--mb-active); }
+  .status-title { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .status-item.hidden-title .status-title { display: none; }
+  .mb-app-menus { display: none; align-items: center; }
+  .desktop.popover-open .mb-app-menus { display: flex; }
+  .desktop.popover-open .mb-finder-menus { display: none; }
+  .mb-logo { font-size: 13px; padding: 3px 10px; }
+
+  /* ============ Popover 面板 ============ */
+  .popover {
+    position: absolute; top: 30px; right: 8px; width: 300px; z-index: 40;
+    border-radius: var(--radius-win);
+    background: var(--vibrancy-tint);
+    backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+    border: 1px solid var(--tum-border-strong);
+    box-shadow: var(--panel-shadow);
+    color: var(--tum-text-primary);
+    transform-origin: top right;
+    transition: transform 200ms cubic-bezier(0.16,1,0.3,1), opacity 140ms ease;
+  }
+  .desktop[data-rt="on"] .popover { backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .popover.closed { opacity: 0; transform: scale(.95) translateY(-5px); pointer-events: none; }
+  .pop-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px 6px; }
+  .pop-title { font-size: 13px; font-weight: 600; }
+  .icon-btn {
+    width: 24px; height: 24px; border-radius: 7px; border: none; cursor: pointer;
+    background: transparent; color: var(--tum-text-secondary);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .icon-btn:hover { background: var(--tum-surface-hover); color: var(--tum-text-primary); }
+  .pop-hero { display: flex; align-items: center; gap: 14px; padding: 6px 14px 12px; }
+  .hero-meta { display: flex; flex-direction: column; gap: 3px; }
+  .hero-meta .k { font-size: 12px; color: var(--tum-text-secondary); }
+  .hero-meta .v { font-size: 11.5px; color: var(--tum-text-muted); }
+  .hero-meta .v b { color: var(--tum-text-primary); font-weight: 600; }
+  .pop-accounts { padding: 2px 8px 6px; }
+  .acct-row {
+    display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: 9px;
+  }
+  .acct-row:hover { background: var(--tum-surface-hover); }
+  .acct-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .acct-name { font-size: 12.5px; }
+  .acct-sub { font-size: 10.5px; color: var(--tum-text-muted); margin-top: 1px; }
+  .acct-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .acct-pct { font-size: 12px; font-weight: 600; }
+  .acct-reset { font-size: 10.5px; color: var(--tum-text-muted); min-width: 52px; text-align: right; }
+  .pop-div { height: 1px; margin: 4px 12px; background: var(--tum-border); }
+  .pop-foot { display: flex; gap: 6px; padding: 8px 10px 10px; }
+  .pop-foot button {
+    flex: 1; border: none; cursor: pointer; font-family: inherit;
+    font-size: 12px; padding: 6px 0; border-radius: 8px;
+    background: transparent; color: var(--tum-text-secondary);
+  }
+  .pop-foot button:hover { background: var(--tum-surface-hover); color: var(--tum-text-primary); }
+  .pop-foot button.primary { color: var(--tum-accent); font-weight: 600; }
+
+  /* ============ 圆环 ============ */
+  .ring { position: relative; display: inline-flex; align-items: center; justify-content: center; }
+  .ring svg { transform: rotate(-90deg); }
+  .ring .track { stroke: var(--tum-border-strong); }
+  .ring .arc { stroke: var(--ring-color, var(--tum-accent)); transition: stroke-dashoffset 420ms cubic-bezier(0.2,0.8,0.2,1), stroke 200ms ease; }
+  .ring .center { position: absolute; display: flex; flex-direction: column; align-items: center; }
+  .ring .pct { font-weight: 650; letter-spacing: .2px; }
+
+  /* ============ 场景 1：桌面总览 ============ */
+  #scene-desktop { height: 560px; }
+  .hint-chip {
+    position: absolute; left: 14px; bottom: 12px; z-index: 50;
+    font-size: 11px; color: rgba(255,255,255,.85);
+    background: rgba(0,0,0,.35); padding: 4px 10px; border-radius: 999px;
+    backdrop-filter: blur(8px);
+  }
+
+  /* ============ 场景 3：悬浮挂件（400×680） ============ */
+  #scene-widget { height: 780px; }
+  .dash {
+    position: absolute; top: 52px; right: 46px; width: 400px; height: 680px; z-index: 20;
+    border-radius: 16px; border: 1px solid var(--tum-border-strong);
+    background: var(--tum-bg);
+    box-shadow: var(--panel-shadow);
+    display: flex; flex-direction: column; color: var(--tum-text-primary);
+    overflow: hidden;
+  }
+  .dash-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px 8px; }
+  .dash-title { font-size: 13px; font-weight: 600; }
+  .dash-head .spacer { flex: 1; }
+  .dash-hero { display: flex; align-items: center; gap: 18px; padding: 8px 18px 14px; }
+  .dash-hero .meta { display: flex; flex-direction: column; gap: 5px; }
+  .chip {
+    font-size: 11px; padding: 3px 9px; border-radius: 999px;
+    background: var(--tum-surface); border: 1px solid var(--tum-border);
+    color: var(--tum-text-secondary); width: fit-content;
+  }
+  .chip b { color: var(--tum-text-primary); }
+  .dash-cards { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 4px 14px; overflow: hidden; }
+  .card {
+    border: 1px solid var(--tum-border); border-radius: 12px; background: var(--tum-surface);
+    padding: 12px 13px; display: flex; flex-direction: column; gap: 9px;
+  }
+  .card-top { display: flex; align-items: center; gap: 8px; }
+  .card-name { font-size: 12.5px; font-weight: 600; }
+  .kind {
+    font-size: 10px; padding: 2px 7px; border-radius: 999px;
+    background: var(--tum-accent-fill); color: var(--tum-accent);
+  }
+  .card-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .winbars { display: flex; flex-direction: column; gap: 5px; flex: 1; }
+  .winbar { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--tum-text-muted); }
+  .winbar .lbl { width: 22px; }
+  .winbar .bar { flex: 1; height: 4px; border-radius: 2px; background: var(--tum-border); overflow: hidden; }
+  .winbar .bar i { display: block; height: 100%; border-radius: 2px; background: var(--wb-color, var(--tum-accent)); }
+  .winbar .val { width: 34px; text-align: right; color: var(--tum-text-secondary); }
+  .dash-nav { display: flex; border-top: 1px solid var(--tum-border); padding: 6px 10px 8px; gap: 4px; }
+  .dash-nav button {
+    flex: 1; border: none; background: transparent; cursor: pointer; font-family: inherit;
+    font-size: 11.5px; color: var(--tum-text-muted); padding: 6px 0; border-radius: 8px;
+  }
+  .dash-nav button.on { color: var(--tum-accent); background: var(--tum-accent-fill); font-weight: 600; }
+
+  /* ============ 场景 4：胶囊 + 可选贴边 ============ */
+  #scene-pill { height: 380px; }
+  .pill {
+    position: absolute; right: 46px; top: 120px; z-index: 20;
+    width: 168px; height: 56px; border-radius: 28px;
+    background: var(--vibrancy-tint);
+    backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+    border: 1px solid var(--tum-border-strong); box-shadow: var(--panel-shadow);
+    display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    color: var(--tum-text-primary); cursor: pointer;
+    transition: transform 200ms cubic-bezier(0.33,1,0.68,1), right 260ms cubic-bezier(0.16,1,0.3,1);
+  }
+  .desktop[data-rt="on"] .pill { backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .pill:hover { transform: translateY(-2px); }
+  .pill .pct { font-size: 16px; font-weight: 650; }
+  .pill .div { width: 1px; height: 22px; background: var(--tum-border-strong); }
+  .pill .brand { font-size: 10.5px; color: var(--tum-text-muted); letter-spacing: .4px; }
+  .pill .close {
+    margin-left: auto; width: 20px; height: 20px; border-radius: 50%; flex: none;
+    background: var(--tum-surface-hover); color: var(--tum-text-secondary);
+    display: none; align-items: center; justify-content: center; font-size: 11px;
+  }
+  .pill:hover .close { display: inline-flex; }
+  .handle {
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%) scaleX(.4); z-index: 19;
+    width: 10px; height: 58px; border-radius: 6px 0 0 6px;
+    background: var(--vibrancy-tint); border: 1px solid var(--tum-border-strong); border-right: none;
+    backdrop-filter: var(--blur);
+    opacity: 0; transition: opacity 160ms ease, transform 160ms ease; cursor: pointer;
+  }
+  .handle i { position: absolute; left: 4px; top: 18px; width: 2px; height: 22px; border-radius: 2px; background: rgba(255,255,255,.55); }
+  .desktop[data-scheme="light"] .handle i { background: rgba(0,0,0,.35); }
+  .desktop.docked .pill { right: 0; top: 50%; transform: translate(110%, -50%); }
+  .desktop.docked .handle { opacity: 1; transform: translateY(-50%) scaleX(1); }
+
+  /* ============ 场景 5：设置窗口（原生标题栏） ============ */
+  #scene-settings { height: 540px; }
+  .win {
+    position: absolute; left: 50%; top: 54px; transform: translateX(-50%);
+    width: 640px; height: 452px; z-index: 20;
+    border-radius: 11px; border: 1px solid var(--tum-border-strong);
+    background: var(--tum-bg); box-shadow: var(--panel-shadow);
+    color: var(--tum-text-primary); overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .win-lights { position: absolute; top: 13px; left: 14px; display: flex; gap: 8px; z-index: 5; }
+  .light { width: 12px; height: 12px; border-radius: 50%; }
+  .light.r { background: #ff5f57; border: .5px solid rgba(0,0,0,.15); }
+  .light.y { background: #febc2e; border: .5px solid rgba(0,0,0,.15); }
+  .light.g { background: #28c840; border: .5px solid rgba(0,0,0,.15); }
+  .win-body { flex: 1; display: flex; padding-top: 40px; }
+  .win-nav { width: 168px; border-right: 1px solid var(--tum-border); padding: 10px 10px; display: flex; flex-direction: column; gap: 2px; }
+  .win-nav button {
+    border: none; background: transparent; cursor: pointer; font-family: inherit; text-align: left;
+    font-size: 12.5px; color: var(--tum-text-secondary); padding: 7px 10px; border-radius: 8px;
+  }
+  .win-nav button:hover { background: var(--tum-surface-hover); }
+  .win-nav button.on { background: var(--tum-accent-fill); color: var(--tum-accent); font-weight: 600; }
+  .win-pane { flex: 1; padding: 14px 18px; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+  .win-pane h3 { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .set-row {
+    display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 9px;
+  }
+  .set-row:hover { background: var(--tum-surface); }
+  .set-row .t { font-size: 12.5px; }
+  .set-row .d { font-size: 11px; color: var(--tum-text-muted); margin-top: 2px; line-height: 1.5; }
+  .switch {
+    margin-left: auto; width: 38px; height: 22px; border-radius: 999px; position: relative; flex: none;
+    background: var(--tum-border-strong); transition: background 160ms ease; cursor: pointer;
+  }
+  .switch::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform 160ms cubic-bezier(0.33,1,0.68,1);
+  }
+  .switch.on { background: var(--tum-accent); }
+  .switch.on::after { transform: translateX(16px); }
+  .callout {
+    position: absolute; font-size: 11px; color: #fff; background: rgba(0,0,0,.55);
+    padding: 5px 10px; border-radius: 8px; z-index: 60; line-height: 1.5;
+    backdrop-filter: blur(6px); max-width: 240px;
+  }
+
+  /* ============ 场景 6：浅色 token 对照 ============ */
+  .swatches { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .sw-col { border: 1px solid var(--page-border); border-radius: 12px; overflow: hidden; }
+  .sw-col h4 { font-size: 12px; padding: 9px 12px; border-bottom: 1px solid var(--page-border); background: var(--page-card); }
+  .sw-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px; font-size: 11.5px; }
+  .sw-row + .sw-row { border-top: 1px solid rgba(128,128,128,.12); }
+  .sw-chip { width: 34px; height: 22px; border-radius: 6px; border: 1px solid rgba(128,128,128,.3); flex: none; }
+  .sw-name { width: 130px; color: var(--page-muted); }
+  .sw-val { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 10.5px; }
+
+  .impl-note {
+    max-width: 1120px; margin: 0 auto; border: 1px solid var(--page-border); border-radius: 12px;
+    background: var(--page-card); padding: 14px 16px; font-size: 12px; line-height: 1.8; color: var(--page-muted);
+  }
+  .impl-note b { color: var(--page-text); }
+  .impl-note code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; color: var(--page-text); }
+</style>
+</head>
+<body>
+<header>
+  <h1>macOS 外壳原型 — 菜单栏 Popover · 悬浮挂件 · 原生标题栏 · 浅色模式</h1>
+  <p class="sub">
+    按 2026-11-02 拍板制作：<b>popover 一步到位</b>、<b>浅色模式补齐</b>、<b>字体保持 MiSans</b>、
+    <b>未签名 DMG 分发</b>、<b>最低 macOS 13.1</b>。贴边胶囊在 macOS 为<b>默认关闭</b>的可选模式（场景 4 仅做形态示意）。
+    菜单栏、红绿灯为模拟；面板材质在原型里用 CSS <code>backdrop-filter</code> 模拟 vibrancy——
+    真实实现由 <code>NSVisualEffectView</code> 提供，观感以真机为准。
+  </p>
+  <div class="decisions">
+    <span>① <b>先出原型</b>再实现</span>
+    <span>② 字体 <b>MiSans（不换 SF Pro）</b></span>
+    <span>③ <b>补浅色模式</b></span>
+    <span>④ 菜单栏 <b>popover 一步到位</b></span>
+    <span>⑤ 分发 <b>未签名 DMG + 说明</b></span>
+    <span>⑥ 最低系统 <b>macOS 13.1</b></span>
+  </div>
+</header>
+
+<div class="toolbar">
+  <div class="ctl"><span>外观</span>
+    <div class="seg" id="seg-scheme">
+      <button data-v="auto" class="on">跟随系统</button>
+      <button data-v="light">浅色</button>
+      <button data-v="dark">深色</button>
+    </div>
+  </div>
+  <div class="ctl"><span>降低透明度</span>
+    <div class="seg" id="seg-rt">
+      <button data-v="off" class="on">关</button>
+      <button data-v="on">开（回退不透明）</button>
+    </div>
+  </div>
+  <div class="ctl"><span>菜单栏标题</span>
+    <div class="seg" id="seg-title">
+      <button data-v="on" class="on">显示 42%</button>
+      <button data-v="off">仅图标</button>
+    </div>
+  </div>
+  <div class="ctl"><span>贴边演示</span>
+    <div class="seg" id="seg-dock">
+      <button data-v="off" class="on">浮动</button>
+      <button data-v="on">贴边收起</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 场景 1：桌面总览（菜单栏 + Popover + 状态项） ============ -->
+<section>
+  <h2>① 桌面总览 — 菜单栏 Popover（主入口）</h2>
+  <p class="why">
+    点击右上角状态项（模板图标 + 百分比直显）弹出面板；面板打开时菜单栏左侧切换为本应用菜单（原生行为）。
+    点面板外 / Esc 关闭。材质 = vibrancy（菜单栏图标为模板样式，自动适配深浅色菜单栏）。
+  </p>
+  <div class="desktop popover-open" id="scene-desktop" data-scheme="auto" data-rt="off">
+    <div class="menubar">
+      <span class="mb-item mb-logo">&#63743;</span>
+      <span class="mb-app-menus">
+        <span class="mb-item bold">TokenUsageMonitor</span>
+        <span class="mb-item dim">文件</span><span class="mb-item dim">编辑</span>
+        <span class="mb-item dim">显示</span><span class="mb-item dim">窗口</span><span class="mb-item dim">帮助</span>
+      </span>
+      <span class="mb-finder-menus">
+        <span class="mb-item bold">访达</span>
+        <span class="mb-item dim">文件</span><span class="mb-item dim">编辑</span>
+        <span class="mb-item dim">显示</span><span class="mb-item dim">前往</span><span class="mb-item dim">窗口</span><span class="mb-item dim">帮助</span>
+      </span>
+      <div class="mb-right">
+        <span class="mb-glyph">
+          <svg width="15" height="12" viewBox="0 0 15 12" fill="currentColor"><path d="M7.5 12 0 3.6C1.9 1.4 4.5 0 7.5 0s5.6 1.4 7.5 3.6L7.5 12Z" opacity=".9"/></svg>
+        </span>
+        <span class="mb-glyph">
+          <svg width="22" height="11" viewBox="0 0 22 11" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="18" height="10" rx="2.5" opacity=".5"/><rect x="2" y="2" width="12" height="7" rx="1" fill="currentColor" stroke="none"/><path d="M20.5 3.5v4" opacity=".5" stroke-linecap="round" stroke-width="1.5"/></svg>
+        </span>
+        <span class="status-item" id="status-item" role="button" tabindex="0" aria-label="TokenUsageMonitor">
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor">
+            <circle cx="10" cy="10" r="8" stroke-width="2.4" opacity=".32"/>
+            <circle id="status-arc" cx="10" cy="10" r="8" stroke-width="2.4" stroke-linecap="round"
+                    stroke-dasharray="50.27" stroke-dashoffset="29.16" transform="rotate(-90 10 10)"/>
+          </svg>
+          <span class="status-title tum-num" id="status-title">42%</span>
+        </span>
+      </div>
+    </div>
+
+    <div class="popover" id="popover" role="dialog" aria-label="用量面板">
+      <div class="pop-head">
+        <span class="pop-title">TokenUsageMonitor</span>
+        <button class="icon-btn" id="btn-refresh" title="立即刷新（⌘R）">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.3M21 3v6h-6"/></svg>
+        </button>
+      </div>
+      <div class="pop-hero">
+        <span class="ring" id="hero-ring" data-pct="42" data-size="64" data-stroke="6" style="--ring-color: var(--tum-accent)">
+          <span class="center"><span class="pct tum-num" style="font-size:17px">42%</span></span>
+        </span>
+        <div class="hero-meta">
+          <span class="k">综合占用（最紧张窗口）</span>
+          <span class="v">月度窗口 · 已用 <b class="tum-num" id="hero-used">1.26M</b> / <span class="tum-num">2.96M</span></span>
+          <span class="v">重置 <b class="tum-num" id="hero-reset">23 天后</b> · 3 个账户</span>
+        </div>
+      </div>
+      <div class="pop-accounts" id="pop-accounts">
+        <!-- 账户行由脚本按演示数据渲染 -->
+      </div>
+      <div class="pop-div"></div>
+      <div class="pop-foot">
+        <button class="primary" id="btn-open-dash">打开主面板</button>
+        <button>设置… <span style="opacity:.5">⌘,</span></button>
+        <button id="btn-quit">退出</button>
+      </div>
+    </div>
+    <span class="hint-chip">点状态项开合面板 · 点面板外或 Esc 关闭 · 刷新按钮演示数据更新</span>
+  </div>
+  <p class="frame-caption">
+    实现映射：<code>TrayIcon::rect()</code> 定位 + 无边框窗（300×~300）+ <code>alwaysOnTop</code> + 监听
+    <code>Focused(false)</code>/<code>Esc</code> 收起；<code>icon_as_template(true)</code>；
+    <code>set_title("42%")</code> 可开关。面板材质 = <code>windowEffects: [popover|hudWindow]</code>。
+  </p>
+</section>
+
+<!-- ============ 场景 2：悬浮挂件（可选的桌面挂件模式） ============ -->
+<section>
+  <h2>② 悬浮挂件（可选模式）— 400×680 全窗，浅 / 深自适应</h2>
+  <p class="why">
+    macOS 上悬浮窗为「桌面挂件」备选模式：默认不抢焦点（<code>focus:false</code>）、不贴边；
+    关闭 = 隐藏回菜单栏。浅色档为本次新增候选令牌（见场景 ⑤）。
+  </p>
+  <div class="desktop" id="scene-widget" data-scheme="auto" data-rt="off" style="padding-top:0">
+    <div class="menubar">
+      <span class="mb-item mb-logo">&#63743;</span>
+      <span class="mb-item bold">访达</span><span class="mb-item dim">文件</span><span class="mb-item dim">编辑</span>
+      <div class="mb-right">
+        <span class="status-item"><span class="status-title tum-num">42%</span></span>
+      </div>
+    </div>
+    <div class="dash">
+      <div class="dash-head">
+        <span class="dash-title">TokenUsageMonitor</span>
+        <span class="spacer"></span>
+        <button class="icon-btn" title="刷新"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.3M21 3v6h-6"/></svg></button>
+        <button class="icon-btn" title="隐藏（⌘W）"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+      </div>
+      <div class="dash-hero">
+        <span class="ring" data-pct="42" data-size="92" data-stroke="8" style="--ring-color: var(--tum-accent)">
+          <span class="center"><span class="pct tum-num" style="font-size:22px">42%</span></span>
+        </span>
+        <div class="meta">
+          <span class="chip">今日 <b class="tum-num">182.4K</b></span>
+          <span class="chip">本月 <b class="tum-num">1.26M</b> / 2.96M</span>
+          <span class="chip">花费 <b class="tum-num">$4.82</b></span>
+        </div>
+      </div>
+      <div class="dash-cards">
+        <div class="card">
+          <div class="card-top">
+            <span class="acct-dot" style="background: var(--tum-accent)"></span>
+            <span class="card-name">DeepSeek · 主力</span><span class="kind">订阅</span>
+            <span class="card-right"><span class="ring" data-pct="68" data-size="40" data-stroke="4.5" style="--ring-color: var(--tum-warn)"><span class="center"><span class="pct tum-num" style="font-size:10px">68%</span></span></span></span>
+          </div>
+          <div class="winbars">
+            <div class="winbar"><span class="lbl">5h</span><span class="bar"><i style="width:38%; --wb-color: var(--tum-ok)"></i></span><span class="val tum-num">38%</span></div>
+            <div class="winbar"><span class="lbl">日</span><span class="bar"><i style="width:52%; --wb-color: var(--tum-ok)"></i></span><span class="val tum-num">52%</span></div>
+            <div class="winbar"><span class="lbl">周</span><span class="bar"><i style="width:71%; --wb-color: var(--tum-warn)"></i></span><span class="val tum-num">71%</span></div>
+            <div class="winbar"><span class="lbl">月</span><span class="bar"><i style="width:68%; --wb-color: var(--tum-warn)"></i></span><span class="val tum-num">68%</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-top">
+            <span class="acct-dot" style="background: var(--tum-ok)"></span>
+            <span class="card-name">MiniMax · Coding</span><span class="kind">订阅</span>
+            <span class="card-right"><span class="ring" data-pct="12" data-size="40" data-stroke="4.5" style="--ring-color: var(--tum-ok)"><span class="center"><span class="pct tum-num" style="font-size:10px">12%</span></span></span></span>
+          </div>
+          <div class="winbars">
+            <div class="winbar"><span class="lbl">5h</span><span class="bar"><i style="width:8%; --wb-color: var(--tum-ok)"></i></span><span class="val tum-num">8%</span></div>
+            <div class="winbar"><span class="lbl">日</span><span class="bar"><i style="width:12%; --wb-color: var(--tum-ok)"></i></span><span class="val tum-num">12%</span></div>
+            <div class="winbar"><span class="lbl">周</span><span class="bar"><i style="width:9%; --wb-color: var(--tum-ok)"></i></span><span class="val tum-num">9%</span></div>
+            <div class="winbar"><span class="lbl">月</span><span class="bar"><i style="width:12%; --wb-color: var(--tum-ok)"></i></span><span class="val tum-num">12%</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-top">
+            <span class="acct-dot" style="background: var(--tum-crit)"></span>
+            <span class="card-name">OpenCode · Codex</span><span class="kind">按量</span>
+            <span class="card-right"><span class="ring" data-pct="94" data-size="40" data-stroke="4.5" style="--ring-color: var(--tum-crit)"><span class="center"><span class="pct tum-num" style="font-size:10px">94%</span></span></span></span>
+          </div>
+          <div class="winbars">
+            <div class="winbar"><span class="lbl">5h</span><span class="bar"><i style="width:94%; --wb-color: var(--tum-crit)"></i></span><span class="val tum-num">94%</span></div>
+            <div class="winbar"><span class="lbl">日</span><span class="bar"><i style="width:88%; --wb-color: var(--tum-crit)"></i></span><span class="val tum-num">88%</span></div>
+            <div class="winbar"><span class="lbl">周</span><span class="bar"><i style="width:64%; --wb-color: var(--tum-warn)"></i></span><span class="val tum-num">64%</span></div>
+            <div class="winbar"><span class="lbl">月</span><span class="bar"><i style="width:41%; --wb-color: var(--tum-ok)"></i></span><span class="val tum-num">41%</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="dash-nav">
+        <button class="on">概览</button><button>趋势</button><button>工具</button><button>设置</button>
+      </div>
+    </div>
+  </div>
+  <p class="frame-caption">
+    悬浮窗保持 <code>alwaysOnTop</code> + <code>skipTaskbar</code>（macOS 上后者为空实现，靠 <code>LSUIElement</code> 兜底）；
+    首次点击直达需 <code>acceptFirstMouse</code>。深浅两档共用同一份布局，仅令牌不同。
+  </p>
+</section>
+
+<!-- ============ 场景 3：胶囊 + 可选贴边模式 ============ -->
+<section>
+  <h2>③ 胶囊（compact）与可选「贴边模式」形态示意</h2>
+  <p class="why">
+    胶囊 168×56 保留；macOS 默认<b>不</b>提供贴边，此处仅演示开启后的形态与把手（宽度建议 7 → 10pt）。
+    悬停唤出在 macOS 需宿主侧光标轮询（真机验证后才默认开放该模式）。
+    用工具条「贴边演示」切换。
+  </p>
+  <div class="desktop" id="scene-pill" data-scheme="auto" data-rt="off">
+    <div class="menubar">
+      <span class="mb-item mb-logo">&#63743;</span>
+      <span class="mb-item bold">访达</span>
+      <div class="mb-right"><span class="status-item"><span class="status-title tum-num">42%</span></span></div>
+    </div>
+    <span class="handle" id="peek-handle" title="悬停唤出（示意）"><i></i></span>
+    <span class="hint-chip" id="dock-hint" style="display:none">已贴边：仅露出 10pt 把手 — 鼠标移上去唤出胶囊</span>
+    <div class="pill" id="pill">
+      <span class="ring" data-pct="42" data-size="30" data-stroke="3.6" style="--ring-color: var(--tum-accent)"><span class="center" style="display:none"></span></span>
+      <span class="pct tum-num">42%</span>
+      <span class="div"></span>
+      <span class="brand">TUM</span>
+      <span class="close">✕</span>
+    </div>
+  </div>
+  <p class="frame-caption">
+    贴边态几何由 Rust 的 <code>anchor_rect / peek_rect</code> 接管，此处只是 CSS 示意。
+    把手 10×58（原 7×58），命中更稳；胶囊贴边时主窗穿透、把手悬停唤出。
+  </p>
+</section>
+
+<!-- ============ 场景 4：设置窗口（原生标题栏） ============ -->
+<section>
+  <h2>④ 二级窗口 — 原生标题栏（Overlay 红绿灯 + hiddenTitle）</h2>
+  <p class="why">
+    settings / trend / tools 在 macOS 上改用<b>系统装饰</b>：红绿灯由系统绘制、窗口可拖边缩放、
+    ⌘W 触发 CloseRequested（→ 隐藏）。内容顶部避让 40px。
+  </p>
+  <div class="desktop" id="scene-settings" data-scheme="auto" data-rt="off">
+    <div class="menubar">
+      <span class="mb-item mb-logo">&#63743;</span>
+      <span class="mb-item bold">TokenUsageMonitor</span>
+      <span class="mb-item dim">文件</span><span class="mb-item dim">编辑</span>
+      <div class="mb-right"><span class="status-item"><span class="status-title tum-num">42%</span></span></div>
+    </div>
+    <div class="win">
+      <div class="win-lights"><span class="light r"></span><span class="light y"></span><span class="light g"></span></div>
+      <div class="win-body">
+        <div class="win-nav">
+          <button class="on">通用</button><button>账户</button><button>外观</button><button>数据同步</button><button>关于</button>
+        </div>
+        <div class="win-pane">
+          <h3>通用</h3>
+          <div class="set-row"><div><div class="t">登录时启动</div><div class="d">在「系统设置 ▸ 通用 ▸ 登录项」中显示为 TokenUsageMonitor</div></div><span class="switch on"></span></div>
+          <div class="set-row"><div><div class="t">关闭窗口</div><div class="d">macOS 固定为「隐藏到菜单栏」；退出请使用 ⌘Q 或菜单栏「退出」</div></div></div>
+          <div class="set-row"><div><div class="t">外观</div><div class="d">跟随系统（浅色 / 深色）；「降低透明度」开启时自动回退不透明面板</div></div><span class="switch on"></span></div>
+          <div class="set-row"><div><div class="t">面板材质</div><div class="d">Vibrancy 毛玻璃；关闭后使用不透明底色</div></div><span class="switch on"></span></div>
+          <div class="set-row"><div><div class="t">凭证存储</div><div class="d">登录钥匙串（Keychain），不写磁盘明文</div></div></div>
+        </div>
+      </div>
+    </div>
+    <span class="callout" style="left: 24px; top: 64px;">红绿灯由系统绘制（Overlay），<br>标题隐藏，窗口可拖边缩放</span>
+    <span class="callout" style="right: 16px; top: 470px; max-width: 250px;">⌘W = 隐藏到菜单栏；⌘Q = 退出<br>close_to_tray 在 macOS 不生效</span>
+  </div>
+  <p class="frame-caption">
+    实现：<code>decorations: true</code> + <code>titleBarStyle: "Overlay"</code> + <code>hiddenTitle: true</code>
+    （+ 可选 <code>trafficLightPosition</code>）；Windows 保持无边框自绘不变。
+  </p>
+</section>
+
+<!-- ============ 场景 5：浅色 token 对照 ============ -->
+<section>
+  <h2>⑤ 浅色模式令牌草案（拍板后并入 <code>tokens.css</code>）</h2>
+  <p class="why">
+    深色列 = 线上现状；浅色列 = 按「同色相、提对比」原则新调：accent 加深到 #0071e3 以保证浅底对比度，
+    ok/warn/crit 同步加深。玻璃面板在浅色下提亮（半透明白），文字压深。
+  </p>
+  <div class="swatches">
+    <div class="sw-col">
+      <h4>深色（现状）</h4>
+      <div id="sw-dark"></div>
+    </div>
+    <div class="sw-col">
+      <h4>浅色（新增候选）</h4>
+      <div id="sw-light"></div>
+    </div>
+  </div>
+</section>
+
+<div class="impl-note">
+  <b>实现注记（对应调研文档 §四 P1）</b>：① <code>LSUIElement=1</code>（Info.plist，无 Dock 图标）；
+  ② 状态项 = <code>TrayIcon</code>（模板图标 + <code>set_title</code> 百分比）+ popover 窗（<code>TrayIcon::rect()</code> 定位，
+  <code>Focused(false)</code>/Esc 收起）；③ 二级窗 = <code>titleBarStyle:"Overlay"</code> + <code>hiddenTitle</code>；
+  ④ 关闭语义：macOS 拦 <code>CloseRequested</code> 恒 hide，⌘Q 走 <code>app.exit(0)</code>；
+  ⑤ 浅色令牌进 <code>tokens.css</code>（随系统 <code>prefers-color-scheme</code> / <code>Theme::Light</code> 切换），
+  并监听 macOS「降低透明度」回退；⑥ 首次点击 <code>acceptFirstMouse</code>；⑦ <code>backgroundThrottling:"disabled"</code>（macOS 14+）。
+</div>
+
+<script>
+  /* ---------- 演示数据 ---------- */
+  const ACCOUNTS = [
+    { name: "DeepSeek · 主力",  sub: "订阅 · 月度窗口", pct: 68, reset: "23 天", color: "var(--tum-warn)"  },
+    { name: "MiniMax · Coding", sub: "订阅 · 月度窗口", pct: 12, reset: "27 天", color: "var(--tum-ok)"    },
+    { name: "OpenCode · Codex", sub: "按量 · 5h 窗口",  pct: 94, reset: "2h14m", color: "var(--tum-crit)"  },
+  ];
+
+  /* ---------- 圆环渲染（静态演示） ---------- */
+  const C = 2 * Math.PI;
+  function ringMarkup(pct, size, stroke) {
+    const r = (size - stroke) / 2;
+    const circ = C * r;
+    const off = circ * (1 - pct / 100);
+    return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" fill="none">
+      <circle class="track" cx="${size/2}" cy="${size/2}" r="${r}" stroke-width="${stroke}"/>
+      <circle class="arc" cx="${size/2}" cy="${size/2}" r="${r}" stroke-width="${stroke}" stroke-linecap="round"
+              stroke-dasharray="${circ.toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}"/>
+    </svg>`;
+  }
+  function paintRings(root) {
+    root.querySelectorAll(".ring[data-pct]").forEach((el) => {
+      if (el.dataset.painted) return;
+      const size = +el.dataset.size || 40, stroke = +el.dataset.stroke || 4;
+      el.insertAdjacentHTML("afterbegin", ringMarkup(+el.dataset.pct, size, stroke));
+      el.dataset.painted = "1";
+    });
+  }
+
+  /* ---------- 账户行 ---------- */
+  function renderAccounts() {
+    const host = document.getElementById("pop-accounts");
+    host.innerHTML = ACCOUNTS.map((a) => `
+      <div class="acct-row">
+        <span class="acct-dot" style="background:${a.color}"></span>
+        <div><div class="acct-name">${a.name}</div><div class="acct-sub">${a.sub}</div></div>
+        <div class="acct-right">
+          <span class="acct-pct tum-num" style="color:${a.color}">${a.pct}%</span>
+          <span class="acct-reset tum-num">${a.reset}</span>
+        </div>
+      </div>`).join("");
+  }
+  function refreshData() {
+    ACCOUNTS.forEach((a) => { a.pct = Math.max(3, Math.min(97, a.pct + Math.round((Math.random() - 0.45) * 9))); });
+    const top = [...ACCOUNTS].sort((x, y) => y.pct - x.pct)[0];
+    const pct = top.pct, used = (2.96 * pct / 100).toFixed(2);
+    document.getElementById("status-title").textContent = pct + "%";
+    document.getElementById("status-arc").setAttribute("stroke-dashoffset", (50.27 * (1 - pct / 100)).toFixed(2));
+    const hero = document.getElementById("hero-ring");
+    hero.querySelector(".pct").textContent = pct + "%";
+    hero.style.setProperty("--ring-color", top.color);
+    hero.querySelector(".arc").setAttribute("stroke-dashoffset", (C * ((64 - 6) / 2) * (1 - pct / 100)).toFixed(2));
+    document.getElementById("hero-used").textContent = used + "M";
+    renderAccounts();
+  }
+
+  /* ---------- 工具条：主题 / 降低透明度 / 菜单栏标题 ---------- */
+  function bindSeg(id, fn) {
+    const seg = document.getElementById(id);
+    seg.addEventListener("click", (e) => {
+      const b = e.target.closest("button"); if (!b) return;
+      seg.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+      fn(b.dataset.v);
+    });
+  }
+  const desktops = () => document.querySelectorAll(".desktop");
+  bindSeg("seg-scheme", (v) => desktops().forEach((d) => d.dataset.scheme = v));
+  bindSeg("seg-rt",     (v) => desktops().forEach((d) => d.dataset.rt = v));
+  bindSeg("seg-title",  (v) => desktops().forEach((d) => d.querySelector(".status-item")?.classList.toggle("hidden-title", v === "off")));
+  bindSeg("seg-dock",   (v) => {
+    document.getElementById("scene-pill").classList.toggle("docked", v === "on");
+    document.getElementById("dock-hint").style.display = v === "on" ? "" : "none";
+  });
+
+  /* ---------- Popover 开合 ---------- */
+  const desk = document.getElementById("scene-desktop");
+  const pop  = document.getElementById("popover");
+  const item = document.getElementById("status-item");
+  function setPop(open) {
+    pop.classList.toggle("closed", !open);
+    item.classList.toggle("open", open);
+    desk.classList.toggle("popover-open", open);
+  }
+  item.addEventListener("click", () => setPop(pop.classList.contains("closed")));
+  item.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPop(true); } });
+  document.addEventListener("pointerdown", (e) => {
+    if (!pop.classList.contains("closed") && !pop.contains(e.target) && !item.contains(e.target)) setPop(false);
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") setPop(false); });
+  document.getElementById("btn-quit").addEventListener("click", () => setPop(false));
+  document.getElementById("btn-refresh").addEventListener("click", refreshData);
+  document.getElementById("peek-handle")?.addEventListener("pointerenter", () => {
+    document.getElementById("scene-pill").classList.remove("docked");
+    document.querySelector('#seg-dock button[data-v="off"]').click();
+  });
+
+  /* ---------- 场景 5：令牌对照表 ---------- */
+  const TOKENS = [
+    ["--tum-bg",            "窗口底色"],
+    ["--tum-surface",       "表面层"],
+    ["--tum-border",        "描边"],
+    ["--tum-text-primary",  "正文"],
+    ["--tum-text-secondary","次要文字"],
+    ["--tum-text-muted",    "弱文字"],
+    ["--tum-accent",        "强调色"],
+    ["--tum-ok",            "正常"],
+    ["--tum-warn",          "警告"],
+    ["--tum-crit",          "危险"],
+    ["--tum-glass",         "玻璃面板"],
+  ];
+  function swatch(mode) {
+    const probe = document.createElement("div");
+    probe.className = "desktop";
+    probe.dataset.scheme = mode; probe.dataset.rt = "off";
+    probe.style.cssText = "position:absolute;visibility:hidden;pointer-events:none";
+    document.body.appendChild(probe);
+    const cs = getComputedStyle(probe);
+    const html = TOKENS.map(([v, name]) => {
+      const val = cs.getPropertyValue(v).trim();
+      return `<div class="sw-row"><span class="sw-chip" style="background:${val}"></span>
+        <span class="sw-name">${name}</span><span class="sw-val">${v} = ${val}</span></div>`;
+    }).join("");
+    probe.remove();
+    return html;
+  }
+  document.getElementById("sw-dark").innerHTML = swatch("dark");
+  document.getElementById("sw-light").innerHTML = swatch("light");
+
+  /* ---------- 初始化 ---------- */
+  paintRings(document);
+  renderAccounts();
+  setPop(true);
+</script>
+</body>
+</html>

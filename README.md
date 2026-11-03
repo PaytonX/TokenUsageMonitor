@@ -7,7 +7,7 @@
 **多 Provider 聚合的 AI Token 用量透明看板 · Windows 透明置顶挂件**
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT_OR_Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#构建指南)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS%2013.1%2B-lightgrey.svg)](#构建指南)
 [![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB.svg)](https://tauri.app)
 
 English documentation: [README.en.md](README.en.md)
@@ -100,6 +100,26 @@ Cherry Studio、MiniMax Code、Hermes** 的真实 token 消耗（输入 / 缓存
    生成 128 位密钥，也可显式清空关闭鉴权）。跨不可信网络时请勿开启。
 
 详见 [SECURITY.md](SECURITY.md)。
+
+## macOS 安装（未签名 DMG）
+
+macOS 版本以**未签名 DMG** 分发（开源直发，未做 Apple 公证）。首次打开会被
+Gatekeeper 拦截，任选其一：
+
+- 系统设置 → 隐私与安全性 → 找到被拦提示 → 「仍要打开」；
+- 或终端执行：`xattr -dr com.apple.quarantine /Applications/TokenUsageMonitor.app`
+
+要求 **macOS 13.1+**（Apple Silicon / Intel 均为 universal 二进制）。凭证保存在
+登录钥匙串（Keychain），首次保存 API Key 时系统会请求授权。应用常驻菜单栏
+（无 Dock 图标）；关闭窗口 = 隐藏到菜单栏，退出请用菜单栏「退出」或 ⌘Q。
+
+从源码构建（macOS 13.1+）：
+
+```bash
+npm install
+npm run tauri:dev:mac     # 开发调试（自动覆盖 rust-toolchain 的 Windows 钉子）
+npm run tauri:build:mac   # universal DMG（aarch64 + x86_64）
+```
 
 ## 构建指南
 
